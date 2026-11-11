@@ -2,43 +2,15 @@ use std::io;
 
 use bytes::{Bytes, BytesMut};
 use raft::{
-    GetEntriesContext, RaftState, Storage, StorageError,
+    GetEntriesContext, RaftState, Ready, Storage, StorageError,
     eraftpb::{ConfState, Entry, HardState, Snapshot},
     storage::MemStorage,
 };
 
 use super::{
-    lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore},
-    membership::{ClusterMembership, member_ids},
+    lock_store::MAX_SNAPSHOT_BYTES, membership::member_ids, persistence::RecoveredStorage,
     voters::MAX_VOTERS,
 };
-
-pub(super) struct RestoredSnapshot {
-    pub index: u64,
-    pub locks: SlashingLockStore,
-    pub membership: ClusterMembership,
-}
-
-impl RestoredSnapshot {
-    pub fn decode(snapshot: &Snapshot) -> io::Result<Self> {
-        validate_snapshot(snapshot)?;
-        let metadata = snapshot.get_metadata();
-        let (membership, locks) =
-            ClusterMembership::decode_snapshot(&snapshot.data, metadata.get_conf_state())?;
-        Ok(Self {
-            index: metadata.index,
-            locks: SlashingLockStore::decode_snapshot(locks)?,
-            membership,
-        })
-    }
-
-    pub fn check(snapshot: &Snapshot) -> io::Result<()> {
-        validate_snapshot(snapshot)?;
-        let members = snapshot.get_metadata().get_conf_state();
-        let locks = ClusterMembership::skip_snapshot(&snapshot.data, members)?;
-        SlashingLockStore::decode_snapshot(locks).map(|_| ())
-    }
-}
 
 /// Storage still holds snapshot N while N+1 is written, so the two take turns.
 /// Once storage drops N, writing N+2 reclaims its allocation.
@@ -69,12 +41,33 @@ pub(super) struct RaftStorage {
 }
 
 impl RaftStorage {
-    #[cfg(any(target_os = "linux", test))]
     pub fn new(voters: &[u64]) -> Self {
         Self {
             memory: MemStorage::new_with_conf_state((voters.to_vec(), Vec::<u64>::new())),
             snapshot: Snapshot::default(),
         }
+    }
+
+    pub fn recovered(recovered: &RecoveredStorage) -> raft::Result<Self> {
+        let mut storage = Self::new(&recovered.initial_voters);
+        if !recovered.snapshot.is_empty() {
+            storage.install_snapshot(recovered.snapshot.clone())?;
+        }
+        storage.memory.wl().append(&recovered.entries)?;
+        storage.memory.wl().set_hardstate(recovered.hard_state.clone());
+        Ok(storage)
+    }
+
+    pub fn append_ready(&mut self, ready: &Ready) -> raft::Result<()> {
+        if !ready.snapshot().is_empty() {
+            self.install_snapshot(ready.snapshot().clone())?;
+        }
+        let mut memory = self.memory.wl();
+        memory.append(ready.entries())?;
+        if let Some(hard_state) = ready.hs() {
+            memory.set_hardstate(hard_state.clone());
+        }
+        Ok(())
     }
 
     pub fn snapshot_index(&self) -> u64 {

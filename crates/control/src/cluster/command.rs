@@ -5,7 +5,7 @@ use silver_common::ssz_view::SINGLE_ATT_SIZE;
 
 use super::{
     admission::SlashingAdmission,
-    membership::{MEMBER_ADDRESS_LEN, MemberAddress, MemberRecords},
+    membership::{MEMBER_ADDRESS_LEN, Member, MemberAddress},
     node::ProposalId,
     wire::decode_membership_change,
 };
@@ -17,7 +17,7 @@ const ANNOUNCE_ADDRESS_TAG: u8 = 3;
 const ENCODED_LOCK_COMMAND_LEN: usize = 1 + 8 + 8 + 8 + SINGLE_ATT_SIZE;
 const ENCODED_ADVANCE_MINIMUM_SLOT_LEN: usize = 1 + 8;
 const ENCODED_BLOCK_LOCK_LEN: usize = 1 + 8 + 8 + 96;
-const ENCODED_ANNOUNCE_ADDRESS_LEN: usize = 1 + 8 + MEMBER_ADDRESS_LEN;
+const ENCODED_ANNOUNCE_ADDRESS_LEN: usize = 1 + MEMBER_ADDRESS_LEN;
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct AttestationKey {
@@ -54,7 +54,7 @@ pub(super) enum ReplicatedCommand {
     Lock(AttestationLockCommand),
     AdvanceMinimumSlot(u64),
     BlockLock(BlockLockCommand),
-    AnnounceAddress { node_id: u64, address: MemberAddress },
+    AnnounceAddress(MemberAddress),
 }
 
 impl ReplicatedCommand {
@@ -83,10 +83,9 @@ impl ReplicatedCommand {
                 encoded.extend_from_slice(&command.signature);
                 encoded
             }
-            Self::AnnounceAddress { node_id, address } => {
+            Self::AnnounceAddress(address) => {
                 let mut encoded = Vec::with_capacity(ENCODED_ANNOUNCE_ADDRESS_LEN);
                 encoded.push(ANNOUNCE_ADDRESS_TAG);
-                encoded.extend_from_slice(&node_id.to_le_bytes());
                 address.encode(&mut encoded);
                 encoded
             }
@@ -121,13 +120,10 @@ impl ReplicatedCommand {
                 key: BlockKey { proposer_index: u64_at(0), slot: u64_at(8) },
                 signature: payload[16..].try_into().expect("slice is one signature"),
             }),
-            ANNOUNCE_ADDRESS_TAG => Self::AnnounceAddress {
-                node_id: u64_at(0),
-                address: MemberAddress::decode(
-                    payload[8..].try_into().expect("slice is one member address"),
-                )
-                .map_err(|_| EntryError::InvalidAddress)?,
-            },
+            ANNOUNCE_ADDRESS_TAG => Self::AnnounceAddress(
+                MemberAddress::decode(payload.try_into().expect("slice is one member address"))
+                    .map_err(|_| EntryError::InvalidAddress)?,
+            ),
             _ => Self::AdvanceMinimumSlot(u64_at(0)),
         })
     }
@@ -136,36 +132,31 @@ impl ReplicatedCommand {
 /// A log entry's command, with the proposal it answers. The leader proposes
 /// `AdvanceMinimumSlot` and membership changes itself, so they carry none.
 #[allow(clippy::large_enum_variant)]
-pub(super) enum DecodedEntry<'a> {
+pub(super) enum DecodedEntry {
     Lock(AttestationLockCommand, ProposalId),
     BlockLock(BlockLockCommand, ProposalId),
     AdvanceMinimumSlot(u64),
-    AnnounceAddress {
-        node_id: u64,
-        address: MemberAddress,
-        proposal_id: ProposalId,
-    },
+    AnnounceAddress(MemberAddress, ProposalId),
     /// A new leader's first entry.
     Empty,
-    /// Empty `data` is the change that leaves a joint config. `added`, in the
-    /// entry context, are the addresses of learners it adds.
+    /// Empty `data` is the change that leaves a joint config.
     MembershipChange {
         change: ConfChangeV2,
-        added: MemberRecords<'a>,
+        added_learner: Option<Member>,
     },
 }
 
-impl<'a> DecodedEntry<'a> {
-    pub(super) fn decode(entry: &'a Entry) -> Result<Self, EntryError> {
+impl DecodedEntry {
+    pub(super) fn decode(entry: &Entry) -> Result<Self, EntryError> {
         match entry.get_entry_type() {
             EntryType::EntryNormal if entry.data.is_empty() => return Ok(Self::Empty),
             EntryType::EntryNormal => {}
             EntryType::EntryConfChangeV2 => {
                 let change = decode_membership_change(&entry.data)
                     .map_err(|_| EntryError::InvalidMembershipChange)?;
-                let added = MemberRecords::parse_context(&entry.context)
+                let added_learner = Member::decode_added_learner(&entry.context)
                     .map_err(|_| EntryError::InvalidMembershipChange)?;
-                return Ok(Self::MembershipChange { change, added });
+                return Ok(Self::MembershipChange { change, added_learner });
             }
             entry_type => return Err(EntryError::UnsupportedType(entry_type)),
         }
@@ -175,8 +166,8 @@ impl<'a> DecodedEntry<'a> {
             ReplicatedCommand::Lock(command) => Self::Lock(command, proposal_id()?),
             ReplicatedCommand::BlockLock(command) => Self::BlockLock(command, proposal_id()?),
             ReplicatedCommand::AdvanceMinimumSlot(slot) => Self::AdvanceMinimumSlot(slot),
-            ReplicatedCommand::AnnounceAddress { node_id, address } => {
-                Self::AnnounceAddress { node_id, address, proposal_id: proposal_id()? }
+            ReplicatedCommand::AnnounceAddress(address) => {
+                Self::AnnounceAddress(address, proposal_id()?)
             }
         })
     }
@@ -244,7 +235,7 @@ mod tests {
             ReplicatedCommand::Lock(command(42, 3)),
             ReplicatedCommand::AdvanceMinimumSlot(37),
             ReplicatedCommand::BlockLock(block),
-            ReplicatedCommand::AnnounceAddress { node_id: 4, address: test_address(4) },
+            ReplicatedCommand::AnnounceAddress(test_address(4)),
         ] {
             assert_eq!(ReplicatedCommand::decode(&command.encode()), Ok(command));
         }

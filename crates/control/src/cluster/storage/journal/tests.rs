@@ -91,7 +91,7 @@ fn replay(bytes: &[u8]) -> io::Result<JournalReplay> {
 fn identity_is_order_independent_and_rejects_invalid_membership() {
     assert_eq!(identity(), StorageIdentity::new(1, [1, 2, 3]).unwrap());
     for (node, voters) in
-        [(0, vec![0]), (1, vec![]), (1, vec![2]), (1, vec![0, 1]), (1, vec![1, 1])]
+        [(0, vec![0]), (0, vec![]), (1, vec![2]), (1, vec![0, 1]), (1, vec![1, 1])]
     {
         assert_eq!(
             StorageIdentity::new(node, voters).unwrap_err().kind(),
@@ -107,21 +107,20 @@ fn recovery_matches_the_node_alone_and_keeps_the_header_voters() {
 
     let mut replay = JournalReplay::new(StorageIdentity::new(1, [1, 2]).unwrap());
     replay.feed(&header()).unwrap();
-    assert_eq!(replay.recovered.initial_voters.as_deref(), Some(&[1, 2, 3][..]));
+    assert_eq!(*replay.recovered.initial_voters, [1, 2, 3]);
 }
 
 #[test]
 fn join_header_has_no_initial_voters() {
-    let joining = StorageIdentity::joining(4).unwrap();
+    let joining = StorageIdentity::new(4, []).unwrap();
     let mut header = Vec::new();
     joining.write(&mut header);
     let mut replay = JournalReplay::new(joining);
     replay.feed(&header).unwrap();
-    assert_eq!(replay.recovered.initial_voters, None);
+    assert!(replay.recovered.initial_voters.is_empty());
 
-    let mut other_node = JournalReplay::new(StorageIdentity::joining(5).unwrap());
+    let mut other_node = JournalReplay::new(StorageIdentity::new(5, []).unwrap());
     assert_eq!(other_node.feed(&header).unwrap_err().kind(), io::ErrorKind::InvalidData);
-    assert_eq!(StorageIdentity::joining(0).unwrap_err().kind(), io::ErrorKind::InvalidInput);
 }
 
 #[test]

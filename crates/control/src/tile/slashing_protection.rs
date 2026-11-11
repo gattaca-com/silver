@@ -28,86 +28,6 @@ use crate::cluster::{
 /// leader, and a block this late would be orphaned anyway.
 const LATE_COMMIT_SLOTS: u64 = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MemberUpdate {
-    Trusted(Member),
-    Removed(Member),
-}
-
-impl MemberUpdate {
-    /// The peer manager dials and trusts members; the network tile maps their
-    /// connections to Raft ids and admits them.
-    pub(super) fn apply(
-        self,
-        peer_manager: &mut PeerManager,
-        producers: &mut SilverSpineProducers,
-    ) {
-        match self {
-            Self::Trusted(member) => {
-                let (peer_id, addr) = (member.address.peer_id(), member.address.addr);
-                peer_manager.trust_cluster_member(peer_id, addr);
-                let control = PeerControl::ClusterMember { node_id: member.node_id, peer_id, addr };
-                producers.peer_control.produce(&control.into());
-            }
-            Self::Removed(member) => {
-                peer_manager.untrust_cluster_member(&member.address.peer_id());
-                let control = PeerControl::ClusterMemberRemoved { node_id: member.node_id };
-                producers.peer_control.produce(&control.into());
-            }
-        }
-    }
-}
-
-/// What the peer manager and the network tile were last told about the
-/// other members. They start out trusting the configured ones.
-#[derive(Default)]
-struct PublishedMembers {
-    version: Option<u64>,
-    members: Vec<Member>,
-}
-
-impl PublishedMembers {
-    fn new(configured: Vec<Member>) -> Self {
-        Self { version: None, members: configured }
-    }
-
-    /// A member without a replicated address stays published: an older
-    /// cluster records none.
-    fn sync(
-        &mut self,
-        version: u64,
-        local: u64,
-        members: impl Iterator<Item = Member>,
-        is_member: impl Fn(u64) -> bool,
-        mut emit: impl FnMut(MemberUpdate),
-    ) {
-        if self.version == Some(version) {
-            return;
-        }
-        self.version = Some(version);
-        self.members.retain(|published| {
-            let kept = is_member(published.node_id);
-            if !kept {
-                emit(MemberUpdate::Removed(*published));
-            }
-            kept
-        });
-        for member in members.filter(|member| member.node_id != local) {
-            match self.members.iter_mut().find(|published| published.node_id == member.node_id) {
-                Some(published) if *published == member => {}
-                Some(published) => {
-                    *published = member;
-                    emit(MemberUpdate::Trusted(member));
-                }
-                None => {
-                    self.members.push(member);
-                    emit(MemberUpdate::Trusted(member));
-                }
-            }
-        }
-    }
-}
-
 /// An API request waiting on its lock. It is answered at most once, but its
 /// lock can still commit after a `LockPending` answer and be published late.
 #[derive(Debug, Clone, Copy)]
@@ -365,7 +285,6 @@ pub(super) struct SlashingProtectionHandler {
     duty_timers: DutyTimers,
     loop_gap: LoopGap,
     last_sample: Instant,
-    published_members: PublishedMembers,
 }
 
 impl SlashingProtectionHandler {
@@ -378,9 +297,6 @@ impl SlashingProtectionHandler {
         config: Option<SlashingProtectionConfig>,
         now: Instant,
     ) -> Result<Self, ClusterError> {
-        let published_members = PublishedMembers::new(
-            config.as_ref().map(|config| config.configured_members.clone()).unwrap_or_default(),
-        );
         let cluster =
             config.map(|config| SlashingProtectionCluster::new(config, now)).transpose()?;
         ClusterCounters::Clustered.set(cluster.is_some() as u64);
@@ -399,18 +315,7 @@ impl SlashingProtectionHandler {
             duty_timers: DutyTimers::new(),
             loop_gap: LoopGap::default(),
             last_sample: now,
-            published_members,
         })
-    }
-
-    pub(super) fn publish_members(&mut self, emit: impl FnMut(MemberUpdate)) {
-        if let Some(cluster) = &self.cluster &&
-            cluster.knows_membership()
-        {
-            let (version, local) = (cluster.membership_version(), cluster.node_id());
-            let is_member = |node_id| cluster.is_member(node_id);
-            self.published_members.sync(version, local, cluster.members(), is_member, emit);
-        }
     }
 
     /// The wall slot is known from here on, before Beacon State's first
@@ -460,6 +365,7 @@ impl SlashingProtectionHandler {
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         inbound_consumer: &mut TCacheReader,
+        peer_manager: &mut PeerManager,
     ) {
         self.loop_gap.observe(now);
         adapter.consume(|message: ClusterIn, _producers| match message {
@@ -470,7 +376,7 @@ impl SlashingProtectionHandler {
                 }
             }
         });
-        self.drive(now, local_gossip, gossip_handler, &mut adapter.producers);
+        self.drive(now, local_gossip, gossip_handler, peer_manager, &mut adapter.producers);
         self.produce_commits(&mut adapter.producers);
         self.sample(now, &mut adapter.producers);
     }
@@ -721,6 +627,7 @@ impl SlashingProtectionHandler {
         now: Instant,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
+        peer_manager: &mut PeerManager,
         producers: &mut SilverSpineProducers,
     ) {
         let Some(cluster) = self.cluster.as_mut() else {
@@ -790,6 +697,17 @@ impl SlashingProtectionHandler {
                     );
                 }
             }
+            ClusterEvent::ReachMember(Member { node_id, address }) => {
+                let (peer_id, addr) = (address.peer_id(), address.addr);
+                peer_manager.trust_cluster_member(peer_id, addr);
+                let control = PeerControl::ClusterMember { node_id, peer_id, addr };
+                producers.peer_control.produce(&control.into());
+            }
+            ClusterEvent::ForgetMember(Member { node_id, address }) => {
+                peer_manager.untrust_cluster_member(&address.peer_id());
+                let control = PeerControl::ClusterMemberRemoved { node_id };
+                producers.peer_control.produce(&control.into());
+            }
         });
         if let Err(error) = result {
             silver_log::error!(
@@ -810,55 +728,31 @@ impl SlashingProtectionHandler {
 #[cfg(test)]
 mod tests {
     use silver_common::{
-        SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TReadMode,
+        PeerId, SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable,
+        TReadMode,
     };
+    use silver_peer::SyncingConfig;
 
     use super::*;
     use crate::{
-        cluster::{ClusterStorageConfig, MemberAddress, test_address},
-        tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
+        cluster::{ClusterStorageConfig, test_address},
+        tile::{
+            METADATA_SIZE,
+            local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
+        },
     };
 
-    #[test]
-    fn published_members_report_only_changes_to_other_members() {
-        let member = |node_id, octet| Member {
-            node_id,
-            address: MemberAddress {
-                addr: std::net::SocketAddr::from(([10, 0, 0, octet], 9000)),
-                ..test_address(node_id)
-            },
-        };
-        let mut published = PublishedMembers::default();
-        let mut sync = |version, members: &[Member]| {
-            let mut updates = Vec::new();
-            let is_member = |node_id| members.iter().any(|member| member.node_id == node_id);
-            published.sync(version, 1, members.iter().copied(), is_member, |update| {
-                updates.push(update)
-            });
-            updates
-        };
-        use MemberUpdate::{Removed, Trusted};
-
-        assert_eq!(sync(1, &[member(1, 1), member(2, 2)]), [Trusted(member(2, 2))]);
-        assert_eq!(sync(1, &[member(1, 1), member(2, 9)]), [], "an unchanged version is skipped");
-        assert_eq!(sync(2, &[member(2, 9), member(3, 3)]), [
-            Trusted(member(2, 9)),
-            Trusted(member(3, 3))
-        ]);
-        assert_eq!(sync(3, &[member(3, 3)]), [Removed(member(2, 9))]);
-    }
-
-    /// Node 3 was removed while every node was down. The restarted nodes
-    /// still trust it from their config until the first sync. Node 2 is a
-    /// member with no replicated address yet.
-    #[test]
-    fn configured_member_removed_by_the_cluster_is_untrusted() {
-        let member = |node_id| Member { node_id, address: test_address(node_id) };
-        let mut published = PublishedMembers::new(vec![member(2), member(3)]);
-        let mut updates = Vec::new();
-        let is_member = |node_id| [1, 2].contains(&node_id);
-        published.sync(1, 1, [member(1)].into_iter(), is_member, |update| updates.push(update));
-        assert_eq!(updates, [MemberUpdate::Removed(member(3))]);
+    fn peer_manager() -> PeerManager {
+        PeerManager::new(
+            PeerId::default(),
+            vec![],
+            vec![],
+            Default::default(),
+            SyncingConfig::default(),
+            [0; 4],
+            [0; METADATA_SIZE],
+            0,
+        )
     }
 
     #[test]
@@ -1094,7 +988,14 @@ mod tests {
         assert_eq!(handler.pending_blocks.len(), 1);
 
         let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
-        handler.spin(now, adapter, local_gossip, gossip, &mut submissions.reader);
+        handler.spin(
+            now,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut submissions.reader,
+            &mut peer_manager(),
+        );
 
         assert!(handler.pending_blocks.is_empty());
         harness.pop_gossip();
@@ -1135,7 +1036,14 @@ mod tests {
     ) {
         let later = now + TEST_PROPOSAL_TIMEOUT;
         let Harness { local_gossip, gossip, adapter, .. } = harness;
-        handler.spin(later, adapter, local_gossip, gossip, &mut submissions.reader);
+        handler.spin(
+            later,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut submissions.reader,
+            &mut peer_manager(),
+        );
     }
 
     #[test]
@@ -1241,7 +1149,14 @@ mod tests {
         assert!(harness.responses().is_empty(), "nothing is answered before the lock commits");
 
         let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
-        handler.spin(now, adapter, local_gossip, gossip, &mut submissions.reader);
+        handler.spin(
+            now,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut submissions.reader,
+            &mut peer_manager(),
+        );
 
         assert_eq!(harness.responses(), [(1, Ok(()))]);
         assert!(harness.gossip.pop_event().is_none());
@@ -1519,6 +1434,7 @@ mod tests {
             now,
             &mut harness.local_gossip,
             &mut harness.gossip,
+            &mut peer_manager(),
             &mut harness.adapter.producers,
         );
 
@@ -1539,6 +1455,7 @@ mod tests {
             now,
             &mut harness.local_gossip,
             &mut harness.gossip,
+            &mut peer_manager(),
             &mut harness.adapter.producers,
         );
         assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::Internal))]);
@@ -1592,7 +1509,6 @@ fn block_message(
 fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
     match error {
         ProposeError::Admission(error) => admission_failure(*error),
-        ProposeError::NotReady |
         ProposeError::NotMember |
         ProposeError::Removed |
         ProposeError::Failed |

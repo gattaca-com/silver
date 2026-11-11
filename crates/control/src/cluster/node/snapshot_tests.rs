@@ -6,7 +6,10 @@ use raft::{
 use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
 use super::*;
-use crate::cluster::{AttestationKey, raft_storage::validate_snapshot, test_address};
+use crate::cluster::{
+    AttestationKey, SlashingLockStore, membership::ClusterMembership,
+    raft_storage::validate_snapshot, test_address,
+};
 
 fn config(id: u64) -> SlashingProtectionConfig {
     let mut config = SlashingProtectionConfig::new(
@@ -38,8 +41,9 @@ fn snapshot(index: u64) -> Snapshot {
     state.apply(&command(7, 1));
     let members = ConfState { voters: vec![1, 2, 3], ..ConfState::default() };
     let mut data = BytesMut::new();
-    ClusterMembership::new(member_ids(&members)).encode_snapshot(&mut data);
-    state.encode_snapshot(&mut data).unwrap();
+    ReplicatedState { locks: state, membership: ClusterMembership::new(&members.voters) }
+        .encode_snapshot(&mut data)
+        .unwrap();
     let mut snapshot = Snapshot { data: data.freeze(), ..Snapshot::default() };
     let metadata = snapshot.mut_metadata();
     metadata.index = index;
@@ -61,7 +65,7 @@ fn snapshot_message(snapshot: Snapshot) -> Message {
 }
 
 fn quiet(node: &SlashingProtectionCluster) -> bool {
-    node.is_ready() && !node.persistence.is_pending() && !node.node.as_ref().unwrap().has_ready()
+    node.is_ready() && !node.persistence.is_pending() && !node.node.has_ready()
 }
 
 #[test]
@@ -72,16 +76,16 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     node.persistence.paused = true;
     node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
     node.spin(now, 100, |_| panic!("snapshot acknowledged before sync")).unwrap();
-    assert_eq!(node.state.len(), 0);
-    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 0);
+    assert_eq!(node.state.locks.len(), 0);
+    assert_eq!(node.node.raft.raft_log.applied, 0);
     node.persistence.paused = false;
     let mut messages = Vec::new();
     node.spin(now, 100, |event| messages.push(event)).unwrap();
     assert!(messages.iter().any(|event| matches!(event, ClusterEvent::SendRaftMessage(message)
         if message.msg_type == MessageType::MsgAppendResponse && message.index == 10)));
-    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 10);
-    assert_eq!(node.state.minimum_slot(), 68);
-    assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
+    assert_eq!(node.node.raft.raft_log.applied, 10);
+    assert_eq!(node.state.locks.minimum_slot(), 68);
+    assert_eq!(node.state.locks.apply(&command(7, 2)), LockResult::Conflicting);
     assert!(
         node.admission.validate(99, 100).is_err(),
         "snapshot must not replace startup admission"
@@ -101,7 +105,7 @@ fn snapshot_below_the_commit_index_is_not_decoded() {
     node.step(snapshot_message(stale), now, 100).unwrap();
     node.spin(now, 100, |_| {}).unwrap();
     assert!(!node.is_failed());
-    assert_eq!(node.state.len(), 1);
+    assert_eq!(node.state.locks.len(), 1);
 }
 
 /// raft-rs panics on a follower when an append claims a committed index with
@@ -113,7 +117,7 @@ fn forged_append_and_heartbeat_are_refused_on_a_follower() {
     node.set_startup_wall_slot(99);
     node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
     node.spin(now, 100, |_| {}).unwrap();
-    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.committed, 10);
+    assert_eq!(node.node.raft.raft_log.committed, 10);
 
     let leader = |msg_type| Message { msg_type, from: 2, to: 1, term: 2, ..Message::default() };
     let append = Message {
@@ -271,6 +275,7 @@ impl Network {
                         panic!("unexpected block decision {decision:?}")
                     }
                     ClusterEvent::ProposalTimedOut(_) => panic!("proposal timed out"),
+                    ClusterEvent::ReachMember(_) | ClusterEvent::ForgetMember(_) => {}
                 })
                 .unwrap();
             }
@@ -323,8 +328,8 @@ impl Network {
         }
         assert_eq!(self.decisions.len(), 24);
         assert!(self.decisions.iter().all(AttestationDecision::may_validate));
-        assert!(self.nodes[0].node.as_ref().unwrap().store().first_index().unwrap() > 1);
-        assert_eq!(self.nodes[2].state.len(), 0);
+        assert!(self.nodes[0].node.store().first_index().unwrap() > 1);
+        assert_eq!(self.nodes[2].state.locks.len(), 0);
     }
 
     fn reconnect(&mut self) {
@@ -332,7 +337,7 @@ impl Network {
         for _ in 0..70 {
             self.now += Duration::from_millis(100);
             self.settle();
-            if self.nodes[2].state.len() == 24 {
+            if self.nodes[2].state.locks.len() == 24 {
                 return;
             }
         }
@@ -351,7 +356,7 @@ fn a_lost_snapshot_is_retried_and_a_lagging_follower_catches_up() {
     network.reconnect();
     assert!(network.snapshots >= 2);
     for node in &mut network.nodes {
-        assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
+        assert_eq!(node.state.locks.apply(&command(7, 2)), LockResult::Conflicting);
     }
     let request = network.nodes[2].propose_attestation(command(50, 1), 100, network.now).unwrap();
     network.settle();
@@ -383,7 +388,7 @@ fn _unreachable_peer_fails_its_snapshot_transfer_at_once() {
     network.nodes[0].report_unreachable(3);
     assert!(!network.nodes[0].snapshot_transfers.is_pending(3));
     let started = network.now;
-    while network.nodes[2].state.len() < 24 {
+    while network.nodes[2].state.locks.len() < 24 {
         network.now += Duration::from_millis(100);
         network.settle();
         assert!(network.now - started < Duration::from_secs(2), "waited for the timeout");
@@ -407,7 +412,7 @@ fn a_lost_snapshot_ack_does_not_stall_replication() {
     assert!(network.snapshots >= 2);
     network.nodes[0].propose_attestation(command(50, 1), 100, network.now).unwrap();
     network.settle();
-    assert_eq!(network.nodes[2].state.len(), 25);
+    assert_eq!(network.nodes[2].state.locks.len(), 25);
 }
 
 #[test]
@@ -450,9 +455,9 @@ fn durable_snapshot_catch_up_survives_a_full_cluster_restart() {
     network.settle();
     assert!(network.decisions.is_empty());
     for node in &mut network.nodes {
-        assert_eq!(node.state.len(), 24);
-        assert_eq!(node.state.minimum_slot(), 68);
-        assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
-        assert!(node.node.as_ref().unwrap().store().snapshot_index() > 0);
+        assert_eq!(node.state.locks.len(), 24);
+        assert_eq!(node.state.locks.minimum_slot(), 68);
+        assert_eq!(node.state.locks.apply(&command(7, 2)), LockResult::Conflicting);
+        assert!(node.node.store().snapshot_index() > 0);
     }
 }

@@ -119,4 +119,7 @@ log line `slashing protection spin failed` carries the detail.
 | 3 snapshot | An installed or recovered snapshot is invalid. | Treat as corruption. Restore the journal, or reset the cluster as above. |
 | 4 raft | raft-rs returned an error. | Restart, and report it. |
 
+A node replays its journal before it starts. A journal that is missing or
+cannot be replayed stops the start, with the cause in the error.
+
 Alert queries for these counters are in `telemetry-counters.md`.

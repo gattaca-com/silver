@@ -7,8 +7,9 @@ use flux::utils::ArrayVec;
 /// 7 members.
 pub(super) const MAX_VOTERS: usize = 7;
 
-/// A static voter set that includes its local node: distinct non-zero ids,
-/// sorted.
+/// The voters a journal starts with: distinct non-zero ids, sorted, among them
+/// the local node. Empty for a node that joins a running cluster, whose
+/// membership arrives with its first snapshot.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Voters(ArrayVec<u64, MAX_VOTERS>);
 
@@ -27,7 +28,7 @@ impl Voters {
         if voters.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err("Raft voter ids must be unique");
         }
-        if node_id == 0 || !voters.contains(&node_id) {
+        if node_id == 0 || !(voters.is_empty() || voters.contains(&node_id)) {
             return Err("local Raft node is not in voter set");
         }
         Ok(Self(voters))

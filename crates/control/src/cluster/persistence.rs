@@ -7,19 +7,17 @@ use raft::{
 
 #[cfg(target_os = "linux")]
 use super::storage::{ClusterStorage, ClusterStorageEvent, StorageIdentity};
-use super::{node::SlashingProtectionConfig, raft_storage::RestoredSnapshot, voters::Voters};
+use super::{node::SlashingProtectionConfig, replicated_state::ReplicatedState, voters::Voters};
 
 #[derive(Debug, Clone)]
 pub enum ClusterStorageConfig {
     Create(PathBuf),
-    Join(PathBuf),
     Open(PathBuf),
 }
 
 #[derive(Debug)]
 pub struct RecoveredStorage {
-    /// The voters the journal was created with.
-    pub initial_voters: Option<Voters>,
+    pub initial_voters: Voters,
     pub hard_state: HardState,
     pub snapshot: Snapshot,
     /// Includes the uncommitted suffix; replay only entries through
@@ -28,7 +26,7 @@ pub struct RecoveredStorage {
 }
 
 impl RecoveredStorage {
-    pub fn empty(initial_voters: Option<Voters>) -> Self {
+    pub fn empty(initial_voters: Voters) -> Self {
         Self {
             initial_voters,
             hard_state: HardState::default(),
@@ -42,13 +40,13 @@ pub(super) struct PersistedReady {
     pub number: u64,
     pub messages: Vec<Message>,
     pub committed_entries: Vec<Entry>,
-    pub snapshot: Option<RestoredSnapshot>,
+    pub snapshot: Option<ReplicatedState>,
+    pub last_applied_index: Option<u64>,
     wait_for_disk: bool,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum PersistenceEvent {
-    #[cfg(target_os = "linux")]
-    Recovered(RecoveredStorage),
     Persisted(PersistedReady),
     Compacted(Snapshot),
 }
@@ -64,25 +62,31 @@ pub(super) struct Persistence {
 }
 
 impl Persistence {
-    pub fn new(config: &SlashingProtectionConfig) -> io::Result<Self> {
+    /// Blocks until the journal is replayed: the node serves nothing before.
+    pub fn recover(config: &SlashingProtectionConfig) -> io::Result<(Self, RecoveredStorage)> {
         #[cfg(target_os = "linux")]
         {
-            let identity = || StorageIdentity::new(config.node_id, config.voters.iter().copied());
-            let disk = match &config.storage {
-                ClusterStorageConfig::Create(path) => ClusterStorage::create(path, identity()?)?,
-                ClusterStorageConfig::Join(path) => {
-                    ClusterStorage::create(path, StorageIdentity::joining(config.node_id)?)?
-                }
-                ClusterStorageConfig::Open(path) => ClusterStorage::open(path, identity()?)?,
+            let identity = StorageIdentity::new(config.node_id, config.voters.iter().copied())?;
+            let mut disk = match &config.storage {
+                ClusterStorageConfig::Create(path) => ClusterStorage::create(path, identity)?,
+                ClusterStorageConfig::Open(path) => ClusterStorage::open(path, identity)?,
             };
-            Ok(Self {
+            let recovered = loop {
+                match disk.poll()? {
+                    Some(ClusterStorageEvent::Recovered(recovered)) => break recovered,
+                    Some(_) => return Err(io::Error::other("unexpected Raft journal completion")),
+                    None => std::hint::spin_loop(),
+                }
+            };
+            let persistence = Self {
                 disk: Some(disk),
                 pending: None,
                 #[cfg(test)]
                 paused: false,
                 #[cfg(test)]
                 fail: false,
-            })
+            };
+            Ok((persistence, recovered))
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -140,7 +144,7 @@ impl Persistence {
     pub fn submit(
         &mut self,
         ready: &mut Ready,
-        snapshot: Option<RestoredSnapshot>,
+        snapshot: Option<ReplicatedState>,
     ) -> io::Result<()> {
         if self.pending.is_some() {
             return Err(io::Error::other("Raft persistence already has a pending Ready"));
@@ -162,10 +166,16 @@ impl Persistence {
                 disk.persist(ready.number(), ready.entries(), ready.hs())?;
             }
         }
+        let committed_entries = ready.take_committed_entries();
+        let snapshot_index = snapshot.as_ref().map(|_| ready.snapshot().get_metadata().index);
         self.pending = Some(PersistenceEvent::Persisted(PersistedReady {
             number: ready.number(),
             messages: ready.take_persisted_messages(),
-            committed_entries: ready.take_committed_entries(),
+            last_applied_index: committed_entries
+                .last()
+                .map(|entry| entry.index)
+                .or(snapshot_index),
+            committed_entries,
             snapshot,
             wait_for_disk,
         }));
@@ -190,9 +200,6 @@ impl Persistence {
         #[cfg(target_os = "linux")]
         if let Some(disk) = &mut self.disk {
             return match disk.poll()? {
-                Some(ClusterStorageEvent::Recovered(recovered)) if self.pending.is_none() => {
-                    Ok(Some(PersistenceEvent::Recovered(recovered)))
-                }
                 Some(ClusterStorageEvent::Persisted { ready_number }) => {
                     match self.pending.take() {
                         Some(PersistenceEvent::Persisted(ready))
@@ -211,7 +218,9 @@ impl Persistence {
                     }
                     _ => Err(io::Error::other("unexpected Raft compaction completion")),
                 },
-                Some(_) => Err(io::Error::other("unexpected Raft recovery completion")),
+                Some(ClusterStorageEvent::Recovered(_)) => {
+                    Err(io::Error::other("unexpected Raft recovery completion"))
+                }
                 None => Ok(None),
             };
         }

@@ -76,7 +76,7 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
         )
         .unwrap();
     assert!(events(&mut cluster, now).is_empty());
-    assert_eq!(cluster.node.as_ref().unwrap().raft.term, 2);
+    assert_eq!(cluster.node.raft.term, 2);
 
     cluster.persistence.paused = false;
     let messages = events(&mut cluster, now);
@@ -95,7 +95,7 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_and_late_commits_are_reported
     cluster.persistence.paused = true;
     let first = cluster.propose_attestation(command(10, 1), 10, now).unwrap();
     assert!(events(&mut cluster, now).is_empty());
-    assert_eq!(cluster.state.len(), 0);
+    assert_eq!(cluster.state.locks.len(), 0);
     let mut other = command(10, 2);
     other.key.attester_index = 8;
     let second = cluster.propose_attestation(other, 10, now).unwrap();
@@ -104,7 +104,7 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_and_late_commits_are_reported
     assert!(matches!(&expired[..], [
         ClusterEvent::ProposalTimedOut(a), ClusterEvent::ProposalTimedOut(b)
     ] if *a == first && *b == second));
-    assert_eq!(cluster.state.len(), 0);
+    assert_eq!(cluster.state.locks.len(), 0);
 
     cluster.persistence.paused = false;
     let late = events(&mut cluster, later);
@@ -112,8 +112,8 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_and_late_commits_are_reported
         ClusterEvent::AttestationCommitted(a), ClusterEvent::AttestationCommitted(b)
     ] if a.proposal_id == first && b.proposal_id == second
         && a.result == LockResult::Accepted && b.result == LockResult::Accepted));
-    assert_eq!(cluster.state.len(), 2);
-    assert_eq!(cluster.state.apply(&command(10, 3)), LockResult::Conflicting);
+    assert_eq!(cluster.state.locks.len(), 2);
+    assert_eq!(cluster.state.locks.apply(&command(10, 3)), LockResult::Conflicting);
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn persistence_failure_stops_votes_proposals_and_committed_decisions() {
         Err(ProposeError::Failed)
     ));
     assert!(events(&mut cluster, now).is_empty());
-    assert_eq!(cluster.state.len(), 0);
+    assert_eq!(cluster.state.locks.len(), 0);
 }
 
 #[test]
@@ -207,9 +207,7 @@ mod disk {
     }
 
     fn quiet(cluster: &SlashingProtectionCluster) -> bool {
-        cluster.is_ready() &&
-            !cluster.persistence.is_pending() &&
-            !cluster.node.as_ref().unwrap().has_ready()
+        cluster.is_ready() && !cluster.persistence.is_pending() && !cluster.node.has_ready()
     }
 
     fn drain(
@@ -237,20 +235,13 @@ mod disk {
         let mut cluster =
             SlashingProtectionCluster::new(stored_config(&path, true, 1, vec![1]), now).unwrap();
         cluster.set_startup_wall_slot(99);
-        assert!(matches!(cluster.campaign(), Err(ClusterError::NotReady)));
-        assert!(matches!(cluster.step(Message::default(), now, 10), Err(ClusterError::NotReady)));
-        assert!(matches!(
-            cluster.propose_attestation(command(100, 1), 100, now),
-            Err(ProposeError::NotReady)
-        ));
-        assert!(drain(&mut cluster, now, 100).is_empty());
         cluster.campaign().unwrap();
         drain(&mut cluster, now, 100);
         let old_id = cluster.propose_attestation(command(100, 1), 100, now).unwrap();
         assert!(drain(&mut cluster, now, 100).iter().any(|event| matches!(event,
             ClusterEvent::AttestationCommitted(decision) if decision.result == LockResult::Accepted
         )));
-        let node = cluster.node.as_ref().unwrap();
+        let node = &cluster.node;
         let hard_state = node.store().memory.rl().hard_state().clone();
         assert_eq!(hard_state.commit, node.raft.raft_log.applied);
         drop(cluster);
@@ -259,10 +250,10 @@ mod disk {
             SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1]), now).unwrap();
         cluster.set_startup_wall_slot(104);
         assert!(drain(&mut cluster, now, 105).is_empty());
-        assert_eq!(cluster.state.len(), 1);
-        assert_eq!(cluster.state.minimum_slot(), 68);
-        assert_eq!(cluster.node.as_ref().unwrap().raft.hard_state(), hard_state);
-        assert_eq!(cluster.node.as_ref().unwrap().raft.raft_log.applied, hard_state.commit);
+        assert_eq!(cluster.state.locks.len(), 1);
+        assert_eq!(cluster.state.locks.minimum_slot(), 68);
+        assert_eq!(cluster.node.raft.hard_state(), hard_state);
+        assert_eq!(cluster.node.raft.raft_log.applied, hard_state.commit);
         cluster.campaign().unwrap();
         drain(&mut cluster, now, 105);
         let new_id = cluster.propose_attestation(command(105, 2), 105, now).unwrap();
@@ -304,15 +295,15 @@ mod disk {
             )
             .unwrap();
         drain(&mut cluster, now, 10);
-        assert_eq!(cluster.state.len(), 0);
+        assert_eq!(cluster.state.locks.len(), 0);
         drop(cluster);
 
         let mut cluster =
             SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1, 2, 3]), now)
                 .unwrap();
         assert!(drain(&mut cluster, now, 10).is_empty());
-        assert_eq!(cluster.state.len(), 0);
-        assert_eq!(cluster.node.as_ref().unwrap().raft.raft_log.last_index(), 1);
+        assert_eq!(cluster.state.locks.len(), 0);
+        assert_eq!(cluster.node.raft.raft_log.last_index(), 1);
         cluster
             .step(
                 Message {
@@ -336,34 +327,27 @@ mod disk {
             )
             .unwrap();
         drain(&mut cluster, now, 10);
-        assert_eq!(cluster.state.len(), 1);
-        assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::AlreadyAcceptedSame);
-        assert_eq!(cluster.state.apply(&command(10, 1)), LockResult::Conflicting);
+        assert_eq!(cluster.state.locks.len(), 1);
+        assert_eq!(cluster.state.locks.apply(&command(10, 2)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(cluster.state.locks.apply(&command(10, 1)), LockResult::Conflicting);
         drop(cluster);
 
         let mut cluster =
             SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1, 2, 3]), now)
                 .unwrap();
         assert!(drain(&mut cluster, now, 10).is_empty());
-        assert_eq!(cluster.state.len(), 1);
-        assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(cluster.state.locks.len(), 1);
+        assert_eq!(cluster.state.locks.apply(&command(10, 2)), LockResult::AlreadyAcceptedSame);
     }
 
     #[test]
-    fn missing_journal_disables_cluster_without_bootstrapping_it() {
+    fn missing_journal_fails_startup_without_bootstrapping_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing.wal");
-        let now = Instant::now();
-        let mut cluster =
-            SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1]), now).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !cluster.is_failed() {
-            let _ = cluster.spin(now, 10, |_| panic!("unrecovered node emitted work"));
-            assert!(Instant::now() < deadline);
-            thread::yield_now();
-        }
+        let config = stored_config(&path, false, 1, vec![1]);
+        let started = SlashingProtectionCluster::new(config, Instant::now());
+        assert!(matches!(started, Err(ClusterError::Storage(_))));
         assert!(!path.exists());
-        assert!(matches!(cluster.campaign(), Err(ClusterError::Failed)));
     }
 
     #[test]
@@ -397,6 +381,7 @@ mod disk {
                         panic!("unexpected block decision {decision:?}")
                     }
                     ClusterEvent::ProposalTimedOut(_) => panic!("unexpected timeout"),
+                    ClusterEvent::ReachMember(_) | ClusterEvent::ForgetMember(_) => {}
                 })
                 .unwrap();
             }
@@ -417,7 +402,7 @@ mod disk {
             thread::yield_now();
         }
         let proposal = nodes[1].propose_attestation(command(10, 4), 10, now).unwrap();
-        while !nodes.iter().all(|node| quiet(node) && node.state.len() == 1) {
+        while !nodes.iter().all(|node| quiet(node) && node.state.locks.len() == 1) {
             pump(&mut nodes);
             assert!(Instant::now() < deadline);
             thread::yield_now();
@@ -433,8 +418,8 @@ mod disk {
             )
             .unwrap();
             assert!(drain(&mut node, now, 10).is_empty());
-            assert_eq!(node.state.len(), 1);
-            assert_eq!(node.state.apply(&command(10, 5)), LockResult::Conflicting);
+            assert_eq!(node.state.locks.len(), 1);
+            assert_eq!(node.state.locks.apply(&command(10, 5)), LockResult::Conflicting);
         }
     }
 }

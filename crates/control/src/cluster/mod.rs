@@ -14,6 +14,7 @@ mod peers;
 mod pending;
 mod persistence;
 mod raft_storage;
+mod replicated_state;
 mod snapshot_transfers;
 #[cfg(target_os = "linux")]
 mod storage;

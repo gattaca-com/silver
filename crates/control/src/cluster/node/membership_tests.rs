@@ -7,7 +7,7 @@ use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 use super::*;
 use crate::cluster::{
     AttestationKey, MembershipError, MembershipOperation,
-    membership::{Member, MemberAddress},
+    membership::{Member, MemberAddress, member_ids},
     membership_operation::membership_change,
     test_address,
 };
@@ -26,16 +26,19 @@ fn config(id: u64, storage: ClusterStorageConfig) -> SlashingProtectionConfig {
 /// A node an operator adds to the running cluster: it starts with no
 /// membership and waits for the leader's snapshot.
 fn joiner(node_id: u64, now: Instant) -> SlashingProtectionCluster {
-    let storage = ClusterStorageConfig::Join("unused-test-journal".into());
+    let storage = ClusterStorageConfig::Create("unused-test-journal".into());
     let mut config =
-        SlashingProtectionConfig::new(node_id, [1, 2, 3, node_id], test_address(node_id), storage)
-            .unwrap();
+        SlashingProtectionConfig::new(node_id, [], test_address(node_id), storage).unwrap();
     config.tick_interval = Duration::from_millis(1);
     config.heartbeat_ticks = 1;
     config.election_ticks = 5;
-    let mut node = SlashingProtectionCluster::in_memory_with(config, None, now).unwrap();
+    let mut node = SlashingProtectionCluster::in_memory(config, now).unwrap();
     node.set_startup_wall_slot(WALL_SLOT - 1);
     node
+}
+
+fn member(node_id: u64) -> Member {
+    Member { node_id, address: test_address(node_id) }
 }
 
 fn command(attester_index: u64) -> AttestationLockCommand {
@@ -49,6 +52,10 @@ fn command(attester_index: u64) -> AttestationLockCommand {
 }
 
 /// raft-rs keeps voters in hash sets, so order is not meaningful.
+fn add_learner(node_id: u64) -> ConfChangeV2 {
+    membership_change(ConfChangeTransition::Auto, &[(ConfChangeType::AddLearnerNode, node_id)])
+}
+
 fn sorted(mut membership: ConfState) -> ConfState {
     membership.voters.sort_unstable();
     membership.voters_outgoing.sort_unstable();
@@ -57,13 +64,19 @@ fn sorted(mut membership: ConfState) -> ConfState {
     membership
 }
 
-/// Checks that storage, which every checkpoint copies, agrees with raft-rs.
-/// A stepped snapshot reaches storage only with the next `Ready`.
+/// Checks that storage, which every checkpoint copies, and the replicated
+/// state agree with raft-rs. A stepped snapshot reaches them only once its
+/// `Ready` is persisted.
 fn membership(node: &SlashingProtectionCluster) -> ConfState {
-    let raw_node = node.node.as_ref().unwrap();
+    let raw_node = &node.node;
     let membership = sorted(raw_node.raft.prs().conf().to_conf_state());
     if !raw_node.has_ready() && !node.persistence.is_pending() {
         assert_eq!(sorted(raw_node.store().initial_state().unwrap().conf_state), membership);
+        let mut members: Vec<_> = node.state.membership.member_ids().collect();
+        let mut expected: Vec<_> = member_ids(&membership).collect();
+        members.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(members, expected);
     }
     membership
 }
@@ -74,7 +87,7 @@ fn has_voters(node: &SlashingProtectionCluster, voters: &[u64]) -> bool {
 }
 
 fn knows_addresses(node: &SlashingProtectionCluster, ids: &[u64]) -> bool {
-    ids.iter().all(|&id| node.membership.address(id) == Some(&test_address(id)))
+    ids.iter().all(|&id| node.state.membership.address(id) == Some(test_address(id)))
 }
 
 fn is_joint(node: &SlashingProtectionCluster) -> bool {
@@ -91,6 +104,9 @@ struct Cluster {
     nodes: Vec<SlashingProtectionCluster>,
     now: Instant,
     decisions: Vec<AttestationDecision>,
+    /// Each with the node that reported it.
+    reached: Vec<(u64, Member)>,
+    forgotten: Vec<(u64, Member)>,
     isolated: Option<u64>,
     drop_joint_leaves: bool,
 }
@@ -108,8 +124,15 @@ impl Cluster {
 
     #[track_caller]
     fn started(nodes: Vec<SlashingProtectionCluster>, now: Instant) -> Self {
-        let mut cluster =
-            Self { nodes, now, decisions: Vec::new(), isolated: None, drop_joint_leaves: false };
+        let mut cluster = Self {
+            nodes,
+            now,
+            decisions: Vec::new(),
+            reached: Vec::new(),
+            forgotten: Vec::new(),
+            isolated: None,
+            drop_joint_leaves: false,
+        };
         cluster
             .rounds_until(|cluster| cluster.nodes.iter().all(SlashingProtectionCluster::is_ready));
         for node in &mut cluster.nodes {
@@ -143,10 +166,10 @@ impl Cluster {
     fn add_joiner(&mut self, node_id: u64) {
         self.operate(MembershipOperation::Add { node_id, address: test_address(node_id) });
         self.nodes.push(joiner(node_id, self.now));
-        let locks = self.nodes[0].state.len();
+        let locks = self.nodes[0].state.locks.len();
         self.rounds_until(|cluster| {
             cluster.nodes.iter().all(|node| membership(node).learners == [node_id]) &&
-                cluster.nodes.iter().all(|node| node.state.len() == locks)
+                cluster.nodes.iter().all(|node| node.state.locks.len() == locks)
         });
     }
 
@@ -160,11 +183,14 @@ impl Cluster {
     fn round(&mut self) {
         let mut messages = Vec::new();
         for node in &mut self.nodes {
+            let node_id = node.node_id();
             node.spin(self.now, WALL_SLOT, |event| match event {
                 ClusterEvent::SendRaftMessage(message) => messages.push(message),
                 ClusterEvent::AttestationCommitted(decision) => self.decisions.push(decision),
                 ClusterEvent::BlockCommitted(decision) => panic!("unexpected block {decision:?}"),
                 ClusterEvent::ProposalTimedOut(id) => panic!("proposal {id:?} timed out"),
+                ClusterEvent::ReachMember(member) => self.reached.push((node_id, member)),
+                ClusterEvent::ForgetMember(member) => self.forgotten.push((node_id, member)),
             })
             .unwrap();
         }
@@ -218,12 +244,20 @@ impl Cluster {
     }
 
     fn propose_membership_change(&mut self, change: ConfChangeV2) {
-        self.propose_membership_change_with(change, Vec::new());
+        self.propose_membership_change_with(change, None);
     }
 
-    fn propose_membership_change_with(&mut self, change: ConfChangeV2, context: Vec<u8>) {
+    fn propose_membership_change_with(
+        &mut self,
+        change: ConfChangeV2,
+        added_learner: Option<Member>,
+    ) {
+        let mut context = Vec::new();
+        if let Some(member) = added_learner {
+            member.encode(&mut context);
+        }
         let leader = self.elect();
-        self.node(leader).node.as_mut().unwrap().propose_conf_change(context, change).unwrap();
+        self.node(leader).node.propose_conf_change(context, change).unwrap();
     }
 
     /// Removes a follower through a joint config, and returns the remaining
@@ -267,9 +301,7 @@ impl Cluster {
 #[test]
 fn learner_is_added_on_every_node_and_peers_follow() {
     let mut cluster = Cluster::in_memory(Instant::now());
-    let add = membership_change(ConfChangeTransition::Auto, &[(ConfChangeType::AddLearnerNode, 4)]);
-    let added = Member { node_id: 4, address: test_address(4) };
-    cluster.propose_membership_change_with(add, added.change_context());
+    cluster.propose_membership_change_with(add_learner(4), Some(member(4)));
     cluster
         .rounds_until(|cluster| cluster.nodes.iter().all(|node| membership(node).learners == [4]));
 
@@ -294,7 +326,7 @@ fn joint_removal_leaves_the_joint_config_on_every_node() {
 
     let follower = cluster.follower();
     cluster.commit_attestation(follower, 1);
-    assert!(cluster.nodes.iter().all(|node| node.state.len() == 1));
+    assert!(cluster.nodes.iter().all(|node| node.state.locks.len() == 1));
 }
 
 /// raft-rs leaves an explicit joint config only on request, so this one is
@@ -318,8 +350,7 @@ fn leader_elected_inside_a_joint_config_leaves_it() {
     cluster.drop_joint_leaves = true;
     let add =
         membership_change(ConfChangeTransition::Implicit, &[(ConfChangeType::AddLearnerNode, 4)]);
-    let added = Member { node_id: 4, address: test_address(4) };
-    cluster.propose_membership_change_with(add, added.change_context());
+    cluster.propose_membership_change_with(add, Some(member(4)));
     cluster.rounds_until(|cluster| cluster.nodes.iter().all(is_joint));
 
     cluster.isolated = Some(old_leader);
@@ -336,46 +367,86 @@ fn leader_elected_inside_a_joint_config_leaves_it() {
     });
 }
 
+/// The cluster records no address for its first voters, so each is reached
+/// where the config says, until the cluster removes it.
 #[test]
-fn every_member_announces_its_address() {
+fn configured_member_is_reached_until_the_cluster_removes_it() {
+    let now = Instant::now();
+    let nodes = (1..=3)
+        .map(|id| {
+            let mut config = config(id, ClusterStorageConfig::Create("unused".into()));
+            config.configured_members = (1..=3).filter(|&other| other != id).map(member).collect();
+            SlashingProtectionCluster::in_memory(config, now).unwrap()
+        })
+        .collect();
+    let mut cluster = Cluster::started(nodes, now);
+    cluster.round();
+    let mut reached = cluster.reached.clone();
+    reached.sort_unstable_by_key(|(node_id, member)| (*node_id, member.node_id));
+    let expected = [(1, 2), (1, 3), (2, 1), (2, 3), (3, 1), (3, 2)];
+    assert_eq!(reached, expected.map(|(node_id, peer)| (node_id, member(peer))));
+
+    let removed = cluster.follower();
+    cluster.operate(MembershipOperation::Remove { node_id: removed });
+    cluster.rounds_until(|cluster| cluster.forgotten.len() == 2);
+    assert!(cluster.forgotten.iter().all(|(_, member)| member.node_id == removed));
+    assert_eq!(cluster.reached.len(), 6, "nothing else changed");
+}
+
+/// A joining node knows no members, so it reaches the configured ones. The
+/// others reach it where the change that added it says.
+#[test]
+fn joiner_is_reached_at_its_replicated_address() {
     let mut cluster = Cluster::in_memory(Instant::now());
-    cluster.elect();
-    cluster
-        .rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
+    cluster.operate(MembershipOperation::Add { node_id: 4, address: test_address(4) });
+    let mut joiner = joiner(4, cluster.now);
+    joiner.config.configured_members = vec![member(1)];
+    cluster.nodes.push(joiner);
+    cluster.rounds_until(|cluster| cluster.reached.len() == 4);
+
+    let mut reached = cluster.reached.clone();
+    reached.sort_unstable_by_key(|(node_id, _)| *node_id);
+    assert_eq!(reached, [(1, member(4)), (2, member(4)), (3, member(4)), (4, member(1))]);
 }
 
 #[test]
 fn added_learner_address_replicates_and_leaves_with_it() {
     let mut cluster = Cluster::in_memory(Instant::now());
-    let add = membership_change(ConfChangeTransition::Auto, &[(ConfChangeType::AddLearnerNode, 4)]);
-    let added = Member { node_id: 4, address: test_address(4) };
-    cluster.propose_membership_change_with(add, added.change_context());
+    cluster.propose_membership_change_with(add_learner(4), Some(member(4)));
     cluster.rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[4])));
-    assert!(cluster.nodes.iter().all(|node| node.membership.highest_node_id() == 4));
+    assert!(
+        cluster.nodes.iter().all(|node| node
+            .state
+            .membership
+            .check(&add_learner(4), Some(member(4))) ==
+            Err(MembershipError::IdReused { highest_node_id: 4 }))
+    );
 
     cluster.propose_membership_change(membership_change(ConfChangeTransition::Auto, &[(
         ConfChangeType::RemoveNode,
         4,
     )]));
     cluster.rounds_until(|cluster| {
-        cluster.nodes.iter().all(|node| node.membership.address(4).is_none())
+        cluster.nodes.iter().all(|node| node.state.membership.address(4).is_none())
     });
-    assert!(cluster.nodes.iter().all(|node| node.membership.highest_node_id() == 4));
+    assert!(
+        cluster.nodes.iter().all(|node| node
+            .state
+            .membership
+            .check(&add_learner(4), Some(member(4))) ==
+            Err(MembershipError::IdReused { highest_node_id: 4 }))
+    );
 }
 
 /// A restart with an edited config looks the same to the others.
 #[test]
 fn moved_member_announces_its_new_address() {
     let mut cluster = Cluster::in_memory(Instant::now());
-    cluster.elect();
-    cluster
-        .rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
-
-    let follower = cluster.follower();
-    let moved = MemberAddress { addr: test_address(9).addr, ..test_address(follower) };
-    cluster.node(follower).config.advertised = moved;
+    cluster.add_joiner(4);
+    let moved = MemberAddress { addr: test_address(9).addr, ..test_address(4) };
+    cluster.node(4).config.advertised = moved;
     cluster.rounds_until(|cluster| {
-        cluster.nodes.iter().all(|node| node.membership.address(follower) == Some(&moved))
+        cluster.nodes.iter().all(|node| node.state.membership.address(4) == Some(moved))
     });
 }
 
@@ -383,22 +454,18 @@ fn moved_member_announces_its_new_address() {
 #[test]
 fn address_under_another_key_is_never_announced() {
     let mut cluster = Cluster::in_memory(Instant::now());
+    cluster.add_joiner(4);
     let leader = cluster.elect();
-    cluster
-        .rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
-    let last_index = |cluster: &mut Cluster| {
-        Storage::last_index(cluster.node(leader).node.as_ref().unwrap().store()).unwrap()
-    };
+    let last_index =
+        |cluster: &mut Cluster| Storage::last_index(cluster.node(leader).node.store()).unwrap();
     let before = last_index(&mut cluster);
 
-    let follower = cluster.follower();
-    cluster.node(follower).config.advertised =
-        MemberAddress { public_key: [3; 33], ..test_address(follower) };
+    cluster.node(4).config.advertised = MemberAddress { public_key: [3; 33], ..test_address(4) };
     let until = cluster.now + 4 * DEFAULT_PROPOSAL_TIMEOUT;
     cluster.rounds_until(|cluster| cluster.now >= until);
 
     assert_eq!(last_index(&mut cluster), before);
-    assert!(cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
+    assert!(cluster.nodes.iter().all(|node| knows_addresses(node, &[4])));
     assert!(cluster.nodes.iter().all(|node| !node.is_failed()));
 }
 
@@ -448,18 +515,14 @@ fn membership_survives_a_restart_from_the_log_or_a_snapshot() {
             let follower = cluster.follower();
             cluster.commit_attestation(follower, attester_index);
         }
-        cluster.rounds_until(|cluster| {
-            cluster.nodes.iter().all(|node| knows_addresses(node, &remaining))
-        });
         let now = cluster.now;
         drop(cluster);
 
         let mut cluster = start(&remaining, &|id| ClusterStorageConfig::Open(journal(id)), now);
         for node in &cluster.nodes {
             assert!(has_voters(node, &remaining), "snapshot interval {snapshot_interval}");
-            assert!(knows_addresses(node, &remaining), "before any announcement");
-            assert_eq!(node.state.len(), 6);
-            let snapshot_index = node.node.as_ref().unwrap().store().snapshot_index();
+            assert_eq!(node.state.locks.len(), 6);
+            let snapshot_index = node.node.store().snapshot_index();
             assert_eq!(snapshot_index > 0, snapshot_interval == 4, "{snapshot_index}");
         }
         let follower = cluster.follower();
@@ -487,7 +550,7 @@ fn added_node_catches_up_by_snapshot_and_is_promoted() {
     cluster
         .rounds_until(|cluster| cluster.nodes.iter().all(|node| has_voters(node, &[1, 2, 3, 4])));
     cluster.commit_attestation(4, 10);
-    assert!(cluster.nodes.iter().all(|node| node.state.len() == 4));
+    assert!(cluster.nodes.iter().all(|node| node.state.locks.len() == 4));
 }
 
 /// raft-rs starts a learner at the leader's last index. Locks proposed
@@ -502,7 +565,7 @@ fn joiner_added_under_load_catches_up_by_snapshot() {
 
     let mut attester_index = 0;
     for _ in 0..200 {
-        if cluster.node(4).node.as_ref().unwrap().store().snapshot_index() > 0 {
+        if cluster.node(4).node.store().snapshot_index() > 0 {
             return;
         }
         let now = cluster.now;
@@ -578,10 +641,9 @@ fn membership_operations_are_refused_with_a_reason() {
         (
             leader,
             MembershipOperation::Replace { old: leader, new: 9 },
-            MembershipError::LeaderTargeted,
+            MembershipError::NotALearner(9),
         ),
         (leader, MembershipOperation::Remove { node_id: 9 }, MembershipError::NotAMember(9)),
-        (leader, MembershipOperation::TransferLeader { node_id: 9 }, MembershipError::NotAVoter(9)),
     ];
     for (node_id, operation, expected) in refused {
         assert_eq!(
@@ -590,6 +652,12 @@ fn membership_operations_are_refused_with_a_reason() {
             "{operation:?}"
         );
     }
+
+    assert_eq!(cluster.node(leader).transfer_leader(9), Err(MembershipError::NotAVoter(9)));
+    assert_eq!(
+        cluster.node(leader).transfer_leader(leader),
+        Err(MembershipError::NotAVoter(leader))
+    );
 
     cluster.add_joiner(4);
     let reused_key = MembershipOperation::Add { node_id: 5, address: test_address(4) };
@@ -647,11 +715,6 @@ fn removed_node_stays_removed_after_a_restart() {
 
     let config = config(removed, ClusterStorageConfig::Open(journal(removed)));
     let mut node = SlashingProtectionCluster::new(config, now).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while node.node.is_none() {
-        assert!(Instant::now() < deadline, "recovery did not finish");
-        node.spin(now, WALL_SLOT, |_| {}).unwrap();
-    }
     assert!(node.is_removed());
     assert!(matches!(
         node.propose_attestation(command(1), WALL_SLOT, now),
@@ -675,5 +738,5 @@ fn joiner_takes_no_entries_before_its_snapshot() {
     };
     node.step(append, now, WALL_SLOT).unwrap();
     node.spin(now, WALL_SLOT, |_| {}).unwrap();
-    assert_eq!(raft::Storage::last_index(node.node.as_ref().unwrap().store()).unwrap(), 0);
+    assert_eq!(raft::Storage::last_index(node.node.store()).unwrap(), 0);
 }

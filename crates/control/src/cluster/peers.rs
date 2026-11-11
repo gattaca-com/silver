@@ -6,7 +6,11 @@ use raft::{
 };
 use silver_common::{ClusterPeerStats, ClusterProgress};
 
-use super::raft_storage::RaftStorage;
+use super::{
+    membership::{Member, MemberAddress},
+    node::ClusterEvent,
+    raft_storage::RaftStorage,
+};
 
 /// An unanswered heartbeat older than this is presumed lost, so the next one
 /// starts a fresh measurement.
@@ -15,6 +19,7 @@ const HEARTBEAT_LOST: Duration = Duration::from_secs(2);
 #[derive(Default)]
 struct Peer {
     node_id: u64,
+    address: Option<MemberAddress>,
     last_contact: Option<Instant>,
     heartbeat_sent: Option<Instant>,
     raft_rtt: Option<Duration>,
@@ -28,17 +33,30 @@ pub(super) struct ClusterPeers {
 }
 
 impl ClusterPeers {
-    /// Keeps the stats of members that stay.
-    pub(super) fn set_members(
+    /// Keeps the stats of peers that stay, and emits what changed about
+    /// reaching them. A peer with no known address is left to dial this node.
+    pub(super) fn set(
         &mut self,
-        local_id: u64,
-        members: impl Iterator<Item = u64> + Clone,
+        peers: impl Iterator<Item = (u64, Option<MemberAddress>)> + Clone,
+        emit: &mut impl FnMut(ClusterEvent),
     ) {
-        let members = || members.clone().filter(move |&node_id| node_id != local_id);
-        self.peers.retain(|peer| members().any(|node_id| node_id == peer.node_id));
-        for node_id in members() {
+        self.peers.retain(|peer| {
+            let stays = peers.clone().any(|(node_id, _)| node_id == peer.node_id);
+            if !stays && let Some(address) = peer.address {
+                emit(ClusterEvent::ForgetMember(Member { node_id: peer.node_id, address }));
+            }
+            stays
+        });
+        for (node_id, address) in peers {
             if self.peer(node_id).is_none() {
                 self.peers.push(Peer { node_id, ..Peer::default() });
+            }
+            if let Some(address) = address &&
+                let Some(peer) = self.peer(node_id) &&
+                peer.address != Some(address)
+            {
+                peer.address = Some(address);
+                emit(ClusterEvent::ReachMember(Member { node_id, address }));
             }
         }
     }

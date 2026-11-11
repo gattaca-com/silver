@@ -59,6 +59,7 @@ impl PeerDatabase {
                 record.node_id.replace(node_id);
                 record.peer_id.replace(peer_id);
                 record.is_trusted = trusted;
+                record.trusted_by_config = trusted;
                 record.refresh_custody();
 
                 let index = self.peers.insert(record);
@@ -109,8 +110,10 @@ impl PeerDatabase {
         };
         let record = &mut self.peers[index];
         record.cluster_addr = None;
-        record.is_trusted = false;
-        self.trusted.retain(|&trusted| trusted != index);
+        record.is_trusted = record.trusted_by_config;
+        if !record.is_trusted {
+            self.trusted.retain(|&trusted| trusted != index);
+        }
     }
 
     pub fn add_peer_id(&mut self, peer_id: PeerId, p2p_id: usize) -> bool {
@@ -193,27 +196,21 @@ impl PeerDatabase {
         }
     }
 
-    /// Disconnected records that are structurally dialable: known peer id and
-    /// a QUIC address, no live connection, dial backoff expired. The caller
-    /// applies its own gates (bans, in-flight dials, fork digest).
-    pub fn redial_candidates(
+    pub fn redial_candidates(&self, now: Instant) -> impl Iterator<Item = &PeerRecord> + '_ {
+        self.peers
+            .iter()
+            .map(|(_, record)| record)
+            .filter(move |record| !record.is_trusted && record.is_redialable(now))
+    }
+
+    pub fn trusted_redial_candidates(
         &self,
         now: Instant,
-        trusted_only: bool,
     ) -> impl Iterator<Item = &PeerRecord> + '_ {
-        let trusted = trusted_only.then(|| self.trusted.iter().map(|&index| &self.peers[index]));
-        let all = (!trusted_only).then(|| self.peers.iter().map(|(_, record)| record));
-        trusted.into_iter().flatten().chain(all.into_iter().flatten()).filter_map(move |record| {
-            record.peer_id.as_ref()?;
-            record.dial_addr()?;
-            if record.dial_backoff_until.is_some_and(|t| t > now) {
-                return None;
-            }
-            if record.live_connections > 0 {
-                return None;
-            }
-            Some(record)
-        })
+        self.trusted
+            .iter()
+            .map(|&index| &self.peers[index])
+            .filter(move |record| record.is_redialable(now))
     }
 
     pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus, earliest_slot: Option<u64>) {
@@ -317,6 +314,7 @@ pub struct PeerRecord {
     pub dial_backoff_until: Option<Instant>,
     /// Trusted peer
     pub is_trusted: bool,
+    trusted_by_config: bool,
     cluster_addr: Option<SocketAddr>,
     /// Connections in `by_p2p_id` naming this record; more than one while a
     /// duplicate connection is open.
@@ -327,6 +325,13 @@ pub struct PeerRecord {
 }
 
 impl PeerRecord {
+    fn is_redialable(&self, now: Instant) -> bool {
+        self.peer_id.is_some() &&
+            self.dial_addr().is_some() &&
+            self.live_connections == 0 &&
+            self.dial_backoff_until.is_none_or(|until| until <= now)
+    }
+
     pub(crate) fn dial_addr(&self) -> Option<SocketAddr> {
         self.cluster_addr.or_else(|| {
             let enr = self.enr.as_ref()?;

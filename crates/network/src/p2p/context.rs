@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use fxhash::FxHashMap;
 use silver_common::{
-    Enr, PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheProducer, TCacheReader, TProducer,
+    PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheProducer, TCacheReader, TProducer,
     TReadMode, TileId, ssz_view::MAX_PAYLOAD_SIZE,
 };
 
@@ -66,6 +64,7 @@ impl Context {
     }
 }
 
+#[derive(Default)]
 pub struct ClusterNodes {
     /// Membership keyed by authenticated peer identity.
     by_peer_id: FxHashMap<PeerId, u64>,
@@ -78,15 +77,6 @@ pub struct ClusterNodes {
 }
 
 impl ClusterNodes {
-    pub fn new(nodes: HashMap<u64, Enr>) -> Self {
-        let mut by_peer_id = FxHashMap::default();
-        for (id, enr) in nodes {
-            let peer_id = PeerId::from_secp256k1_pubkey(&enr.public_key().serialize());
-            by_peer_id.insert(peer_id, id);
-        }
-        Self { by_peer_id, by_raft_id: FxHashMap::default(), by_conn_id: FxHashMap::default() }
-    }
-
     pub fn raft_id(&self, conn_id: &usize) -> Option<u64> {
         self.by_conn_id.get(conn_id).copied()
     }
@@ -147,8 +137,8 @@ mod tests {
 
     fn cluster() -> (ClusterNodes, RemotePeer) {
         let keypair = Keypair::from_secret(&[1; 32]).unwrap();
-        let enr = Enr::empty(keypair.secret_key()).unwrap();
-        let nodes = ClusterNodes::new(HashMap::from([(7, enr)]));
+        let mut nodes = ClusterNodes::default();
+        nodes.set_member(7, keypair.peer_id());
         let peer = RemotePeer {
             peer_id: keypair.peer_id(),
             connection: 10,

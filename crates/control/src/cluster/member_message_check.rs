@@ -7,7 +7,8 @@ use raft::{
 use super::{
     command::{DecodedEntry, EntryError},
     metrics::ClusterCounters,
-    raft_storage::{RaftStorage, RestoredSnapshot},
+    raft_storage::RaftStorage,
+    replicated_state::ReplicatedState,
     voters::MAX_VOTERS,
 };
 
@@ -133,7 +134,9 @@ impl MemberMessageCheck<'_> {
         if snapshot.get_metadata().index < self.log.committed {
             return Ok(());
         }
-        RestoredSnapshot::check(snapshot).map_err(|_| MemberMessageError::Snapshot)
+        ReplicatedState::decode_snapshot(snapshot)
+            .map(|_| ())
+            .map_err(|_| MemberMessageError::Snapshot)
     }
 
     /// Only followers forward proposals, each carrying its own context. The
@@ -148,7 +151,7 @@ impl MemberMessageCheck<'_> {
             let origin = match &decoded {
                 DecodedEntry::Lock(_, id) |
                 DecodedEntry::BlockLock(_, id) |
-                DecodedEntry::AnnounceAddress { proposal_id: id, .. } => id.origin_node_id,
+                DecodedEntry::AnnounceAddress(_, id) => id.origin_node_id,
                 DecodedEntry::Empty => return Err(MemberMessageError::EmptyProposal),
                 DecodedEntry::AdvanceMinimumSlot(_) => {
                     return Err(MemberMessageError::ForwardedMinimumSlot);

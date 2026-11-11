@@ -25,7 +25,9 @@ impl ClusterStartup {
         directory: &Path,
     ) -> Result<Self, Box<dyn Error>> {
         let (node_id, advertised) = Self::local_member(config, local)?;
-        let voters = || config.nodes.keys().copied();
+        // A joining node starts with no voters: its membership arrives with its
+        // first snapshot.
+        let voters = || config.nodes.keys().copied().filter(|_| !config.join);
         let identity = StorageIdentity::new(node_id, voters())?;
         let journal_lock = Self::lock(directory)?;
         let storage = Self::journal(config.bootstrap, config.join, directory.join(JOURNAL_FILE))?;
@@ -88,8 +90,7 @@ impl ClusterStartup {
         let created = if bootstrap { "bootstrap" } else { "join" };
         match (bootstrap, join, exists) {
             (true, true, _) => Err("cluster bootstrap and join cannot both be set".into()),
-            (true, false, false) => Ok(ClusterStorageConfig::Create(path)),
-            (false, true, false) => Ok(ClusterStorageConfig::Join(path)),
+            (true, false, false) | (false, true, false) => Ok(ClusterStorageConfig::Create(path)),
             (false, false, true) => Ok(ClusterStorageConfig::Open(path)),
             (_, _, true) => Err(format!(
                 "cluster {created} = true, but {} already exists: set {created} = false",
@@ -154,7 +155,7 @@ mod tests {
         let journal = |bootstrap, join| ClusterStartup::journal(bootstrap, join, path.clone());
 
         assert!(matches!(journal(true, false), Ok(ClusterStorageConfig::Create(_))));
-        assert!(matches!(journal(false, true), Ok(ClusterStorageConfig::Join(_))));
+        assert!(matches!(journal(false, true), Ok(ClusterStorageConfig::Create(_))));
         assert!(journal(false, false).is_err(), "missing journal");
         assert!(journal(true, true).is_err(), "both flags");
 

@@ -13,6 +13,7 @@ use silver_common::{
 };
 
 use super::{GOODBYE_TOO_MANY_PEERS, IDLE_PEER_MAX_SCORE, IDLE_PEER_MIN_AGE, PeerManager};
+use crate::database::PeerRecord;
 
 const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
 
@@ -138,7 +139,8 @@ impl PeerManager {
 
     pub fn untrust_cluster_member(&mut self, peer_id: &PeerId) {
         self.database.untrust_cluster_member(peer_id);
-        self.set_live_trust(peer_id, false);
+        let trusted = self.database.by_peer_id(peer_id).is_some_and(|record| record.is_trusted);
+        self.set_live_trust(peer_id, trusted);
     }
 
     fn set_live_trust(&mut self, peer_id: &PeerId, trusted: bool) {
@@ -156,63 +158,61 @@ impl PeerManager {
     /// the database; this loop dials on the next tick.
     #[timed]
     pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        // Trusted peers are redialled however full the node is: a lost cluster
+        // member would otherwise stay lost.
+        for record in self.database.trusted_redial_candidates(now) {
+            let Some((peer_id, addr)) = self.dial_target(record) else {
+                continue;
+            };
+            silver_log::info!(?addr, "dialling trusted peer");
+            self.dialing.insert(peer_id, now);
+            emit(PeerControl::P2pDial { p2p: peer_id, addr });
+        }
+
         let mut connected = self.peers.len() + self.dialing.len();
         let mut dialled = self.dialled_peer_count() + self.dialing.len();
         let deficit_cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;
         let dialled_deficit_cap = self.params.max_connections();
         let target_dialled = self.params.target_dialled_peers;
-        // A full node still redials trusted peers: a lost cluster member
-        // would otherwise stay lost.
-        let full = connected >= deficit_cap &&
-            (dialled >= target_dialled || connected >= dialled_deficit_cap);
-        for record in self.database.redial_candidates(now, full) {
-            let (Some(peer_id), Some(addr)) = (record.peer_id, record.dial_addr()) else {
+        if connected >= deficit_cap &&
+            (dialled >= target_dialled || connected >= dialled_deficit_cap)
+        {
+            return;
+        }
+        for record in self.database.redial_candidates(now) {
+            let (Some((peer_id, addr)), Some(enr)) = (self.dial_target(record), &record.enr) else {
                 continue;
             };
-            if self.dialing.contains_key(&peer_id) ||
-                self.banned_peers.contains_key(&peer_id) ||
-                self.remote_banned_peers.contains_key(&peer_id) ||
-                self.banned_ips.contains_key(&addr.ip())
+            if self.our_fork_digest.is_some() &&
+                enr.eth2().is_none_or(|e| !self.is_our_fork_digest(&e[..4]))
             {
                 continue;
             }
+
             // Three tiers: a peer covering a subnet the sweep could not fill
             // dials into the headroom above `max_priority_peers` — a fresh
             // peer scores 0, and `manage_peers` only trims negatives, so it
             // survives there. A peer merely covering something we subscribe
             // to gets the ordinary priority cap; everyone else stops at
             // `target_peers`.
-            let cap = if record.is_trusted {
-                silver_log::info!(?addr, "dialling trusted peer");
-                usize::MAX
+            let cap = if enr_matches_subnets(
+                enr,
+                record.custody_groups(),
+                self.deficit_attnets,
+                self.deficit_syncnets,
+                self.deficit_columns,
+            ) {
+                deficit_cap
+            } else if enr_matches_subnets(
+                enr,
+                record.custody_groups(),
+                self.required_attnets,
+                self.required_syncnets,
+                self.custody_columns,
+            ) {
+                self.params.max_priority_peers
             } else {
-                let Some(enr) = record.enr.as_ref() else {
-                    continue;
-                };
-                if self.our_fork_digest.is_some() &&
-                    enr.eth2().is_none_or(|e| !self.is_our_fork_digest(&e[..4]))
-                {
-                    continue;
-                }
-                if enr_matches_subnets(
-                    enr,
-                    record.custody_groups(),
-                    self.deficit_attnets,
-                    self.deficit_syncnets,
-                    self.deficit_columns,
-                ) {
-                    deficit_cap
-                } else if enr_matches_subnets(
-                    enr,
-                    record.custody_groups(),
-                    self.required_attnets,
-                    self.required_syncnets,
-                    self.custody_columns,
-                ) {
-                    self.params.max_priority_peers
-                } else {
-                    self.params.target_peers
-                }
+                self.params.target_peers
             };
             let cap = if dialled < target_dialled { cap.max(dialled_deficit_cap) } else { cap };
             if connected >= cap {
@@ -223,10 +223,19 @@ impl PeerManager {
             emit(PeerControl::P2pDial { p2p: peer_id, addr });
             connected += 1;
             dialled += 1;
-            if !full && connected >= deficit_cap && dialled >= target_dialled {
+            if connected >= deficit_cap && dialled >= target_dialled {
                 break;
             }
         }
+    }
+
+    fn dial_target(&self, record: &PeerRecord) -> Option<(PeerId, SocketAddr)> {
+        let (peer_id, addr) = (record.peer_id?, record.dial_addr()?);
+        let barred = self.dialing.contains_key(&peer_id) ||
+            self.banned_peers.contains_key(&peer_id) ||
+            self.remote_banned_peers.contains_key(&peer_id) ||
+            self.banned_ips.contains_key(&addr.ip());
+        (!barred).then_some((peer_id, addr))
     }
 
     /// Trim over-population.
@@ -702,7 +711,7 @@ mod tests {
         let enr =
             test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
         mgr.database.add_enr(enr);
-        let candidates = |mgr: &PeerManager| mgr.database.redial_candidates(now, false).count();
+        let candidates = |mgr: &PeerManager| mgr.database.redial_candidates(now).count();
         assert_eq!(candidates(&mgr), 1);
 
         mgr.database.add_peer_id(peer_id(5), 1);
@@ -914,6 +923,18 @@ mod tests {
         mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(dialled(&cap).is_empty());
         assert!(!mgr.database.by_peer_id(&peer_id(8)).unwrap().is_trusted);
+    }
+
+    #[test]
+    fn removed_cluster_member_keeps_its_configured_trust() {
+        let (mut mgr, _) = fixture(vec![], ScoreParams::default());
+        let enr = test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0; 16]), None, None);
+        mgr.database.add_trusted_peer(enr);
+        mgr.trust_cluster_member(peer_id(7), "10.0.0.70:9100".parse().unwrap());
+        mgr.untrust_cluster_member(&peer_id(7));
+
+        assert!(mgr.database.by_peer_id(&peer_id(7)).unwrap().is_trusted);
+        assert_eq!(mgr.database.trusted_redial_candidates(Instant::now()).count(), 1);
     }
 
     #[test]
