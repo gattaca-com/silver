@@ -64,7 +64,7 @@ impl SyncCommitteeSubnets {
 }
 
 fn default_beacon_api_bind() -> Vec<String> {
-    vec!["0.0.0.0:5051".into()]
+    vec!["127.0.0.1:5051".into()]
 }
 
 fn default_supported_protocols() -> Vec<String> {
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(cfg.supported_protocols().unwrap().len(), 12);
         assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
         assert_eq!(cfg.gossip_topics().unwrap().len(), 7);
-        assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
+        assert_eq!(cfg.beacon_api_bind(), ["127.0.0.1:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 1024);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);

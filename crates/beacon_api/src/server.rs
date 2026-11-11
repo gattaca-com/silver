@@ -1716,6 +1716,7 @@ mod tests {
         net::{SocketAddr, TcpStream},
         os::unix::net::UnixStream,
         path::Path,
+        sync::LazyLock,
         thread::JoinHandle,
         time::Instant,
     };
@@ -1743,7 +1744,7 @@ mod tests {
     use crate::{
         beacon::{
             block_submission::tests::{blinded_block, gloas_block},
-            operations::tests::{entry, signature as attestation_signature},
+            operations::tests::{entry, entry_targeting, signature as attestation_signature},
             proposer_preferences::tests as preferences,
         },
         submission::{Submission, tests as submission},
@@ -3899,9 +3900,15 @@ mod tests {
 
     const ATTESTATIONS: &str = "/eth/v2/beacon/pool/attestations";
 
+    /// A body holds one entry per validator and epoch, and the test state has
+    /// few validators, so the entries differ by target epoch.
+    static DISTINCT_ATTESTATIONS: LazyLock<Vec<String>> = LazyLock::new(|| {
+        (0..MAX_SUBMISSION_ENTRIES as u64).map(|i| entry_targeting(300 + i, 1, 0, 1)).collect()
+    });
+
     fn post_attestations(server: &mut Server, count: usize) -> TcpStream {
         let client = connect(tcp_addr(server));
-        let body = format!("[{}]", vec![entry(1, 0); count].join(","));
+        let body = format!("[{}]", DISTINCT_ATTESTATIONS[..count].join(","));
         let writer = client.try_clone().unwrap();
         std::thread::spawn(move || post(writer, ATTESTATIONS, &body));
         client

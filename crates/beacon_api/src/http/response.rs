@@ -10,7 +10,7 @@ use silver_pbs::{PreferenceFailures, SidecarCall};
 
 use crate::{
     beacon::validators::RegistryStream,
-    entry_signatures::{EntrySignatures, SignatureCheck},
+    entry_signatures::{EntrySignatures, Refused, SignatureCheck},
     events::ChannelSet,
     http::{json::Json, router::Outcome},
     submission::{
@@ -74,9 +74,17 @@ impl<'a> Response<'a> {
 
     pub(crate) fn fail_forged(&mut self) {
         let signatures = self.signatures.as_deref_mut().expect("only a handler publishes entries");
-        let forged = signatures.verify();
+        let Refused { repeated, forged, unchecked } = signatures.verify();
         if let Outcome::AwaitingVerdicts(submission) = &mut self.outcome {
+            submission.fail_accepted(
+                repeated,
+                "an earlier entry of the body has the same validator and epoch",
+            );
             submission.fail_accepted(forged, "invalid signature");
+            submission.fail_accepted(
+                unchecked,
+                "signature not checked: the body holds too many invalid signatures",
+            );
         }
     }
 
