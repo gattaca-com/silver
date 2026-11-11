@@ -79,7 +79,6 @@ impl DirectoryRemover {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn is_idle(&self) -> bool {
         self.directories.is_empty() && self.listing.is_none() && self.queued == 0
     }

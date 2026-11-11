@@ -520,6 +520,9 @@ impl Tile<SilverSpine> for StorageTile {
                 "storage store file i/o failed"
             );
         }
+        if self.store.has_pending_io() {
+            adapter.mark_work();
+        }
     }
 }
 
