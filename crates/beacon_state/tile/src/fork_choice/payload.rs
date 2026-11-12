@@ -118,13 +118,15 @@ impl ForkChoice {
         }
     }
 
-    pub fn unmark_payload_verified(&mut self, block_root: &B256) {
-        if let Some(idx) = self.find_node_idx(block_root) &&
-            self.nodes[idx].payload.is_gloas
-        {
-            self.nodes[idx].payload.verified = false;
-            self.head_moved = true;
+    /// False for a pre-Gloas block, whose payload has no separate envelope.
+    pub fn unmark_payload_verified(&mut self, block_root: &B256) -> bool {
+        let Some(idx) = self.find_node_idx(block_root) else { return false };
+        if !self.nodes[idx].payload.is_gloas {
+            return false;
         }
+        self.nodes[idx].payload.verified = false;
+        self.head_moved = true;
+        true
     }
 
     /// The node at or above `idx` whose block committed to `block_hash`.

@@ -862,6 +862,15 @@ impl HeadRig {
         }));
     }
 
+    /// The payload hashed correctly and failed execution on the anchor's.
+    fn execution_failure(&mut self, block_root: B256) {
+        self.sink.produce(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root,
+            status: PayloadValidationStatus::Invalid,
+            latest_valid_hash: Some([0u8; 32]),
+        }));
+    }
+
     /// Sends the FCU an import would send and answers it as the EL would.
     fn fcu_verdict(&mut self, status: PayloadValidationStatus) {
         let request = self.tile.fork_choice_update();
@@ -1193,7 +1202,7 @@ fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_r
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
     assert_eq!(rig.crank().last_head(), head_a(false));
 
-    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    rig.execution_failure(A_ROOT);
     let events = rig.crank();
     assert_eq!(events.last_head(), head_a_empty(false));
     assert!(events.reorgs().is_empty());
@@ -1216,13 +1225,42 @@ fn an_fcu_verdict_for_an_ancestor_payload_leaves_an_unjudged_gloas_payload_optim
 fn an_fcu_verdict_for_an_ancestor_payload_does_not_revive_a_rejected_gloas_payload() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
-    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    rig.execution_failure(A_ROOT);
     assert_eq!(rig.crank().last_head(), head_a_empty(false));
 
     rig.fcu_verdict(PayloadValidationStatus::Valid);
     let _ = rig.crank();
     assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Invalid);
     assert_eq!(rig.tile.fork_choice_update().head_block_hash, [0u8; 32], "FCU stays on the anchor");
+}
+
+/// An envelope body the EL rejects before execution says nothing about the
+/// committed payload, so nothing built on that payload may be invalidated: the
+/// real envelope can still arrive and prove it valid.
+#[test]
+fn a_rejected_envelope_body_leaves_blocks_built_on_its_payload_alone() {
+    let mut rig = HeadRig::new();
+    let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    let built_on_full = PayloadAxis {
+        bid_block_hash: B_ROOT,
+        parent_status: PayloadStatus::Full,
+        verified: true,
+        is_gloas: true,
+    };
+    rig.import_node(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT, built_on_full);
+    let _ = rig.crank();
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let _ = rig.crank();
+    assert!(!rig.tile.fork_choice.is_payload_verified(&A_ROOT), "awaits a real envelope");
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Optimistic);
+    assert_eq!(rig.execution_status(B_ROOT), ExecutionStatus::Optimistic);
+
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    let _ = rig.crank();
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Valid);
+    assert_eq!(rig.execution_status(B_ROOT), ExecutionStatus::Optimistic);
 }
 
 /// Inject slot-72 votes early so their weight is already folded while the
