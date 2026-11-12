@@ -890,6 +890,12 @@ impl BeaconStateTile {
                     }
                     StagedVerdict::Kept => {}
                     StagedVerdict::NotStaged => {
+                        // Consensus checks cannot tie an envelope's body to
+                        // its block hash, so another envelope may still carry
+                        // the committed payload.
+                        if r.status == PayloadValidationStatus::Invalid {
+                            self.fork_choice.unmark_payload_verified(&r.block_root);
+                        }
                         self.on_payload_verdict(
                             &r.block_root,
                             r.latest_valid_hash,

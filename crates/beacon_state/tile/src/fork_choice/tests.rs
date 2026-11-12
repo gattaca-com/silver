@@ -1193,6 +1193,27 @@ fn latest_valid_hash_bounds_the_rejected_gloas_payload_chain() {
     assert_eq!(status(8), ExecutionStatus::Optimistic, "extends 3's payload");
 }
 
+/// A valid payload vouches for every payload it builds on.
+#[test]
+fn the_latest_valid_payload_validates_its_payload_ancestors() {
+    let g = cp(0, 1);
+    let mut fc = anchored(0);
+    let payload = |b: u8| [0xA0 | b; 32];
+    for b in 2..=4 {
+        fc.on_block(BlockImport {
+            bid_block_hash: payload(b),
+            ..gloas_block(b as Slot, root(b), root(b - 1), g, g, PayloadStatus::Full, true)
+        });
+    }
+
+    fc.on_payload_invalid(&root(4), Some(payload(3)));
+
+    let status = |b| fc.nodes[fc.find_node_idx(&root(b)).unwrap()].execution_status;
+    assert_eq!(status(4), ExecutionStatus::Invalid);
+    assert_eq!(status(3), ExecutionStatus::Valid);
+    assert_eq!(status(2), ExecutionStatus::Valid);
+}
+
 /// Proposer boost on a (same-slot) Gloas block is a block-level PENDING
 /// vote, not an EMPTY vote: it must not block the block from resolving FULL
 /// once its envelope is verified. (Regression: routing boost to `empty`

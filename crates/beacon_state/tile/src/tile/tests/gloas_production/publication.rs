@@ -278,3 +278,48 @@ fn envelope_for_an_unknown_block_is_never_released() {
     assert_eq!(rig.publication_result(), [Err(LocalGossipFailure::Unverifiable)]);
     rig.sink.consume(|_: BeaconApiRequest, _| panic!("unknown block cannot release a payload"));
 }
+
+impl ProductionRig {
+    fn gossip_envelope(&mut self, signed: &[u8]) -> Feedback {
+        let (_, read) = publish_block_bytes(&mut self.gossip, signed);
+        let acquired = self.tile.reader.acquire(read);
+        self.tile.handle_execution_payload_envelope(
+            acquired,
+            signed,
+            BlockSource::Gossip,
+            &mut self.adapter.producers,
+        )
+    }
+
+    fn new_payload_verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
+        let verdict = EngineNewPayloadResp { block_root, status, latest_valid_hash: None };
+        self.tile
+            .handle_engine_response(EngineResp::NewPayload(verdict), &mut self.adapter.producers);
+    }
+}
+
+/// Consensus checks cannot tie a body to its block hash, so the signer can
+/// publish a second body under the committed hash. The EL's rejection of it
+/// must not shut out the real payload.
+#[test]
+fn an_envelope_the_el_rejects_does_not_shut_out_the_real_one() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+    let mut forged = signed.clone();
+    let fee_recipient = 180 + 32;
+    forged[fee_recipient] ^= 1;
+    rig.sign_envelope(&mut forged);
+
+    assert_eq!(rig.gossip_envelope(&forged), Feedback::Accept);
+    engine_requests(&mut rig.sink);
+    rig.new_payload_verdict(root, PayloadValidationStatus::Invalid);
+
+    assert_eq!(rig.gossip_envelope(&signed), Feedback::Accept);
+    assert!(matches!(engine_requests(&mut rig.sink)[..], [EngineReq::NewPayloadEnvelope(_)]));
+
+    rig.new_payload_verdict(root, PayloadValidationStatus::Valid);
+    let idx = rig.tile.fork_choice.find_node_idx(&root).unwrap();
+    assert_eq!(rig.tile.fork_choice.node(idx).execution_status, ExecutionStatus::Valid);
+}

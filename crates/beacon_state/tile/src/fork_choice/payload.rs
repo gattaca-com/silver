@@ -11,6 +11,10 @@ impl ForkChoice {
             return;
         };
         self.head_moved = true;
+        self.validate_payload_chain(idx);
+    }
+
+    fn validate_payload_chain(&mut self, idx: usize) {
         let mut next = Some(idx);
         while let Some(idx) = next {
             let status = &mut self.nodes[idx].execution_status;
@@ -58,7 +62,7 @@ impl ForkChoice {
         let mut next = Some(invalid_idx);
         while let Some(idx) = next {
             if Some(idx) == lvh_idx {
-                self.nodes[idx].execution_status = ExecutionStatus::Valid;
+                self.validate_payload_chain(idx);
                 break;
             }
             if self.nodes[idx].execution_status == ExecutionStatus::Valid {
@@ -110,6 +114,15 @@ impl ForkChoice {
     pub fn mark_payload_verified(&mut self, block_root: &B256) {
         if let Some(idx) = self.find_node_idx(block_root) {
             self.nodes[idx].payload.verified = true;
+            self.head_moved = true;
+        }
+    }
+
+    pub fn unmark_payload_verified(&mut self, block_root: &B256) {
+        if let Some(idx) = self.find_node_idx(block_root) &&
+            self.nodes[idx].payload.is_gloas
+        {
+            self.nodes[idx].payload.verified = false;
             self.head_moved = true;
         }
     }
