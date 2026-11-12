@@ -65,3 +65,10 @@ fn scenario_11_gloas_fcu_finalized_hash_is_bid_parent() {
 fn scenario_12_gloas_full_child_of_failed_payload_is_not_imported() {
     common::run_scenario(&cases_dir().join("scenario_12_gloas_full_child_of_failed_payload"));
 }
+
+#[test]
+fn scenario_13_gloas_full_child_waits_for_the_el_verdict() {
+    common::run_scenario(
+        &cases_dir().join("scenario_13_gloas_full_child_waits_for_the_el_verdict"),
+    );
+}

@@ -111,6 +111,16 @@ impl ForkChoice {
         }
     }
 
+    /// The status of the payload the node's chain ends on: its own when it
+    /// resolves FULL, otherwise the latest one its branch ran.
+    pub fn selected_execution_status(&self, idx: usize) -> ExecutionStatus {
+        if self.resolves_to_full(idx) {
+            self.nodes[idx].execution_status
+        } else {
+            self.chain_execution_status(idx)
+        }
+    }
+
     /// Resolves the node's own payload using the same rule as head selection.
     pub fn payload_resolution(&self, idx: usize) -> PayloadResolution {
         if self.resolves_to_full(idx) { PayloadResolution::Full } else { PayloadResolution::Empty }

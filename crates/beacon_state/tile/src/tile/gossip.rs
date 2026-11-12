@@ -34,6 +34,7 @@ use super::{
     attestation_pool::{InsertOutcome, Participants},
     fork_data_roots::ForkDataRoots,
     held_blocks::BlockSourceMsg,
+    pending_envelopes::UnverifiedEnvelope,
     seen_aggregates::Coverage,
     seen_proposer_preferences::ProposerPreferences,
     shuffling_cache::ShufflingRequest,
@@ -189,16 +190,6 @@ impl AttestedBlock {
             Self::Ready { .. } | Self::AwaitingPayload => Feedback::reject(reason),
         }
     }
-}
-
-/// Announced only once the EL has not rejected it: consensus checks cannot tie
-/// the body to its block hash, so a forged body would otherwise be persisted
-/// and served.
-pub(super) struct UnverifiedEnvelope {
-    read: TRead,
-    source: BlockSource,
-    slot: Slot,
-    signature: [u8; 96],
 }
 
 pub(super) enum EnvelopeCheck {
@@ -1340,24 +1331,35 @@ impl BeaconStateTile {
             .insert(block_root, stf::envelope_execution_requests(signed));
     }
 
+    /// The spec stores a payload only once the EL has verified it, SYNCING and
+    /// ACCEPTED optimistically, so it counts as verified from here on. One that
+    /// failed execution is verified too: it is judged, so its copies and votes
+    /// meet that verdict instead of fetching it again.
     pub(super) fn release_el_verified_envelope(
         &mut self,
         verdict: &EngineNewPayloadResp,
         producers: &mut Producers,
     ) {
         let block_root = verdict.block_root;
-        let Some(envelope) = self.envelopes_awaiting_el_verdict.remove(&block_root) else {
+        let Some(UnverifiedEnvelope { read, source, slot, signature }) =
+            self.pending_envelopes.take_verdict(&block_root)
+        else {
             return;
         };
-        let UnverifiedEnvelope { read, source, slot, signature } = envelope;
-        if verdict.status != PayloadValidationStatus::Invalid {
-            Self::emit_envelope_available(&read, source, slot, block_root, true, producers);
+        if verdict.rejects_body() {
+            self.el_rejected_envelopes.insert(signature, block_root);
+            self.pending_envelopes.request(block_root, slot, producers);
             return;
         }
-        self.el_rejected_envelopes.insert(signature, block_root);
-        if verdict.rejects_body() {
-            self.pending_envelopes.request(block_root, slot, producers);
+
+        self.fork_choice.mark_payload_verified(&block_root);
+        if verdict.status == PayloadValidationStatus::Invalid {
+            self.el_rejected_envelopes.insert(signature, block_root);
+        } else {
+            Self::emit_envelope_available(&read, source, slot, block_root, true, producers);
         }
+        self.drain_awaiting_payload(block_root, producers);
+        self.recompute_head(|event| producers.produce(event));
     }
 
     fn emit_envelope_available(
@@ -1415,13 +1417,12 @@ impl BeaconStateTile {
         }
         let slot_state = rv.slot;
 
-        if self.fork_choice.is_payload_verified(&block_root) {
+        let verified = self.fork_choice.is_payload_verified(&block_root);
+        if verified || self.pending_envelopes.awaits_verdict(&block_root) {
             producers.produce(SyncNeed::envelope_arrived(block_root, slot));
             // The copy awaiting its verdict is announced once judged, and an
             // invalid payload is never announced.
-            if !self.envelopes_awaiting_el_verdict.contains_key(&block_root) &&
-                !self.fork_choice.is_payload_invalid(&block_root)
-            {
+            if verified && !self.fork_choice.is_payload_invalid(&block_root) {
                 Self::emit_envelope_available(
                     &acquired, source, slot, block_root, false, producers,
                 );
@@ -1442,7 +1443,7 @@ impl BeaconStateTile {
             return Feedback::Accept;
         }
 
-        self.mark_envelope_verified(block_root, ssz);
+        self.payload_execution_requests.insert(block_root, stf::envelope_execution_requests(ssz));
         producers.produce(SyncNeed::envelope_arrived(block_root, slot));
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
             data: acquired.to_read(),
@@ -1451,15 +1452,12 @@ impl BeaconStateTile {
             hash_count,
             versioned_hashes,
         }));
-        self.envelopes_awaiting_el_verdict.insert(block_root, UnverifiedEnvelope {
+        self.pending_envelopes.await_verdict(block_root, UnverifiedEnvelope {
             read: acquired,
             source,
             slot,
             signature,
         });
-
-        self.drain_awaiting_payload(block_root, producers);
-        self.recompute_head(|event| producers.produce(event));
 
         Feedback::Accept
     }

@@ -46,8 +46,8 @@ impl BeaconStateTile {
         self.block_production.drop_outdated(|parent| fork_choice.find_node_idx(parent).is_some());
         self.payload_execution_requests
             .drop_outdated(|root| fork_choice.find_node_idx(root).is_some());
-        self.envelopes_awaiting_el_verdict
-            .retain(|root, _| fork_choice.find_node_idx(root).is_some());
+        self.pending_envelopes
+            .drop_verdicts_unless(|root| fork_choice.find_node_idx(root).is_some());
         self.el_rejected_envelopes.retain(|_, root| fork_choice.find_node_idx(root).is_some());
 
         {

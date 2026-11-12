@@ -458,3 +458,24 @@ fn payload_that_fails_execution_is_not_fetched_again() {
         "a vote for the payload is judged against its verdict, not sent to fetch it"
     );
 }
+
+#[test]
+fn payload_counts_as_verified_only_once_the_el_accepts_it() {
+    for verdict in [PayloadValidationStatus::Valid, PayloadValidationStatus::Syncing] {
+        let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+        let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+            SignedExecutionPayloadEnvelopeView::message(&signed),
+        );
+        let idx = rig.tile.fork_choice.find_node_idx(&root).unwrap();
+
+        assert_eq!(rig.gossip_envelope(&signed), Feedback::Accept);
+        assert!(!rig.tile.fork_choice.is_payload_verified(&root), "{verdict:?}: EL pending");
+        assert_eq!(rig.tile.fork_choice.payload_resolution(idx), PayloadResolution::Empty);
+        assert_eq!(rig.gossip_envelope(&signed), Feedback::AlreadySeen);
+        let refetch = SyncNeed::missing_envelope(root, rig.proposal.slot);
+        assert!(!rig.sync_needs().contains(&refetch), "{verdict:?}: in hand, not fetched");
+
+        rig.new_payload_verdict(root, verdict);
+        assert!(rig.tile.fork_choice.is_payload_verified(&root), "{verdict:?}");
+    }
+}

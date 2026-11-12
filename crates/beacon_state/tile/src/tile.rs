@@ -37,7 +37,7 @@ use crate::{
         envelope_arrivals::EnvelopeArrivals,
         exit_pool::ExitPool,
         fork_data_roots::ForkDataRoots,
-        gossip::{BatchedVote, UnverifiedEnvelope},
+        gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
         payload_attestation_pool::PayloadAttestationPool,
         payload_attributes::PayloadAttributes,
@@ -253,7 +253,6 @@ pub struct BeaconStateTile {
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: PendingEnvelopes,
-    envelopes_awaiting_el_verdict: FxHashMap<B256, UnverifiedEnvelope>,
     /// Signature → block root.
     el_rejected_envelopes: FxHashMap<[u8; 96], B256>,
     envelope_arrivals: EnvelopeArrivals,
@@ -343,7 +342,6 @@ impl BeaconStateTile {
             sig_batch: bls::SigBatch::new(),
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: PendingEnvelopes::new(syncing.pending.max_dc),
-            envelopes_awaiting_el_verdict: root_map(),
             el_rejected_envelopes: FxHashMap::default(),
             envelope_arrivals: EnvelopeArrivals::default(),
             payload_bids_pool: BidPool::default(),
@@ -587,7 +585,7 @@ impl BeaconStateTile {
         let root = self.fork_choice.find_head();
         let idx =
             self.fork_choice.find_node_idx(&root).expect("find_head returns a node-resident root");
-        let optimistic = self.fork_choice.chain_execution_status(idx) != ExecutionStatus::Valid;
+        let optimistic = self.fork_choice.selected_execution_status(idx) != ExecutionStatus::Valid;
         let payload = self.fork_choice.payload_resolution(idx);
         SelectedHead { observation: HeadObservation { root, optimistic, payload }, idx }
     }
@@ -900,8 +898,8 @@ impl BeaconStateTile {
                         // the committed payload: another envelope may carry it.
                         let envelope_rejected = r.rejects_body() &&
                             self.fork_choice.unmark_payload_verified(&r.block_root);
-                        self.release_el_verified_envelope(&r, producers);
                         if envelope_rejected {
+                            self.release_el_verified_envelope(&r, producers);
                             self.recompute_head(|event| producers.produce(event));
                             return;
                         }
@@ -911,6 +909,7 @@ impl BeaconStateTile {
                             r.status,
                             |event| producers.produce(event),
                         );
+                        self.release_el_verified_envelope(&r, producers);
                         if r.status == PayloadValidationStatus::Valid {
                             self.promote_unknown_root_votes(producers);
                         }
