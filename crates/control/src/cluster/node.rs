@@ -684,9 +684,6 @@ impl SlashingProtectionCluster {
         let (change, added_learner) = conf_change(operation);
         self.state.membership.check(&change, added_learner)?;
         self.check_leader_can_change(&change)?;
-        if let Some(owner) = added_learner.and_then(|learner| self.configured_key_owner(learner)) {
-            return Err(MembershipError::KeyInUse { node_id: owner });
-        }
         if added_learner.is_some() && self.state.snapshot_len() > MAX_SNAPSHOT_BYTES {
             return Err(MembershipError::SnapshotTooLarge);
         }
@@ -706,6 +703,7 @@ impl SlashingProtectionCluster {
                 ConfChangeType::AddNode if !self.is_caught_up(node_id) => {
                     return Err(MembershipError::NotCaughtUp(node_id));
                 }
+                ConfChangeType::AddNode => self.check_members_know_learner(change)?,
                 ConfChangeType::RemoveNode if node_id == self.config.node_id => {
                     return Err(MembershipError::LeaderTargeted);
                 }
@@ -715,17 +713,22 @@ impl SlashingProtectionCluster {
         Ok(())
     }
 
-    /// Covers members whose address announcement has not committed yet.
-    fn configured_key_owner(&self, learner: Member) -> Option<u64> {
-        let key = learner.address.public_key;
-        let configured =
-            self.config.configured_members.iter().map(|member| (member.node_id, member.address));
-        configured
-            .chain([(self.config.node_id, self.config.advertised)])
-            .find(|(node_id, address)| {
-                address.public_key == key && self.state.membership.is_member(*node_id)
+    /// A member that missed a learner's addition refuses its streams, so it
+    /// could never follow that learner once it leads. Members this change
+    /// removes are exempt, so a dead voter can still be replaced.
+    fn check_members_know_learner(&self, change: &ConfChangeV2) -> Result<(), MembershipError> {
+        let removed = |node_id| {
+            change.get_changes().iter().any(|single| {
+                single.get_change_type() == ConfChangeType::RemoveNode && single.node_id == node_id
             })
-            .map(|(node_id, _)| node_id)
+        };
+        let behind = self.state.membership.member_ids().find(|&node_id| {
+            node_id != self.config.node_id && !removed(node_id) && !self.is_caught_up(node_id)
+        });
+        match behind {
+            Some(node_id) => Err(MembershipError::NotCaughtUp(node_id)),
+            None => Ok(()),
+        }
     }
 
     pub fn transfer_leader(&mut self, node_id: u64) -> Result<(), MembershipError> {

@@ -803,33 +803,45 @@ fn admin_lists_members_on_the_leader_and_names_it_elsewhere() {
 
 /// A learner under a member's key would take over that member's link on
 /// every node. Bootstrap members announce their addresses, so their keys are
-/// replicated; until then the leader checks the configured ones.
+/// replicated.
 #[test]
 fn member_keys_cannot_be_added_again() {
     let mut cluster = Cluster::in_memory(Instant::now());
-    let leader = cluster.elect();
-    let other = cluster.follower();
-    let node = cluster.node(leader);
-    node.config.configured_members = vec![member(other)];
-    node.state.membership = ClusterMembership::new(&[1, 2, 3]);
-    let duplicate =
-        |node_id| MembershipOperation::Add { node_id: 4, address: test_address(node_id) };
-    assert_eq!(
-        node.propose_membership(duplicate(other)),
-        Err(MembershipError::KeyInUse { node_id: other })
-    );
-    assert_eq!(
-        node.propose_membership(duplicate(leader)),
-        Err(MembershipError::KeyInUse { node_id: leader })
-    );
-
     cluster
         .rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
-    let third = (1..=3).find(|&id| id != leader && id != other).unwrap();
     let leader = cluster.elect();
-    cluster.node(leader).config.configured_members.clear();
+    let other = cluster.follower();
+    let duplicate =
+        |node_id| MembershipOperation::Add { node_id: 4, address: test_address(node_id) };
+    for owner in [leader, other] {
+        assert_eq!(
+            cluster.node(leader).propose_membership(duplicate(owner)),
+            Err(MembershipError::KeyInUse { node_id: owner })
+        );
+    }
+}
+
+/// A voter that missed a learner's addition would refuse that learner's
+/// streams once it leads, so the learner is not promoted until every member
+/// has caught up. A voter being replaced in the same change is exempt.
+#[test]
+fn learner_is_not_promoted_past_a_member_that_missed_its_addition() {
+    let mut cluster = Cluster::in_memory(Instant::now());
+    let leader = cluster.elect();
+    let lagging = cluster.follower();
+    cluster.isolated = Some(lagging);
+    cluster.operate(MembershipOperation::Add { node_id: 4, address: test_address(4) });
+    cluster.nodes.push(joiner(4, cluster.now));
+    cluster.rounds_until(|cluster| {
+        let leader = cluster.nodes.iter().find(|node| node.is_leader());
+        leader.is_some_and(|leader| leader.is_caught_up(4) && !leader.is_caught_up(lagging))
+    });
+
+    let node = cluster.node(leader);
     assert_eq!(
-        cluster.node(leader).propose_membership(duplicate(third)),
-        Err(MembershipError::KeyInUse { node_id: third })
+        node.propose_membership(MembershipOperation::Promote { node_id: 4 }),
+        Err(MembershipError::NotCaughtUp(lagging))
     );
+    let replace = MembershipOperation::Replace { old: lagging, new: 4 };
+    assert_eq!(node.propose_membership(replace), Ok(()));
 }
