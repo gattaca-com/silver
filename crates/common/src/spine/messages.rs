@@ -916,6 +916,10 @@ impl SyncNeed {
         Self::live_missing(DataKind::Envelope, root, slot, 0)
     }
 
+    pub fn envelope_arrived(root: [u8; 32], slot: u64) -> Self {
+        Self::Arrived { root, slot, kind: DataKind::Envelope }
+    }
+
     pub fn missing_columns(root: [u8; 32], slot: u64, columns: u128) -> Self {
         Self::live_missing(DataKind::Columns, root, slot, columns)
     }

@@ -37,7 +37,7 @@ use crate::{
         envelope_arrivals::EnvelopeArrivals,
         exit_pool::ExitPool,
         fork_data_roots::ForkDataRoots,
-        gossip::BatchedVote,
+        gossip::{BatchedVote, UnverifiedEnvelope},
         held_blocks::{HeldBlocks, StagedVerdict},
         payload_attestation_pool::PayloadAttestationPool,
         payload_attributes::PayloadAttributes,
@@ -253,6 +253,7 @@ pub struct BeaconStateTile {
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: PendingEnvelopes,
+    envelopes_awaiting_el_verdict: FxHashMap<B256, UnverifiedEnvelope>,
     envelope_arrivals: EnvelopeArrivals,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
@@ -340,6 +341,7 @@ impl BeaconStateTile {
             sig_batch: bls::SigBatch::new(),
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: PendingEnvelopes::new(syncing.pending.max_dc),
+            envelopes_awaiting_el_verdict: root_map(),
             envelope_arrivals: EnvelopeArrivals::default(),
             payload_bids_pool: BidPool::default(),
             payload_execution_requests: PayloadExecutionRequests::default(),
@@ -896,6 +898,7 @@ impl BeaconStateTile {
                         if r.status == PayloadValidationStatus::Invalid {
                             self.fork_choice.unmark_payload_verified(&r.block_root);
                         }
+                        self.release_el_verified_envelope(&r.block_root, r.status, producers);
                         self.on_payload_verdict(
                             &r.block_root,
                             r.latest_valid_hash,

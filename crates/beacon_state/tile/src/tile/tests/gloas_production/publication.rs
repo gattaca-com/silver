@@ -192,13 +192,11 @@ fn blobless_envelope_reaches_engine_and_storage_through_gossip() {
     assert!(matches!(engine_requests(&mut rig.sink).as_slice(), [EngineReq::NewPayloadEnvelope(
         _
     )]));
-    let mut persisted = false;
-    rig.sink.consume(|event: BeaconStateEvent, _| {
-        if let BeaconStateEvent::EnvelopeAvailable { .. } = event {
-            persisted = true;
-        }
-    });
-    assert!(persisted);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+    rig.new_payload_verdict(root, PayloadValidationStatus::Valid);
+    assert_eq!(rig.available_envelopes(), [signed]);
 }
 
 #[test]
@@ -291,6 +289,34 @@ impl ProductionRig {
         )
     }
 
+    /// The same envelope with a body the committed block hash does not cover.
+    fn forge_body(&self, signed: &[u8]) -> Vec<u8> {
+        let mut forged = signed.to_vec();
+        let fee_recipient = 180 + 32;
+        forged[fee_recipient] ^= 1;
+        self.sign_envelope(&mut forged);
+        forged
+    }
+
+    fn available_envelopes(&mut self) -> Vec<Vec<u8>> {
+        let mut available = Vec::new();
+        self.sink.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::EnvelopeAvailable { ssz, .. } = event {
+                available.push(ssz);
+            }
+        });
+        available
+            .into_iter()
+            .map(|ssz| self.tile.reader.acquire(ssz).buffer().unwrap().0.to_vec())
+            .collect()
+    }
+
+    fn sync_needs(&mut self) -> Vec<SyncNeed> {
+        let mut needs = Vec::new();
+        self.sink.consume(|need: SyncNeed, _| needs.push(need));
+        needs
+    }
+
     fn new_payload_verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
         let verdict = EngineNewPayloadResp { block_root, status, latest_valid_hash: None };
         self.tile
@@ -302,15 +328,12 @@ impl ProductionRig {
 /// publish a second body under the committed hash. The EL's rejection of it
 /// must not shut out the real payload.
 #[test]
-fn an_envelope_the_el_rejects_does_not_shut_out_the_real_one() {
+fn envelope_the_el_rejects_does_not_shut_out_the_real_one() {
     let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
     let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
         SignedExecutionPayloadEnvelopeView::message(&signed),
     );
-    let mut forged = signed.clone();
-    let fee_recipient = 180 + 32;
-    forged[fee_recipient] ^= 1;
-    rig.sign_envelope(&mut forged);
+    let forged = rig.forge_body(&signed);
 
     assert_eq!(rig.gossip_envelope(&forged), Feedback::Accept);
     engine_requests(&mut rig.sink);
@@ -322,4 +345,58 @@ fn an_envelope_the_el_rejects_does_not_shut_out_the_real_one() {
     rig.new_payload_verdict(root, PayloadValidationStatus::Valid);
     let idx = rig.tile.fork_choice.find_node_idx(&root).unwrap();
     assert_eq!(rig.tile.fork_choice.node(idx).execution_status, ExecutionStatus::Valid);
+}
+
+/// Storage, sync and the API learn of an envelope only once the EL has not
+/// rejected it, so a forged body is never persisted or served.
+#[test]
+fn envelope_becomes_available_only_after_a_verdict_other_than_invalid() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+    let forged = rig.forge_body(&signed);
+
+    rig.gossip_envelope(&forged);
+    assert!(rig.available_envelopes().is_empty(), "verdict pending");
+    rig.new_payload_verdict(root, PayloadValidationStatus::Invalid);
+    assert!(rig.available_envelopes().is_empty());
+
+    rig.gossip_envelope(&signed);
+    assert_eq!(rig.gossip_envelope(&forged), Feedback::AlreadySeen);
+    assert!(rig.available_envelopes().is_empty(), "verdict pending");
+    rig.new_payload_verdict(root, PayloadValidationStatus::Syncing);
+    assert_eq!(rig.available_envelopes(), [signed]);
+}
+
+/// The sync engine re-asks for anything left uncovered past its settle
+/// window, so coverage cannot wait on the EL.
+#[test]
+fn envelope_covers_its_slot_for_sync_before_its_verdict() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+    let arrived = SyncNeed::Arrived { root, slot: rig.proposal.slot, kind: DataKind::Envelope };
+    rig.sync_needs();
+
+    assert_eq!(rig.gossip_envelope(&signed), Feedback::Accept);
+    assert_eq!(rig.sync_needs(), [arrived]);
+
+    assert_eq!(rig.gossip_envelope(&signed), Feedback::AlreadySeen);
+    assert_eq!(rig.sync_needs(), [arrived], "a range-fetched copy covers it too");
+}
+
+#[test]
+fn invalid_verdict_asks_sync_for_the_envelope_again() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+    let forged = rig.forge_body(&signed);
+    rig.gossip_envelope(&forged);
+    rig.sync_needs();
+
+    rig.new_payload_verdict(root, PayloadValidationStatus::Invalid);
+    assert_eq!(rig.sync_needs(), [SyncNeed::missing_envelope(root, rig.proposal.slot)]);
 }
