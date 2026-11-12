@@ -6,7 +6,10 @@ use raft::{
     storage::MemStorage,
 };
 
-use super::lock_store::SlashingLockStore;
+use super::{
+    lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore},
+    voters::Voters,
+};
 
 pub(super) struct RestoredSnapshot {
     pub index: u64,
@@ -14,7 +17,7 @@ pub(super) struct RestoredSnapshot {
 }
 
 impl RestoredSnapshot {
-    pub fn decode(snapshot: &Snapshot, voters: &[u64]) -> io::Result<Self> {
+    pub fn decode(snapshot: &Snapshot, voters: &Voters) -> io::Result<Self> {
         validate_snapshot(snapshot, voters)?;
         Ok(Self {
             index: snapshot.get_metadata().index,
@@ -30,9 +33,9 @@ pub(super) struct RaftStorage {
 
 impl RaftStorage {
     #[cfg(any(target_os = "linux", test))]
-    pub fn new(voters: Vec<u64>) -> Self {
+    pub fn new(voters: &[u64]) -> Self {
         Self {
-            memory: MemStorage::new_with_conf_state((voters, Vec::<u64>::new())),
+            memory: MemStorage::new_with_conf_state((voters.to_vec(), Vec::<u64>::new())),
             snapshot: Snapshot::default(),
         }
     }
@@ -119,17 +122,14 @@ impl Storage for RaftStorage {
     }
 }
 
-pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &[u64]) -> io::Result<()> {
+pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &Voters) -> io::Result<()> {
     let metadata = snapshot.get_metadata();
     let conf = metadata.get_conf_state();
-    let mut actual = conf.voters.clone();
-    actual.sort_unstable();
-    let mut expected = voters.to_vec();
-    expected.sort_unstable();
-    if metadata.index == 0 ||
+    if snapshot.data.len() > MAX_SNAPSHOT_BYTES ||
+        metadata.index == 0 ||
         metadata.index == u64::MAX ||
         metadata.term == 0 ||
-        actual != expected ||
+        !voters.matches(&conf.voters) ||
         !conf.learners.is_empty() ||
         !conf.voters_outgoing.is_empty() ||
         !conf.learners_next.is_empty() ||
@@ -137,7 +137,7 @@ pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &[u64]) -> io::Resu
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "invalid Raft snapshot metadata or membership",
+            "invalid Raft snapshot size, metadata or membership",
         ));
     }
     Ok(())

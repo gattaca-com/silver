@@ -1,6 +1,9 @@
-use std::{error::Error, fmt};
+use std::fmt;
 
+use raft::eraftpb::{Entry, EntryType};
 use silver_common::ssz_view::SINGLE_ATT_SIZE;
+
+use super::{admission::SlashingAdmission, node::ProposalId};
 
 const LOCK_COMMAND_TAG: u8 = 0;
 const ADVANCE_MINIMUM_SLOT_TAG: u8 = 1;
@@ -75,91 +78,95 @@ impl ReplicatedCommand {
         }
     }
 
-    pub(super) fn decode(encoded: &[u8]) -> Result<Self, CommandDecodeError> {
+    pub(super) fn decode(encoded: &[u8]) -> Result<Self, EntryError> {
         let Some((&tag, payload)) = encoded.split_first() else {
-            return Err(CommandDecodeError::Empty);
+            return Err(EntryError::Empty);
         };
+        let expected = match tag {
+            LOCK_COMMAND_TAG => ENCODED_LOCK_COMMAND_LEN,
+            ADVANCE_MINIMUM_SLOT_TAG => ENCODED_ADVANCE_MINIMUM_SLOT_LEN,
+            BLOCK_LOCK_TAG => ENCODED_BLOCK_LOCK_LEN,
+            _ => return Err(EntryError::UnknownTag(tag)),
+        };
+        if encoded.len() != expected {
+            return Err(EntryError::InvalidLength { tag, expected, actual: encoded.len() });
+        }
 
-        match tag {
-            LOCK_COMMAND_TAG => {
-                if encoded.len() != ENCODED_LOCK_COMMAND_LEN {
-                    return Err(CommandDecodeError::InvalidLength {
-                        tag,
-                        expected: ENCODED_LOCK_COMMAND_LEN,
-                        actual: encoded.len(),
-                    });
-                }
+        let u64_at = |offset: usize| {
+            u64::from_le_bytes(payload[offset..offset + 8].try_into().expect("slice is 8 bytes"))
+        };
+        Ok(match tag {
+            LOCK_COMMAND_TAG => Self::Lock(AttestationLockCommand {
+                key: AttestationKey { attester_index: u64_at(0), slot: u64_at(8) },
+                subnet: u64_at(16),
+                ssz: payload[24..].try_into().expect("slice is one single attestation"),
+            }),
+            BLOCK_LOCK_TAG => Self::BlockLock(BlockLockCommand {
+                key: BlockKey { proposer_index: u64_at(0), slot: u64_at(8) },
+                signature: payload[16..].try_into().expect("slice is one signature"),
+            }),
+            _ => Self::AdvanceMinimumSlot(u64_at(0)),
+        })
+    }
+}
 
-                let attester_index =
-                    u64::from_le_bytes(payload[..8].try_into().expect("slice is 8 bytes"));
-                let slot = u64::from_le_bytes(payload[8..16].try_into().expect("slice is 8 bytes"));
-                let subnet =
-                    u64::from_le_bytes(payload[16..24].try_into().expect("slice is 8 bytes"));
-                let ssz = payload[24..24 + SINGLE_ATT_SIZE]
-                    .try_into()
-                    .expect("slice is one single attestation");
+/// A log entry's command, with the proposal it answers. The leader proposes
+/// `AdvanceMinimumSlot` itself, so only lock commands carry a proposal.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum DecodedEntry {
+    Lock(AttestationLockCommand, ProposalId),
+    BlockLock(BlockLockCommand, ProposalId),
+    AdvanceMinimumSlot(u64),
+}
 
-                Ok(Self::Lock(AttestationLockCommand {
-                    key: AttestationKey { attester_index, slot },
-                    subnet,
-                    ssz,
-                }))
-            }
-            ADVANCE_MINIMUM_SLOT_TAG => {
-                if encoded.len() != ENCODED_ADVANCE_MINIMUM_SLOT_LEN {
-                    return Err(CommandDecodeError::InvalidLength {
-                        tag,
-                        expected: ENCODED_ADVANCE_MINIMUM_SLOT_LEN,
-                        actual: encoded.len(),
-                    });
-                }
+impl DecodedEntry {
+    pub(super) fn decode(entry: &Entry) -> Result<Self, EntryError> {
+        if entry.get_entry_type() != EntryType::EntryNormal {
+            return Err(EntryError::UnsupportedType(entry.get_entry_type()));
+        }
+        let proposal_id =
+            || ProposalId::decode(&entry.context).map_err(EntryError::ProposalContextLength);
+        Ok(match ReplicatedCommand::decode(&entry.data)? {
+            ReplicatedCommand::Lock(command) => Self::Lock(command, proposal_id()?),
+            ReplicatedCommand::BlockLock(command) => Self::BlockLock(command, proposal_id()?),
+            ReplicatedCommand::AdvanceMinimumSlot(slot) => Self::AdvanceMinimumSlot(slot),
+        })
+    }
 
-                let slot = u64::from_le_bytes(payload.try_into().expect("slice is 8 bytes"));
-                Ok(Self::AdvanceMinimumSlot(slot))
-            }
-            BLOCK_LOCK_TAG => {
-                if encoded.len() != ENCODED_BLOCK_LOCK_LEN {
-                    return Err(CommandDecodeError::InvalidLength {
-                        tag,
-                        expected: ENCODED_BLOCK_LOCK_LEN,
-                        actual: encoded.len(),
-                    });
-                }
-
-                let proposer_index =
-                    u64::from_le_bytes(payload[..8].try_into().expect("slice is 8 bytes"));
-                let slot = u64::from_le_bytes(payload[8..16].try_into().expect("slice is 8 bytes"));
-                let signature = payload[16..].try_into().expect("slice is one signature");
-                Ok(Self::BlockLock(BlockLockCommand {
-                    key: BlockKey { proposer_index, slot },
-                    signature,
-                }))
-            }
-            _ => Err(CommandDecodeError::UnknownTag(tag)),
+    /// The earliest wall slot at which a correct clock proposes this entry.
+    pub(super) fn earliest_wall_slot(&self) -> u64 {
+        match self {
+            Self::Lock(command, _) => command.key.slot,
+            Self::BlockLock(command, _) => command.key.slot,
+            Self::AdvanceMinimumSlot(floor) => SlashingAdmission::wall_slot_for_floor(*floor),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandDecodeError {
+pub enum EntryError {
+    UnsupportedType(EntryType),
     Empty,
     UnknownTag(u8),
     InvalidLength { tag: u8, expected: usize, actual: usize },
+    ProposalContextLength(usize),
 }
 
-impl fmt::Display for CommandDecodeError {
+impl fmt::Display for EntryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnsupportedType(entry_type) => write!(f, "unsupported entry type {entry_type:?}"),
             Self::Empty => f.write_str("empty Raft command"),
             Self::UnknownTag(tag) => write!(f, "unknown Raft command tag {tag}"),
             Self::InvalidLength { tag, expected, actual } => {
                 write!(f, "Raft command tag {tag} has length {actual}, expected {expected}")
             }
+            Self::ProposalContextLength(actual) => {
+                write!(f, "proposal context has length {actual}, expected 16 or 32")
+            }
         }
     }
 }
-
-impl Error for CommandDecodeError {}
 
 #[cfg(test)]
 mod tests {

@@ -99,12 +99,16 @@ GROUP BY meta_client_name
 HAVING slots >= 3
 ```
 
-Raft processing has stopped (`Failed` is 1). It resets to 0 on restart:
+Raft processing has stopped (`Failed` is 1). It resets to 0 on restart.
+`FailureKind` gives the cause; `slashing-protection-cluster.md` maps each kind
+to its action:
 
 ```sql
-SELECT meta_client_name, argMax(value, slot) AS failed
+SELECT meta_client_name,
+       argMaxIf(value, slot, name = 'Failed') AS failed,
+       argMaxIf(value, slot, name = 'FailureKind') AS kind
 FROM counters
-WHERE component = 'cluster' AND name = 'Failed'
+WHERE component = 'cluster' AND name IN ('Failed', 'FailureKind')
 GROUP BY meta_client_name
 HAVING failed = 1
 ```
@@ -131,6 +135,54 @@ WHERE component = 'cluster'
   AND name IN ('AttestationLockConflicting', 'AttestationLockSurrounding', 'BlockLockConflicting')
   AND delta > 0 AND slot_start_date_time > now() - INTERVAL 15 MINUTE
 GROUP BY meta_client_name, name
+```
+
+The lock snapshot no longer fits one cluster message, so compaction is
+skipped and the journal grows. The cap holds about 150k validators signing
+through the cluster:
+
+```sql
+SELECT meta_client_name, sum(delta) AS skipped
+FROM counters
+WHERE component = 'cluster' AND name = 'CompactionsSkipped'
+  AND delta > 0 AND slot_start_date_time > now() - INTERVAL 1 HOUR
+GROUP BY meta_client_name
+```
+
+The lock snapshot is past 12 MiB of its 16 MiB cap, an early warning for the
+alert above:
+
+```sql
+SELECT meta_client_name, argMax(value, slot) AS bytes
+FROM counters
+WHERE component = 'cluster' AND name = 'SnapshotBytes'
+GROUP BY meta_client_name
+HAVING bytes > 12 * 1024 * 1024
+```
+
+A snapshot transfer to a lagging follower failed or timed out more than twice
+in the last hour. The follower cannot catch up until one succeeds:
+
+```sql
+SELECT meta_client_name, sum(delta) AS failed
+FROM counters
+WHERE component = 'cluster'
+  AND name IN ('SnapshotTransferFailures', 'SnapshotTransferTimeouts')
+  AND delta > 0 AND slot_start_date_time > now() - INTERVAL 1 HOUR
+GROUP BY meta_client_name
+HAVING failed > 2
+```
+
+A node ignored a leader whose appended entry was ahead of its own clock. Either
+that leader's clock runs fast, or this node's clock runs slow:
+
+```sql
+SELECT meta_client_name, sum(delta) AS boycotted
+FROM counters
+WHERE component = 'cluster' AND name = 'LeadersBoycotted'
+  AND slot_start_date_time > now() - INTERVAL 1 HOUR
+GROUP BY meta_client_name
+HAVING boycotted > 0
 ```
 
 The startup floor has been unlatched for more than 5 minutes on a live node.

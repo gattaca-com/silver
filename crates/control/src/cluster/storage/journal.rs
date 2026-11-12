@@ -1,12 +1,19 @@
-use std::io;
+use std::{
+    fs::File,
+    io::{self, Read},
+    path::Path,
+};
 
 use buffa::Message as _;
+use flux::utils::ArrayVec;
 use raft::eraftpb::{Entry, HardState, Snapshot};
 
 use super::super::{
     generated,
+    lock_store::MAX_SNAPSHOT_BYTES,
     persistence::RecoveredStorage,
     raft_storage::validate_snapshot,
+    voters::{MAX_VOTERS, Voters},
     wire::{from_wire_entry, from_wire_snapshot, to_wire_entry, to_wire_snapshot},
 };
 
@@ -19,24 +26,22 @@ pub(super) const READ_CHUNK_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageIdentity {
     node_id: u64,
-    voters: Vec<u64>,
+    voters: Voters,
 }
 
 impl StorageIdentity {
-    pub fn new(node_id: u64, mut voters: Vec<u64>) -> io::Result<Self> {
-        voters.sort_unstable();
-        if node_id == 0 ||
-            !voters.contains(&node_id) ||
-            voters.contains(&0) ||
-            voters.windows(2).any(|pair| pair[0] == pair[1]) ||
-            voters.len() > (MAX_RECORD_BYTES - 20) / 8
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid Raft storage identity",
-            ));
-        }
+    pub fn new(node_id: u64, voters: impl IntoIterator<Item = u64>) -> io::Result<Self> {
+        let voters = Voters::new(node_id, voters)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Self { node_id, voters })
+    }
+
+    /// Reads only the journal's header, synchronously, so a node configured
+    /// with another node's id or voter set fails at startup instead of inside
+    /// replay, where it would run with the cluster refusing every duty.
+    pub fn check_journal(&self, path: &Path) -> io::Result<()> {
+        self.verify(&Frame::read_first_payload(path)?)?;
+        Ok(())
     }
 
     pub(super) fn write(&self, output: &mut Vec<u8>) {
@@ -52,7 +57,7 @@ impl StorageIdentity {
         output.extend_from_slice(MAGIC);
         output.extend_from_slice(&self.node_id.to_le_bytes());
         output.extend_from_slice(&(self.voters.len() as u32).to_le_bytes());
-        for voter in &self.voters {
+        for voter in self.voters.iter() {
             output.extend_from_slice(&voter.to_le_bytes());
         }
         output.push(u8::from(checkpoint));
@@ -63,30 +68,26 @@ impl StorageIdentity {
         validate_snapshot(snapshot, &self.voters)
     }
 
+    /// Returns whether the journal starts from a checkpoint.
     fn verify(&self, payload: &[u8]) -> io::Result<bool> {
         let mut cursor = Cursor(payload);
-        let magic = cursor.take(MAGIC.len())?;
-        if magic != MAGIC && magic != LEGACY_MAGIC {
-            return Err(invalid_data("unsupported Raft journal format"));
-        }
-        if cursor.u64()? != self.node_id || cursor.u32()? as usize != self.voters.len() {
-            return Err(invalid_data("Raft journal identity does not match configuration"));
-        }
-        for voter in &self.voters {
-            if cursor.u64()? != *voter {
-                return Err(invalid_data("Raft journal voters do not match configuration"));
-            }
-        }
-        let checkpoint = if magic == LEGACY_MAGIC {
-            false
-        } else {
-            match cursor.take(1)?[0] {
-                0 => false,
-                1 => true,
-                _ => return Err(invalid_data("invalid Raft journal header kind")),
-            }
+        let legacy = match cursor.take(MAGIC.len())? {
+            magic if magic == MAGIC => false,
+            magic if magic == LEGACY_MAGIC => true,
+            _ => return Err(invalid_data("unsupported Raft journal format")),
         };
+        let node_id = cursor.u64()?;
+        let voters = Voters::new(node_id, cursor.voter_ids()?).map_err(invalid_data)?;
+        // Legacy headers predate checkpoints.
+        let checkpoint = !legacy && cursor.flag()?;
         cursor.finish()?;
+        if node_id != self.node_id || voters != self.voters {
+            return Err(invalid_data(format!(
+                "Raft journal belongs to node {node_id} with voters {voters:?}, but the config \
+                 has node {} with voters {:?}",
+                self.node_id, self.voters
+            )));
+        }
         Ok(checkpoint)
     }
 }
@@ -195,8 +196,8 @@ impl<'a> Record<'a> {
         hard_state: &'a HardState,
     ) -> io::Result<Self> {
         let mut record = Self::new(entries, Some(hard_state))?;
-        if snapshot.data.len() > MAX_RECORD_BYTES {
-            return Err(invalid_data("Raft snapshot exceeds journal limit"));
+        if snapshot.data.len() > MAX_SNAPSHOT_BYTES {
+            return Err(invalid_data("Raft snapshot exceeds the cluster message limit"));
         }
         record.payload_len += 4 + to_wire_snapshot(snapshot.clone()).compute_size() as usize;
         if record.payload_len > MAX_RECORD_BYTES {
@@ -400,6 +401,21 @@ impl<'a> Frame<'a> {
             .copy_from_slice(&header_checksum.to_le_bytes());
     }
 
+    fn read_first_payload(path: &Path) -> io::Result<Vec<u8>> {
+        let mut file = File::open(path)?;
+        let mut bytes = vec![0; FRAME_HEADER_LEN];
+        file.read_exact(&mut bytes)?;
+        let len = Cursor(&bytes).u64()?;
+        if len > MAX_RECORD_BYTES as u64 {
+            return Err(invalid_data("invalid Raft journal frame header"));
+        }
+        bytes.resize(FRAME_HEADER_LEN + len as usize, 0);
+        file.read_exact(&mut bytes[FRAME_HEADER_LEN..])?;
+        Frame::read(&bytes)?.ok_or_else(|| invalid_data("truncated Raft journal frame"))?;
+        bytes.drain(..FRAME_HEADER_LEN);
+        Ok(bytes)
+    }
+
     fn read(bytes: &'a [u8]) -> io::Result<Option<Self>> {
         if bytes.len() < FRAME_HEADER_LEN {
             return Ok(None);
@@ -445,6 +461,26 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(bytes))
     }
 
+    fn voter_ids(&mut self) -> io::Result<ArrayVec<u64, MAX_VOTERS>> {
+        let count = self.u32()? as usize;
+        if count > MAX_VOTERS {
+            return Err(invalid_data("invalid Raft journal voter count"));
+        }
+        let mut ids = ArrayVec::new();
+        for _ in 0..count {
+            ids.push(self.u64()?);
+        }
+        Ok(ids)
+    }
+
+    fn flag(&mut self) -> io::Result<bool> {
+        match self.take(1)?[0] {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(invalid_data("invalid Raft journal header flag")),
+        }
+    }
+
     fn finish(self) -> io::Result<()> {
         if self.0.is_empty() {
             Ok(())
@@ -454,7 +490,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn invalid_data(message: &'static str) -> io::Error {
+fn invalid_data(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 

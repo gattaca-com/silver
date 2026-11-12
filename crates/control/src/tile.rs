@@ -597,7 +597,9 @@ impl Tile<SilverSpine> for Controller {
 
             match beacon_event {
                 BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot, .. } => {
-                    self.slashing_protection.on_status(StatusView::head_slot(&ssz), wall_slot);
+                    let synced =
+                        matches!(self.sync_engine.current_target(), Some(SyncUpdate::Following));
+                    self.slashing_protection.on_status(wall_slot, synced);
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
                 }
                 BeaconStateEvent::LocalGossipVerdict { hash, result, block_root } => {

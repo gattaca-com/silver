@@ -7,7 +7,9 @@ use std::{
 
 use silver_common::Enr;
 use silver_config::ClusterConfig;
-use silver_control::cluster::{ClusterStorageConfig, SlashingProtectionConfig};
+use silver_control::cluster::{ClusterStorageConfig, SlashingProtectionConfig, StorageIdentity};
+
+const JOURNAL_FILE: &str = "attestation-cluster.wal";
 
 pub struct ClusterStartup {
     pub config: SlashingProtectionConfig,
@@ -20,22 +22,39 @@ impl ClusterStartup {
         local: &Enr,
         directory: &Path,
     ) -> Result<Self, Box<dyn Error>> {
-        let node_id = config
-            .nodes
-            .iter()
-            .find(|(_, enr)| enr.node_id() == local.node_id())
-            .map(|(id, _)| *id)
-            .ok_or("no local node configured in cluster config")?;
+        let node_id = Self::local_node_id(config, local)?;
+        let voters = || config.nodes.keys().copied();
+        let identity = StorageIdentity::new(node_id, voters())?;
         let journal_lock = Self::lock(directory)?;
-        let storage = Self::journal(config.bootstrap, directory.join("attestation-cluster.wal"))?;
+        let storage = Self::journal(config.bootstrap, directory.join(JOURNAL_FILE))?;
+        Self::check_identity(&storage, &identity)?;
         Ok(Self {
-            config: SlashingProtectionConfig::new(
-                node_id,
-                config.nodes.keys().copied().collect(),
-                storage,
-            ),
+            config: SlashingProtectionConfig::new(node_id, voters(), storage)?,
             _journal_lock: journal_lock,
         })
+    }
+
+    /// Standalone locks live in memory only. A journal left by a clustered
+    /// run holds lock history this node no longer checks against.
+    pub fn warn_unused_journal(directory: &Path) {
+        let journal = directory.join(JOURNAL_FILE);
+        if journal.exists() {
+            silver_log::warn!(
+                journal = %journal.display(),
+                "clustering is off, but a cluster journal exists: slashing protection now keeps \
+                 locks in memory only and ignores the cluster's lock history"
+            );
+        }
+    }
+
+    fn local_node_id(config: &ClusterConfig, local: &Enr) -> Result<u64, Box<dyn Error>> {
+        let local = local.node_id();
+        let (&id, _) = config
+            .nodes
+            .iter()
+            .find(|(_, enr)| enr.node_id() == local)
+            .ok_or("no local node configured in cluster config")?;
+        Ok(id)
     }
 
     /// A journal that contradicts `bootstrap` would only fail later, inside
@@ -56,6 +75,20 @@ impl ClusterStartup {
             )
             .into()),
         }
+    }
+
+    /// An existing journal written for another node or voter set would
+    /// likewise fail only inside Control.
+    fn check_identity(
+        storage: &ClusterStorageConfig,
+        identity: &StorageIdentity,
+    ) -> Result<(), Box<dyn Error>> {
+        let ClusterStorageConfig::Open(path) = storage else {
+            return Ok(());
+        };
+        identity
+            .check_journal(path)
+            .map_err(|error| format!("cluster journal {}: {error}", path.display()).into())
     }
 
     fn lock(directory: &Path) -> io::Result<File> {

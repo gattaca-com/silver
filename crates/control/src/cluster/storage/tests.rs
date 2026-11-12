@@ -14,7 +14,7 @@ use crate::cluster::{
 };
 
 pub(super) fn identity() -> StorageIdentity {
-    StorageIdentity::new(1, vec![1, 2, 3]).unwrap()
+    StorageIdentity::new(1, [1, 2, 3]).unwrap()
 }
 
 pub(super) fn entry(index: u64, term: u64) -> Entry {
@@ -146,7 +146,7 @@ fn failed_or_mismatched_recovery_never_initializes_an_empty_voter() {
     drop(exists);
     assert_eq!(fs::read(&path).unwrap(), original);
 
-    let wrong_node = StorageIdentity::new(2, vec![1, 2, 3]).unwrap();
+    let wrong_node = StorageIdentity::new(2, [1, 2, 3]).unwrap();
     let mut mismatch = ClusterStorage::open(&path, wrong_node).unwrap();
     assert_eq!(event(&mut mismatch).unwrap_err().kind(), io::ErrorKind::InvalidData);
     drop(mismatch);
@@ -158,6 +158,31 @@ fn failed_or_mismatched_recovery_never_initializes_an_empty_voter() {
     let mut storage = ClusterStorage::open(&path, identity()).unwrap();
     assert_eq!(event(&mut storage).unwrap_err().kind(), io::ErrorKind::InvalidData);
     assert_eq!(fs::read(&path).unwrap(), corrupt);
+}
+
+/// The startup check reads the header alone and names both identities, so a
+/// misconfigured node fails before it joins the cluster.
+#[test]
+fn startup_check_reads_the_journal_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("raft.wal");
+    assert_eq!(identity().check_journal(&path).unwrap_err().kind(), io::ErrorKind::NotFound);
+    recovered(&mut ClusterStorage::create(&path, identity()).unwrap());
+
+    identity().check_journal(&path).unwrap();
+    for other in
+        [StorageIdentity::new(2, [1, 2, 3]).unwrap(), StorageIdentity::new(1, [1, 2]).unwrap()]
+    {
+        let error = other.check_journal(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let message = error.to_string();
+        assert!(message.contains("belongs to node 1 with voters [1, 2, 3]"), "{message}");
+    }
+
+    let mut corrupt = fs::read(&path).unwrap();
+    corrupt[0] ^= 1;
+    fs::write(&path, &corrupt).unwrap();
+    assert_eq!(identity().check_journal(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
 }
 
 #[test]

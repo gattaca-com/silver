@@ -10,6 +10,7 @@ fn config(node_id: u64, voters: Vec<u64>) -> SlashingProtectionConfig {
         voters,
         ClusterStorageConfig::Create("unused-test-journal".into()),
     )
+    .unwrap()
 }
 
 fn command(slot: u64, root: u8) -> AttestationLockCommand {
@@ -54,6 +55,7 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
                 ..Message::default()
             },
             now,
+            10,
         )
         .unwrap();
     assert!(events(&mut cluster, now).is_empty());
@@ -69,6 +71,7 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
                 ..Message::default()
             },
             now,
+            10,
         )
         .unwrap();
     assert!(events(&mut cluster, now).is_empty());
@@ -85,7 +88,7 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
 }
 
 #[test]
-fn pending_disk_io_does_not_stop_proposal_timeouts_or_accept_late_decisions() {
+fn pending_disk_io_does_not_stop_proposal_timeouts_and_late_commits_are_reported() {
     let now = Instant::now();
     let mut cluster = leader(now);
     cluster.persistence.paused = true;
@@ -103,7 +106,11 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_or_accept_late_decisions() {
     assert_eq!(cluster.state.len(), 0);
 
     cluster.persistence.paused = false;
-    assert!(events(&mut cluster, later).is_empty());
+    let late = events(&mut cluster, later);
+    assert!(matches!(&late[..], [
+        ClusterEvent::AttestationCommitted(a), ClusterEvent::AttestationCommitted(b)
+    ] if a.proposal_id == first && b.proposal_id == second
+        && a.result == LockResult::Accepted && b.result == LockResult::Accepted));
     assert_eq!(cluster.state.len(), 2);
     assert_eq!(cluster.state.apply(&command(10, 3)), LockResult::Conflicting);
 }
@@ -125,7 +132,7 @@ fn persistence_failure_stops_votes_proposals_and_committed_decisions() {
     assert!(!cluster.is_leader());
     assert_eq!(cluster.pending_proposals(), 0);
     assert!(matches!(cluster.campaign(), Err(ClusterError::Failed)));
-    assert!(matches!(cluster.step(Message::default(), now), Err(ClusterError::Failed)));
+    assert!(matches!(cluster.step(Message::default(), now, 10), Err(ClusterError::Failed)));
     assert!(matches!(
         cluster.propose_attestation(command(10, 2), 10, now),
         Err(ProposeError::Failed)
@@ -230,7 +237,7 @@ mod disk {
             SlashingProtectionCluster::new(stored_config(&path, true, 1, vec![1]), now).unwrap();
         cluster.set_startup_wall_slot(99);
         assert!(matches!(cluster.campaign(), Err(ClusterError::NotReady)));
-        assert!(matches!(cluster.step(Message::default(), now), Err(ClusterError::NotReady)));
+        assert!(matches!(cluster.step(Message::default(), now, 10), Err(ClusterError::NotReady)));
         assert!(matches!(
             cluster.propose_attestation(command(100, 1), 100, now),
             Err(ProposeError::NotReady)
@@ -292,6 +299,7 @@ mod disk {
                     ..Message::default()
                 },
                 now,
+                10,
             )
             .unwrap();
         drain(&mut cluster, now, 10);
@@ -323,6 +331,7 @@ mod disk {
                     ..Message::default()
                 },
                 now,
+                10,
             )
             .unwrap();
         drain(&mut cluster, now, 10);
@@ -395,7 +404,7 @@ mod disk {
                     .iter_mut()
                     .find(|node| node.node_id() == message.to)
                     .unwrap()
-                    .step(message, now)
+                    .step(message, now, 10)
                     .unwrap();
             }
         };

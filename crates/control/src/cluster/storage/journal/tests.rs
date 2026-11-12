@@ -1,7 +1,7 @@
 use super::*;
 
 fn identity() -> StorageIdentity {
-    StorageIdentity::new(1, vec![3, 1, 2]).unwrap()
+    StorageIdentity::new(1, [3, 1, 2]).unwrap()
 }
 
 fn entry(index: u64, term: u64) -> Entry {
@@ -89,7 +89,7 @@ fn replay(bytes: &[u8]) -> io::Result<JournalReplay> {
 
 #[test]
 fn identity_is_order_independent_and_rejects_invalid_membership() {
-    assert_eq!(identity(), StorageIdentity::new(1, vec![1, 2, 3]).unwrap());
+    assert_eq!(identity(), StorageIdentity::new(1, [1, 2, 3]).unwrap());
     for (node, voters) in
         [(0, vec![0]), (1, vec![]), (1, vec![2]), (1, vec![0, 1]), (1, vec![1, 1])]
     {
@@ -102,10 +102,9 @@ fn identity_is_order_independent_and_rejects_invalid_membership() {
 
 #[test]
 fn identity_and_membership_must_match_on_recovery() {
-    for identity in [
-        StorageIdentity::new(2, vec![1, 2, 3]).unwrap(),
-        StorageIdentity::new(1, vec![1, 2]).unwrap(),
-    ] {
+    for identity in
+        [StorageIdentity::new(2, [1, 2, 3]).unwrap(), StorageIdentity::new(1, [1, 2]).unwrap()]
+    {
         let mut replay = JournalReplay::new(identity);
         assert_eq!(replay.feed(&header()).unwrap_err().kind(), io::ErrorKind::InvalidData);
     }

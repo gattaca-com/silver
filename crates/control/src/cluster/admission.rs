@@ -62,6 +62,10 @@ impl SlashingAdmission {
         wall_slot.saturating_sub(SLOTS_PER_EPOCH)
     }
 
+    pub(crate) fn wall_slot_for_floor(floor: u64) -> u64 {
+        floor.saturating_add(SLOTS_PER_EPOCH)
+    }
+
     pub(crate) fn validate(&self, slot: u64, wall_slot: u64) -> Result<(), AdmissionError> {
         let startup_floor = self.startup_floor.ok_or(AdmissionError::StartupFloorUnset)?;
         if slot > wall_slot {

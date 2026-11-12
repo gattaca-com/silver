@@ -33,6 +33,23 @@ impl SnapshotTransfers {
         }
     }
 
+    /// The network reports only that a send to `peer` failed, not which
+    /// message. A lost connection loses an in-flight snapshot too, so a
+    /// pending transfer fails rather than waiting out its timeout.
+    pub fn unreachable(&mut self, node: &mut RawNode<RaftStorage>, peer: u64) {
+        let Some(index) = self.pending.iter().position(|transfer| transfer.peer == peer) else {
+            return;
+        };
+        self.pending.swap_remove(index);
+        node.report_snapshot(peer, SnapshotStatus::Failure);
+        ClusterCounters::SnapshotTransferFailures.inc();
+    }
+
+    #[cfg(test)]
+    pub fn is_pending(&self, peer: u64) -> bool {
+        self.pending.iter().any(|transfer| transfer.peer == peer)
+    }
+
     pub fn expire(&mut self, node: &mut RawNode<RaftStorage>, now: Instant) {
         self.pending.retain(|transfer| {
             if node.raft.state != StateRole::Leader ||

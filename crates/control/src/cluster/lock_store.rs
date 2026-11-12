@@ -13,9 +13,10 @@ use super::{
 /// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
 /// epochs.
 const LOCK_RING_SIZE: usize = 2;
+/// Every snapshot, sent or journaled, fits one cluster message.
+pub(super) const MAX_SNAPSHOT_BYTES: usize = MAX_CLUSTER_MESSAGE_BYTES - 1024;
 const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVLOCK\x03";
 const SNAPSHOT_BLOCK_LEN: usize = 8 + 8 + 96;
-const MAX_SNAPSHOT_BYTES: usize = MAX_CLUSTER_MESSAGE_BYTES - 1024;
 const SNAPSHOT_FIXED_LEN: usize = 8 + 8 + 8 + LOCK_RING_SIZE * SNAPSHOT_BUCKET_LEN + 4 + 4;
 const SNAPSHOT_BUCKET_LEN: usize = 1 + 8 + 4;
 const SNAPSHOT_VOTE_LEN: usize = 8 + 32 + 8;
@@ -24,6 +25,9 @@ const SNAPSHOT_EVICTED_LEN: usize = 8 + 8;
 /// signature. The signature leaves `committee_index` out, so a vote naming
 /// another committee is still the same vote.
 const SIGNED_VOTE_START: usize = 8 + 8;
+// `encode_snapshot` checks the size before any count cast, so every count is
+// below this.
+const _: () = assert!(MAX_SNAPSHOT_BYTES / SNAPSHOT_EVICTED_LEN <= u32::MAX as usize);
 
 /// Result of applying a committed attestation or block lock command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,9 +169,8 @@ impl SlashingLockStore {
     }
 
     pub(super) fn encode_snapshot(&self) -> io::Result<Vec<u8>> {
-        let votes: usize = self.locks.iter().map(|bucket| bucket.attestations.len()).sum();
         let length = SNAPSHOT_FIXED_LEN +
-            votes * SNAPSHOT_VOTE_LEN +
+            self.len() * SNAPSHOT_VOTE_LEN +
             self.evicted_sources.len() * SNAPSHOT_EVICTED_LEN +
             self.blocks.len() * SNAPSHOT_BLOCK_LEN;
         if length > MAX_SNAPSHOT_BYTES {
@@ -207,6 +210,8 @@ impl SlashingLockStore {
         Ok(bytes)
     }
 
+    /// Checks the invariants `apply` keeps, so a snapshot cannot build a
+    /// store live commands could not.
     pub(super) fn decode_snapshot(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() > MAX_SNAPSHOT_BYTES {
             return Err(invalid_snapshot("lock snapshot exceeds transport limit"));
@@ -231,10 +236,7 @@ impl SlashingLockStore {
                 return Err(invalid_snapshot("snapshot epoch is in the wrong ring bucket"));
             }
             bucket.epoch = Some(epoch);
-            let count = u32::from_le_bytes(cursor.take()?) as usize;
-            if count > cursor.0.len() / SNAPSHOT_VOTE_LEN {
-                return Err(invalid_snapshot("invalid snapshot lock count"));
-            }
+            let count = cursor.count(SNAPSHOT_VOTE_LEN)?;
             bucket.attestations.reserve(count);
             for _ in 0..count {
                 let validator = u64::from_le_bytes(cursor.take()?);
@@ -245,10 +247,7 @@ impl SlashingLockStore {
                 }
             }
         }
-        let count = u32::from_le_bytes(cursor.take()?) as usize;
-        if count > cursor.0.len() / SNAPSHOT_EVICTED_LEN {
-            return Err(invalid_snapshot("invalid snapshot evicted source count"));
-        }
+        let count = cursor.count(SNAPSHOT_EVICTED_LEN)?;
         store.evicted_sources.reserve(count);
         for _ in 0..count {
             let validator = u64::from_le_bytes(cursor.take()?);
@@ -257,26 +256,61 @@ impl SlashingLockStore {
                 return Err(invalid_snapshot("duplicate validator in evicted sources"));
             }
         }
-        let count = u32::from_le_bytes(cursor.take()?) as usize;
-        if count > cursor.0.len() / SNAPSHOT_BLOCK_LEN {
-            return Err(invalid_snapshot("invalid snapshot block count"));
-        }
-        store.blocks.reserve(count);
-        for _ in 0..count {
-            let proposer_index = u64::from_le_bytes(cursor.take()?);
-            let slot = u64::from_le_bytes(cursor.take()?);
-            if slot < store.minimum_slot {
-                return Err(invalid_snapshot("snapshot block is below the minimum slot"));
-            }
-            let key = BlockKey { proposer_index, slot };
-            if store.blocks.insert(key, cursor.take()?).is_some() {
-                return Err(invalid_snapshot("duplicate block in snapshot"));
-            }
-        }
+        let count = cursor.count(SNAPSHOT_BLOCK_LEN)?;
+        store.decode_blocks(&mut cursor, count)?;
         if !cursor.0.is_empty() {
             return Err(invalid_snapshot("trailing attestation snapshot bytes"));
         }
+        store.check_consistency()?;
         Ok(store)
+    }
+
+    fn decode_blocks(&mut self, cursor: &mut SnapshotCursor, count: usize) -> io::Result<()> {
+        self.blocks.reserve(count);
+        for _ in 0..count {
+            let proposer_index = u64::from_le_bytes(cursor.take()?);
+            let slot = u64::from_le_bytes(cursor.take()?);
+            if slot < self.minimum_slot {
+                return Err(invalid_snapshot("snapshot block is below the minimum slot"));
+            }
+            let key = BlockKey { proposer_index, slot };
+            if self.blocks.insert(key, cursor.take()?).is_some() {
+                return Err(invalid_snapshot("duplicate block in snapshot"));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_consistency(&self) -> io::Result<()> {
+        if self.minimum_target < self.minimum_slot / SLOTS_PER_EPOCH {
+            return Err(invalid_snapshot("snapshot target floor is below its slot floor"));
+        }
+        for bucket in &self.locks {
+            let Some(epoch) = bucket.epoch else {
+                continue;
+            };
+            if epoch < self.minimum_target && !bucket.attestations.is_empty() {
+                return Err(invalid_snapshot("snapshot keeps votes below the target floor"));
+            }
+            if bucket.attestations.values().any(|vote| vote.source > epoch) {
+                return Err(invalid_snapshot("snapshot vote source is after its target"));
+            }
+        }
+        if self.evicted_sources.values().any(|&source| source >= self.minimum_target) {
+            return Err(invalid_snapshot("snapshot evicted source is not below the target floor"));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn oversized() -> Self {
+        let mut store = Self::default();
+        let bucket = &mut store.locks[1];
+        bucket.epoch = Some(1);
+        let votes = (MAX_SNAPSHOT_BYTES / SNAPSHOT_VOTE_LEN) as u64 + 1;
+        let vote = Vote { hash: [0; 32], source: 0 };
+        bucket.attestations.extend((0..votes).map(|validator| (validator, vote)));
+        store
     }
 
     pub(super) fn len(&self) -> usize {
@@ -311,6 +345,16 @@ impl SnapshotCursor<'_> {
             .ok_or_else(|| invalid_snapshot("truncated attestation snapshot"))?;
         self.0 = rest;
         bytes.try_into().map_err(|_| invalid_snapshot("invalid attestation snapshot field"))
+    }
+
+    /// A record count that cannot exceed the remaining bytes, so it is safe
+    /// to reserve for.
+    fn count(&mut self, record_len: usize) -> io::Result<usize> {
+        let count = u32::from_le_bytes(self.take()?) as usize;
+        if count > self.0.len() / record_len {
+            return Err(invalid_snapshot("invalid snapshot record count"));
+        }
+        Ok(count)
     }
 }
 
@@ -454,6 +498,37 @@ mod tests {
         }
 
         assert!(store.encode_snapshot().is_ok());
+    }
+
+    #[test]
+    fn oversized_snapshot_is_an_error_not_a_panic() {
+        assert!(SlashingLockStore::oversized().encode_snapshot().is_err());
+    }
+
+    #[test]
+    fn inconsistent_snapshots_are_rejected() {
+        let consistent = || {
+            let mut store = SlashingLockStore::default();
+            store.apply(&vote(7, 2, 4));
+            store.apply(&vote(8, 1, 3));
+            store.advance_minimum_slot(4 * SLOTS_PER_EPOCH);
+            store
+        };
+        assert!(
+            SlashingLockStore::decode_snapshot(&consistent().encode_snapshot().unwrap()).is_ok()
+        );
+
+        let mut source_after_target = consistent();
+        source_after_target.locks[0].attestations.get_mut(&7).unwrap().source = 5;
+        let mut vote_below_floor = consistent();
+        vote_below_floor.minimum_target = 5;
+        let mut evicted_at_floor = consistent();
+        evicted_at_floor.evicted_sources.insert(8, 4);
+        let mut target_below_slot = consistent();
+        target_below_slot.minimum_slot = 5 * SLOTS_PER_EPOCH;
+        for store in [source_after_target, vote_below_floor, evicted_at_floor, target_below_slot] {
+            assert!(SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).is_err());
+        }
     }
 
     #[test]

@@ -39,24 +39,10 @@ pub(super) enum PersistenceEvent {
     Compacted(Snapshot),
 }
 
-enum Pending {
-    Ready(PersistedReady),
-    Compact(Snapshot),
-}
-
-impl Pending {
-    fn into_event(self) -> PersistenceEvent {
-        match self {
-            Self::Ready(ready) => PersistenceEvent::Persisted(ready),
-            Self::Compact(snapshot) => PersistenceEvent::Compacted(snapshot),
-        }
-    }
-}
-
 pub(super) struct Persistence {
     #[cfg(target_os = "linux")]
     disk: Option<ClusterStorage>,
-    pending: Option<Pending>,
+    pending: Option<PersistenceEvent>,
     #[cfg(test)]
     pub paused: bool,
     #[cfg(test)]
@@ -67,7 +53,7 @@ impl Persistence {
     pub fn new(config: &SlashingProtectionConfig) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {
-            let identity = StorageIdentity::new(config.node_id, config.voters.clone())?;
+            let identity = StorageIdentity::new(config.node_id, config.voters.iter().copied())?;
             let disk = match &config.storage {
                 ClusterStorageConfig::Create(path) => ClusterStorage::create(path, identity)?,
                 ClusterStorageConfig::Open(path) => ClusterStorage::open(path, identity)?,
@@ -130,7 +116,7 @@ impl Persistence {
         }
         #[cfg(not(target_os = "linux"))]
         let _ = (entries, hard_state);
-        self.pending = Some(Pending::Compact(snapshot));
+        self.pending = Some(PersistenceEvent::Compacted(snapshot));
         Ok(())
     }
 
@@ -159,7 +145,7 @@ impl Persistence {
                 disk.persist(ready.number(), ready.entries(), ready.hs())?;
             }
         }
-        self.pending = Some(Pending::Ready(PersistedReady {
+        self.pending = Some(PersistenceEvent::Persisted(PersistedReady {
             number: ready.number(),
             messages: ready.take_persisted_messages(),
             committed_entries: ready.take_committed_entries(),
@@ -180,8 +166,9 @@ impl Persistence {
             }
         }
 
-        if matches!(&self.pending, Some(Pending::Ready(ready)) if !ready.wait_for_disk) {
-            return Ok(self.pending.take().map(Pending::into_event));
+        if matches!(&self.pending, Some(PersistenceEvent::Persisted(ready)) if !ready.wait_for_disk)
+        {
+            return Ok(self.pending.take());
         }
         #[cfg(target_os = "linux")]
         if let Some(disk) = &mut self.disk {
@@ -191,14 +178,18 @@ impl Persistence {
                 }
                 Some(ClusterStorageEvent::Persisted { ready_number }) => {
                     match self.pending.take() {
-                        Some(Pending::Ready(ready)) if ready.number == ready_number => {
+                        Some(PersistenceEvent::Persisted(ready))
+                            if ready.number == ready_number =>
+                        {
                             Ok(Some(PersistenceEvent::Persisted(ready)))
                         }
                         _ => Err(io::Error::other("unexpected Raft persistence completion")),
                     }
                 }
                 Some(ClusterStorageEvent::Compacted { index }) => match self.pending.take() {
-                    Some(Pending::Compact(snapshot)) if snapshot.get_metadata().index == index => {
+                    Some(PersistenceEvent::Compacted(snapshot))
+                        if snapshot.get_metadata().index == index =>
+                    {
                         Ok(Some(PersistenceEvent::Compacted(snapshot)))
                     }
                     _ => Err(io::Error::other("unexpected Raft compaction completion")),
@@ -207,6 +198,6 @@ impl Persistence {
                 None => Ok(None),
             };
         }
-        Ok(self.pending.take().map(Pending::into_event))
+        Ok(self.pending.take())
     }
 }

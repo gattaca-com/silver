@@ -1703,7 +1703,7 @@ fn lock_failure_code(failure: LocalGossipFailure) -> u16 {
     match failure {
         LocalGossipFailure::NotSynced => 503,
         LocalGossipFailure::TimedOut |
-        LocalGossipFailure::LockTimedOut |
+        LocalGossipFailure::LockPending |
         LocalGossipFailure::Internal => 500,
         _ => 400,
     }

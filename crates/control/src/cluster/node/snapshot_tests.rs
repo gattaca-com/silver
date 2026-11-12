@@ -10,9 +10,10 @@ use crate::cluster::AttestationKey;
 fn config(id: u64) -> SlashingProtectionConfig {
     let mut config = SlashingProtectionConfig::new(
         id,
-        vec![1, 2, 3],
+        [1, 2, 3],
         ClusterStorageConfig::Create("unused-test-journal".into()),
-    );
+    )
+    .unwrap();
     config.snapshot_interval = 4;
     config
 }
@@ -64,7 +65,7 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
     node.set_startup_wall_slot(99);
     node.persistence.paused = true;
-    node.step(snapshot_message(snapshot(10)), now).unwrap();
+    node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
     node.spin(now, 100, |_| panic!("snapshot acknowledged before sync")).unwrap();
     assert_eq!(node.state.len(), 0);
     assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 0);
@@ -83,7 +84,62 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
 }
 
 #[test]
-fn invalid_snapshot_payload_or_membership_stops_participation() {
+fn snapshot_below_the_commit_index_is_not_decoded() {
+    let now = Instant::now();
+    let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
+    node.set_startup_wall_slot(99);
+    node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
+    node.spin(now, 100, |_| {}).unwrap();
+
+    let mut stale = snapshot(9);
+    stale.data = vec![0; 20].into();
+    node.step(snapshot_message(stale), now, 100).unwrap();
+    node.spin(now, 100, |_| {}).unwrap();
+    assert!(!node.is_failed());
+    assert_eq!(node.state.len(), 1);
+}
+
+/// raft-rs panics on a follower when an append claims a committed index with
+/// another term, or a heartbeat commits past its log.
+#[test]
+fn forged_append_and_heartbeat_are_refused_on_a_follower() {
+    let now = Instant::now();
+    let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
+    node.set_startup_wall_slot(99);
+    node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
+    node.spin(now, 100, |_| {}).unwrap();
+    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.committed, 10);
+
+    let leader = |msg_type| Message { msg_type, from: 2, to: 1, term: 2, ..Message::default() };
+    let append = Message {
+        index: 10,
+        log_term: 2,
+        entries: vec![Entry { index: 5, term: 9, ..Entry::default() }].into(),
+        ..leader(MessageType::MsgAppend)
+    };
+    assert!(matches!(
+        node.step(append, now, 100),
+        Err(ClusterError::MemberMessage(MemberMessageError::EntryIndexGap {
+            expected: 11,
+            actual: 5
+        }))
+    ));
+    let heartbeat = Message { commit: 1_000, ..leader(MessageType::MsgHeartbeat) };
+    assert!(matches!(
+        node.step(heartbeat, now, 100),
+        Err(ClusterError::MemberMessage(MemberMessageError::CommitPastLog {
+            commit: 1_000,
+            last_index: 10
+        }))
+    ));
+    node.spin(now, 100, |_| {}).unwrap();
+    assert!(!node.is_failed());
+}
+
+/// A member's bad snapshot is refused before raft-rs restores it, so the node
+/// keeps participating instead of failing on apply.
+#[test]
+fn invalid_snapshot_payload_or_membership_is_refused() {
     for bad_membership in [false, true] {
         let now = Instant::now();
         let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
@@ -93,18 +149,18 @@ fn invalid_snapshot_payload_or_membership_stops_participation() {
         } else {
             snapshot.data = vec![0; 20].into();
         }
-        node.step(snapshot_message(snapshot), now).unwrap();
         assert!(matches!(
-            node.spin(now, 100, |_| panic!("released invalid snapshot")),
-            Err(ClusterError::Snapshot(_))
+            node.step(snapshot_message(snapshot), now, 100),
+            Err(ClusterError::MemberMessage(MemberMessageError::Snapshot))
         ));
-        assert!(node.is_failed());
+        node.spin(now, 100, |_| panic!("released invalid snapshot")).unwrap();
+        assert!(!node.is_failed());
     }
 }
 
 #[test]
 fn storage_serves_captured_state_not_a_snapshot_at_an_unapplied_commit() {
-    let mut storage = RaftStorage::new(vec![1, 2, 3]);
+    let mut storage = RaftStorage::new(&[1, 2, 3]);
     storage.install_snapshot(snapshot(10)).unwrap();
     storage.memory.wl().append(&[Entry { index: 11, term: 2, ..Entry::default() }]).unwrap();
     storage.memory.wl().set_hardstate(HardState { term: 2, commit: 11, ..HardState::default() });
@@ -176,7 +232,7 @@ impl Network {
                     .iter_mut()
                     .find(|node| node.node_id() == message.to)
                     .unwrap()
-                    .step(message, self.now)
+                    .step(message, self.now, 100)
                     .unwrap();
             }
             if self.nodes.iter().all(quiet) {
@@ -242,6 +298,33 @@ fn a_lost_snapshot_is_retried_and_a_lagging_follower_catches_up() {
     );
 }
 
+/// A send failure to the peer fails its snapshot transfer at once, so the
+/// retry does not wait out the transfer timeout.
+#[test]
+fn _unreachable_peer_fails_its_snapshot_transfer_at_once() {
+    let now = Instant::now();
+    let nodes =
+        (1..=3).map(|id| SlashingProtectionCluster::in_memory(config(id), now).unwrap()).collect();
+    let mut network = Network::new(nodes, now);
+    network.populate_with_one_follower_offline();
+    network.drop_snapshot = true;
+    network.isolated = None;
+    while network.snapshots == 0 {
+        network.now += Duration::from_millis(100);
+        network.settle();
+    }
+    assert!(network.nodes[0].snapshot_transfers.is_pending(3));
+
+    network.nodes[0].report_unreachable(3);
+    assert!(!network.nodes[0].snapshot_transfers.is_pending(3));
+    let started = network.now;
+    while network.nodes[2].state.len() < 24 {
+        network.now += Duration::from_millis(100);
+        network.settle();
+        assert!(network.now - started < Duration::from_secs(2), "waited for the timeout");
+    }
+}
+
 #[test]
 fn a_lost_snapshot_ack_does_not_stall_replication() {
     let now = Instant::now();
@@ -264,7 +347,7 @@ fn a_lost_snapshot_ack_does_not_stall_replication() {
 
 #[test]
 fn compacting_again_at_the_same_applied_index_preserves_the_suffix() {
-    let mut storage = RaftStorage::new(vec![1, 2, 3]);
+    let mut storage = RaftStorage::new(&[1, 2, 3]);
     storage.install_snapshot(snapshot(10)).unwrap();
     let entry = Entry { index: 11, term: 2, ..Entry::default() };
     storage.memory.wl().append(&[entry.clone()]).unwrap();

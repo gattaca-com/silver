@@ -22,6 +22,7 @@ silver_common::declare_counters! {
         LastIndex,
         PendingProposals,
         Failed,
+        FailureKind,
         FloorLatched,
         StartupFloorSlot,
         MinimumSlot,
@@ -32,6 +33,7 @@ silver_common::declare_counters! {
         ProposalsSubmitted,
         ProposalsCommitted,
         ProposalsTimedOut,
+        ProposalsCommittedLate,
         ProposalBatchesDropped,
         AttestationLockAccepted,
         AttestationLockSame,
@@ -51,7 +53,14 @@ silver_common::declare_counters! {
         SnapshotsSent,
         SnapshotsRestored,
         SnapshotTransferTimeouts,
+        SnapshotTransferFailures,
         Compactions,
+        // Leaders ignored for appending entries ahead of this node's clock.
+        LeadersBoycotted,
+        // Compactions skipped because the lock snapshot exceeded the transport limit.
+        CompactionsSkipped,
+        // Size of the last encoded lock snapshot.
+        SnapshotBytes,
         InboundInvalid,
         MessagesIn,
         MessagesOut,

@@ -5,8 +5,8 @@ use std::{
 };
 
 use raft::{
-    Config, RawNode, SnapshotStatus, StateRole,
-    eraftpb::{Entry, EntryType, Message, MessageType},
+    Config, RawNode, StateRole,
+    eraftpb::{Entry, Message, MessageType},
 };
 use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
 
@@ -15,15 +15,18 @@ use super::persistence::RecoveredStorage;
 use super::{
     admission::{AdmissionError, SlashingAdmission},
     command::{
-        AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError, ReplicatedCommand,
+        AttestationLockCommand, BlockKey, BlockLockCommand, DecodedEntry, EntryError,
+        ReplicatedCommand,
     },
     lock_store::{LockResult, SlashingLockStore},
+    member_message_check::{LeaderBoycott, MemberMessageCheck, MemberMessageError},
     metrics::{ClusterCounters, ClusterMetrics, ResolvedProposal},
     peers::ClusterPeers,
     pending::{PendingProposal, PendingProposals},
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
     raft_storage::{RaftStorage, RestoredSnapshot},
     snapshot_transfers::SnapshotTransfers,
+    voters::Voters,
 };
 
 const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -43,7 +46,7 @@ const MAX_INFLIGHT_APPENDS: usize = 64;
 #[derive(Debug, Clone)]
 pub struct SlashingProtectionConfig {
     pub node_id: u64,
-    pub voters: Vec<u64>,
+    pub voters: Voters,
     pub storage: ClusterStorageConfig,
     pub tick_interval: Duration,
     pub heartbeat_ticks: usize,
@@ -55,8 +58,13 @@ pub struct SlashingProtectionConfig {
 }
 
 impl SlashingProtectionConfig {
-    pub fn new(node_id: u64, voters: Vec<u64>, storage: ClusterStorageConfig) -> Self {
-        Self {
+    pub fn new(
+        node_id: u64,
+        voters: impl IntoIterator<Item = u64>,
+        storage: ClusterStorageConfig,
+    ) -> Result<Self, ClusterError> {
+        let voters = Voters::new(node_id, voters).map_err(ClusterError::InvalidConfig)?;
+        Ok(Self {
             node_id,
             voters,
             storage,
@@ -65,13 +73,10 @@ impl SlashingProtectionConfig {
             election_ticks: DEFAULT_ELECTION_TICKS,
             proposal_timeout: DEFAULT_PROPOSAL_TIMEOUT,
             snapshot_interval: 4096,
-        }
+        })
     }
 
     fn validate(&self) -> Result<(), ClusterError> {
-        if self.node_id == 0 {
-            return Err(ClusterError::InvalidConfig("Raft node id must be non-zero"));
-        }
         if self.tick_interval.is_zero() {
             return Err(ClusterError::InvalidConfig("Raft tick interval must be non-zero"));
         }
@@ -81,23 +86,6 @@ impl SlashingProtectionConfig {
         if self.snapshot_interval == 0 {
             return Err(ClusterError::InvalidConfig("Raft snapshot interval must be non-zero"));
         }
-        if self.voters.is_empty() {
-            return Err(ClusterError::InvalidConfig("Raft voter set must not be empty"));
-        }
-        if !self.voters.contains(&self.node_id) {
-            return Err(ClusterError::InvalidConfig("local Raft node is not in voter set"));
-        }
-        if self.voters.contains(&0) {
-            return Err(ClusterError::InvalidConfig("Raft voter ids must be non-zero"));
-        }
-
-        let mut voters = self.voters.clone();
-        voters.sort_unstable();
-        voters.dedup();
-        if voters.len() != self.voters.len() {
-            return Err(ClusterError::InvalidConfig("Raft voter ids must be unique"));
-        }
-
         self.raft_config().validate().map_err(ClusterError::Raft)
     }
 
@@ -174,11 +162,8 @@ pub struct BlockDecision {
 }
 
 impl AttestationDecision {
-    /// Whether this candidate may enter Beacon State validation. Callers must
-    /// not treat an accepted Raft selection alone as sufficient after the
-    /// request has expired.
-    #[must_use]
-    pub fn may_validate(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn may_validate(&self) -> bool {
         self.admission.is_ok() &&
             matches!(self.result, LockResult::Accepted | LockResult::AlreadyAcceptedSame)
     }
@@ -191,8 +176,7 @@ pub enum ClusterEvent {
     SendRaftMessage(Message),
     AttestationCommitted(AttestationDecision),
     BlockCommitted(BlockDecision),
-    /// The proposal may still commit and reserve its candidate, but must no
-    /// longer cause validation or publication for the original request.
+    /// The proposal may still commit, and then reports its decision late.
     ProposalTimedOut(ProposalId),
 }
 
@@ -232,13 +216,41 @@ impl Error for ProposeError {
 pub enum ClusterError {
     InvalidConfig(&'static str),
     Raft(raft::Error),
-    Command(CommandDecodeError),
-    InvalidProposalContextLength(usize),
-    UnsupportedEntry(EntryType),
+    BadEntry { index: u64, term: u64, cause: EntryError },
+    MemberMessage(MemberMessageError),
     Snapshot(io::Error),
     Storage(io::Error),
     NotReady,
     Failed,
+}
+
+/// What stopped Raft processing, exported as the `FailureKind` gauge so an
+/// operator can tell a disk to fix from a binary to replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum FailureKind {
+    /// Journal I/O. A restart on a healthy disk recovers.
+    Storage = 1,
+    /// A committed entry this binary cannot apply. A restart replays it, so
+    /// only a binary that can apply it recovers.
+    BadEntry = 2,
+    Snapshot = 3,
+    Raft = 4,
+    Other = 5,
+}
+
+impl ClusterError {
+    pub fn failure_kind(&self) -> FailureKind {
+        match self {
+            Self::Storage(_) => FailureKind::Storage,
+            Self::BadEntry { .. } => FailureKind::BadEntry,
+            Self::Snapshot(_) => FailureKind::Snapshot,
+            Self::Raft(_) => FailureKind::Raft,
+            Self::InvalidConfig(_) | Self::MemberMessage(_) | Self::NotReady | Self::Failed => {
+                FailureKind::Other
+            }
+        }
+    }
 }
 
 impl fmt::Display for ClusterError {
@@ -251,17 +263,13 @@ impl fmt::Display for ClusterError {
             Self::Storage(error) => write!(f, "Raft storage failed: {error}"),
             Self::NotReady => f.write_str("Raft storage recovery is not complete"),
             Self::Failed => f.write_str("Raft processing has stopped after a failure"),
-            Self::Command(error) => error.fmt(f),
-            Self::InvalidProposalContextLength(actual) => write!(
-                f,
-                "Raft proposal context has length {actual}, expected 16 or {PROPOSAL_CONTEXT_LEN}"
-            ),
-            Self::UnsupportedEntry(entry_type) => {
-                write!(f, "unsupported committed Raft entry type {entry_type:?}")
+            Self::BadEntry { index, term, cause } => {
+                write!(f, "committed Raft entry {index} (term {term}) cannot be applied: {cause}")
             }
             Self::Snapshot(error) => {
                 write!(f, "invalid slashing protection Raft snapshot: {error}")
             }
+            Self::MemberMessage(error) => write!(f, "refused member Raft message: {error:?}"),
         }
     }
 }
@@ -272,12 +280,11 @@ impl Error for ClusterError {
             Self::Raft(error) => Some(error),
             Self::Storage(error) => Some(error),
             Self::Snapshot(error) => Some(error),
-            Self::Command(error) => Some(error),
             Self::InvalidConfig(_) |
             Self::NotReady |
             Self::Failed |
-            Self::UnsupportedEntry(_) |
-            Self::InvalidProposalContextLength(_) => None,
+            Self::BadEntry { .. } |
+            Self::MemberMessage(_) => None,
         }
     }
 }
@@ -305,6 +312,10 @@ pub struct SlashingProtectionCluster {
     pending_proposals: PendingProposals,
     resolved: Vec<ResolvedProposal>,
     persistence_started: Option<Instant>,
+    /// Applied index before which compaction is not retried after an
+    /// oversized snapshot, so the skip is not logged and counted every loop.
+    compaction_retry_at: u64,
+    leader_boycott: LeaderBoycott,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
@@ -344,6 +355,8 @@ impl SlashingProtectionCluster {
             pending_proposals: PendingProposals::default(),
             resolved: Vec::new(),
             persistence_started: None,
+            compaction_retry_at: 0,
+            leader_boycott: LeaderBoycott::default(),
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
@@ -407,6 +420,11 @@ impl SlashingProtectionCluster {
         self.pending_proposals.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn minimum_slot(&self) -> u64 {
+        self.state.minimum_slot()
+    }
+
     /// Explicitly start an election, primarily for controlled startup and
     /// tests.
     pub fn campaign(&mut self) -> Result<(), ClusterError> {
@@ -418,12 +436,30 @@ impl SlashingProtectionCluster {
 
     /// Deliver one decoded message received from another member of this Raft
     /// group.
-    pub fn step(&mut self, message: Message, now: Instant) -> Result<(), ClusterError> {
+    pub fn step(
+        &mut self,
+        message: Message,
+        now: Instant,
+        wall_slot: u64,
+    ) -> Result<(), ClusterError> {
         if self.failed {
             return Err(ClusterError::Failed);
         }
+        if self.leader_boycott.covers(&message, wall_slot) {
+            return Ok(());
+        }
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        let checked =
+            MemberMessageCheck { log: &node.raft.raft_log, voters: &self.config.voters, wall_slot }
+                .check(&message);
+        if let Err(error) = checked {
+            if let MemberMessageError::LeaderAheadOfClock { slot, .. } = error {
+                self.leader_boycott.start(&message, slot, wall_slot);
+            }
+            return Err(ClusterError::MemberMessage(error));
+        }
         self.peers.heard(&message, now);
-        self.node.as_mut().ok_or(ClusterError::NotReady)?.step(message).map_err(ClusterError::Raft)
+        node.step(message).map_err(ClusterError::Raft)
     }
 
     pub fn peer_stats(&self, now: Instant) -> impl Iterator<Item = ClusterPeerStats> {
@@ -443,7 +479,7 @@ impl SlashingProtectionCluster {
             let Some(node) = self.node.as_mut()
         {
             node.report_unreachable(node_id);
-            node.report_snapshot(node_id, SnapshotStatus::Failure);
+            self.snapshot_transfers.unreachable(node, node_id);
         }
     }
 
@@ -553,9 +589,10 @@ impl SlashingProtectionCluster {
         }
         self.expire_proposals(now, &mut emit);
         let result = self.drive(now, wall_slot, &mut emit);
-        if result.is_err() {
+        if let Err(error) = &result {
             self.failed = true;
             ClusterCounters::Failed.set(1);
+            ClusterCounters::FailureKind.set(error.failure_kind() as u64);
             self.pending_proposals.clear();
             self.pending_minimum_slot = None;
         }
@@ -604,7 +641,21 @@ impl SlashingProtectionCluster {
         {
             return Ok(());
         }
-        let data = self.state.encode_snapshot().map_err(ClusterError::Snapshot)?;
+        if applied < self.compaction_retry_at {
+            return Ok(());
+        }
+        // Too many locks to ship in one message. The journal keeps every entry
+        // since the last snapshot, so skipping costs disk, not safety.
+        let data = match self.state.encode_snapshot() {
+            Ok(data) => data,
+            Err(error) => {
+                self.compaction_retry_at = applied.saturating_add(self.config.snapshot_interval);
+                ClusterCounters::CompactionsSkipped.inc();
+                silver_log::warn!(%error, applied, "lock snapshot compaction skipped");
+                return Ok(());
+            }
+        };
+        ClusterCounters::SnapshotBytes.set(data.len() as u64);
         let (snapshot, hard_state) = node.store().checkpoint(applied, data)?;
         let entries = node.store().suffix(applied)?;
         self.persistence.compact(snapshot, &entries, &hard_state).map_err(ClusterError::Storage)?;
@@ -691,11 +742,19 @@ impl SlashingProtectionCluster {
             return Ok(());
         }
 
-        self.node
+        let proposed = self
+            .node
             .as_mut()
             .ok_or(ClusterError::NotReady)?
-            .propose(Vec::new(), ReplicatedCommand::AdvanceMinimumSlot(desired).encode())?;
-        self.pending_minimum_slot = Some(desired);
+            .propose(Vec::new(), ReplicatedCommand::AdvanceMinimumSlot(desired).encode());
+        match proposed {
+            Ok(()) => self.pending_minimum_slot = Some(desired),
+            // Leadership is moving or the log is full; the next spin retries.
+            Err(raft::Error::ProposalDropped) => {
+                silver_log::debug!(desired, "minimum slot proposal dropped");
+            }
+            Err(error) => return Err(error.into()),
+        }
         Ok(())
     }
 
@@ -790,7 +849,7 @@ impl SlashingProtectionCluster {
         if self.node.is_some() {
             return Err(ClusterError::InvalidConfig("Raft already recovered"));
         }
-        let mut storage = RaftStorage::new(self.config.voters.clone());
+        let mut storage = RaftStorage::new(&self.config.voters);
         if !recovered.snapshot.is_empty() {
             self.state = RestoredSnapshot::decode(&recovered.snapshot, &self.config.voters)
                 .map_err(ClusterError::Snapshot)?
@@ -856,52 +915,36 @@ impl SlashingProtectionCluster {
             if entry.data.is_empty() {
                 continue;
             }
-            if entry.get_entry_type() != EntryType::EntryNormal {
-                return Err(ClusterError::UnsupportedEntry(entry.get_entry_type()));
-            }
+            let decoded = DecodedEntry::decode(&entry).map_err(|cause| ClusterError::BadEntry {
+                index: entry.index,
+                term: entry.term,
+                cause,
+            })?;
 
-            match ReplicatedCommand::decode(&entry.data).map_err(ClusterError::Command)? {
-                ReplicatedCommand::Lock(command) => {
-                    let proposal_id = ProposalId::decode(&entry.context)
-                        .map_err(ClusterError::InvalidProposalContextLength)?;
+            match decoded {
+                DecodedEntry::Lock(command, proposal_id) => {
                     let result = self.state.apply(&command);
-                    if proposal_id.origin_node_id == self.config.node_id &&
-                        proposal_id.incarnation == self.incarnation &&
-                        let Some(pending) = self.pending_proposals.take(proposal_id)
-                    {
-                        if !self.commit_in_time(pending, result, now) {
-                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
-                        } else {
-                            emit(ClusterEvent::AttestationCommitted(AttestationDecision {
-                                proposal_id,
-                                command,
-                                result,
-                                admission: self.admission.validate(command.key.slot, wall_slot),
-                            }));
-                        }
+                    if self.resolve_own_commit(proposal_id, result, now) {
+                        emit(ClusterEvent::AttestationCommitted(AttestationDecision {
+                            proposal_id,
+                            command,
+                            result,
+                            admission: self.admission.validate(command.key.slot, wall_slot),
+                        }));
                     }
                 }
-                ReplicatedCommand::BlockLock(command) => {
-                    let proposal_id = ProposalId::decode(&entry.context)
-                        .map_err(ClusterError::InvalidProposalContextLength)?;
+                DecodedEntry::BlockLock(command, proposal_id) => {
                     let result = self.state.apply_block(&command);
-                    if proposal_id.origin_node_id == self.config.node_id &&
-                        proposal_id.incarnation == self.incarnation &&
-                        let Some(pending) = self.pending_proposals.take(proposal_id)
-                    {
-                        if !self.commit_in_time(pending, result, now) {
-                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
-                        } else {
-                            emit(ClusterEvent::BlockCommitted(BlockDecision {
-                                proposal_id,
-                                key: command.key,
-                                result,
-                                admission: self.admission.validate(command.key.slot, wall_slot),
-                            }));
-                        }
+                    if self.resolve_own_commit(proposal_id, result, now) {
+                        emit(ClusterEvent::BlockCommitted(BlockDecision {
+                            proposal_id,
+                            key: command.key,
+                            result,
+                            admission: self.admission.validate(command.key.slot, wall_slot),
+                        }));
                     }
                 }
-                ReplicatedCommand::AdvanceMinimumSlot(minimum_slot) => {
+                DecodedEntry::AdvanceMinimumSlot(minimum_slot) => {
                     self.state.advance_minimum_slot(minimum_slot);
                     if self.pending_minimum_slot.is_some_and(|pending| pending <= minimum_slot) {
                         self.pending_minimum_slot = None;
@@ -913,20 +956,23 @@ impl SlashingProtectionCluster {
         Ok(())
     }
 
-    fn commit_in_time(
-        &mut self,
-        pending: PendingProposal,
-        result: LockResult,
-        now: Instant,
-    ) -> bool {
-        if now >= pending.deadline {
-            ClusterCounters::ProposalsTimedOut.inc();
-            self.resolved.push(pending.resolve(now, ClusterOutcome::TimedOut));
+    /// Whether this process proposed the entry, so its decision is reported.
+    /// A proposal that already timed out is still reported: its lock is held,
+    /// so the signed message can still be published.
+    fn resolve_own_commit(&mut self, id: ProposalId, result: LockResult, now: Instant) -> bool {
+        if id.origin_node_id != self.config.node_id || id.incarnation != self.incarnation {
             return false;
         }
-        self.metrics
-            .committed(now.saturating_duration_since(pending.submitted), pending.leader_origin);
-        self.resolved.push(pending.resolve(now, result.outcome()));
+        match self.pending_proposals.take(id) {
+            Some(pending) => {
+                self.metrics.committed(
+                    now.saturating_duration_since(pending.submitted),
+                    pending.leader_origin,
+                );
+                self.resolved.push(pending.resolve(now, result.outcome()));
+            }
+            None => ClusterCounters::ProposalsCommittedLate.inc(),
+        }
         true
     }
 
@@ -949,10 +995,11 @@ mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {
+    use raft::eraftpb::EntryType;
     use silver_common::SLOTS_PER_EPOCH;
 
     use super::*;
-    use crate::cluster::{AttestationKey, BlockKey, BlockLockCommand, LockResult};
+    use crate::cluster::{AttestationKey, BlockKey, BlockLockCommand, LockResult, StorageIdentity};
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
@@ -970,7 +1017,8 @@ mod tests {
             node_id,
             voters,
             ClusterStorageConfig::Create("unused-test-journal".into()),
-        );
+        )
+        .unwrap();
         config.tick_interval = Duration::from_millis(1);
         config.heartbeat_ticks = 1;
         config.election_ticks = 5;
@@ -1017,9 +1065,238 @@ mod tests {
                 .iter_mut()
                 .find(|cluster| cluster.node_id() == message.to)
                 .expect("Raft message target is a voter")
-                .step(message, now)
+                .step(message, now, wall_slot)
                 .unwrap();
         }
+    }
+
+    fn propose_message(from: u64, entries: Vec<Entry>) -> Message {
+        Message {
+            msg_type: MessageType::MsgPropose,
+            from,
+            to: 1,
+            entries: entries.into(),
+            ..Message::default()
+        }
+    }
+
+    fn forwarded(command: ReplicatedCommand, origin_node_id: u64) -> Entry {
+        let id = ProposalId { origin_node_id, sequence: 0, incarnation: [0; 16] };
+        Entry { data: command.encode().into(), context: id.encode().into(), ..Entry::default() }
+    }
+
+    /// Each proposal either panicked raft-rs on the leader or committed an
+    /// entry every node then fails to apply. All are refused at the boundary
+    /// and the node keeps serving.
+    #[test]
+    fn malformed_member_messages_are_refused_before_raft() {
+        let now = Instant::now();
+        let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
+        cluster.campaign().unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        assert!(cluster.is_leader());
+        let lock = ReplicatedCommand::Lock(command(10, 1));
+        let mut conf_change = forwarded(lock, 2);
+        conf_change.set_entry_type(EntryType::EntryConfChange);
+        let refused = [
+            (propose_message(2, vec![]), MemberMessageError::EmptyProposal),
+            (
+                propose_message(2, vec![conf_change]),
+                MemberMessageError::Entry(EntryError::UnsupportedType(EntryType::EntryConfChange)),
+            ),
+            (
+                propose_message(2, vec![forwarded(
+                    ReplicatedCommand::AdvanceMinimumSlot(u64::MAX),
+                    2,
+                )]),
+                MemberMessageError::ForwardedMinimumSlot,
+            ),
+            (propose_message(2, vec![forwarded(lock, 3)]), MemberMessageError::ProposalOrigin {
+                origin: 3,
+                from: 2,
+            }),
+            (
+                propose_message(2, vec![forwarded(ReplicatedCommand::Lock(command(12, 1)), 2)]),
+                MemberMessageError::ProposalAheadOfClock { slot: 12, wall_slot: 10 },
+            ),
+        ];
+        for (message, expected) in refused {
+            let result = cluster.step(message, now, 10);
+            assert!(
+                matches!(result, Err(ClusterError::MemberMessage(error)) if error == expected),
+                "expected {expected:?}, got {result:?}"
+            );
+        }
+        cluster.step(propose_message(2, vec![forwarded(lock, 2)]), now, 10).unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        assert!(!cluster.is_failed());
+    }
+
+    /// Locks past the snapshot limit keep committing; compaction is skipped
+    /// and not retried until another snapshot interval has applied.
+    #[test]
+    fn oversized_lock_state_skips_compaction_without_failing() {
+        let now = Instant::now();
+        let mut config = test_config(1, vec![1]);
+        config.snapshot_interval = 2;
+        let mut cluster = initialized_cluster(config, 9, now);
+        cluster.campaign().unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        cluster.state = SlashingLockStore::oversized();
+
+        cluster.propose_attestation(command(10, 1), 10, now).unwrap();
+        let mut committed = 0;
+        cluster
+            .spin(now, 10, |event| {
+                if let ClusterEvent::AttestationCommitted(decision) = event {
+                    assert_eq!(decision.result, LockResult::Accepted);
+                    committed += 1;
+                }
+            })
+            .unwrap();
+
+        assert_eq!(committed, 1);
+        assert!(!cluster.is_failed());
+        let node = cluster.node.as_ref().unwrap();
+        assert_eq!(node.store().snapshot_index(), 0, "no snapshot was cut");
+        assert_eq!(cluster.compaction_retry_at, node.raft.raft_log.applied + 2);
+    }
+
+    #[test]
+    fn more_than_seven_voters_are_rejected() {
+        let storage = || ClusterStorageConfig::Create("unused-test-journal".into());
+        assert!(matches!(
+            SlashingProtectionConfig::new(1, 1..=8, storage()),
+            Err(ClusterError::InvalidConfig(_))
+        ));
+        assert!(SlashingProtectionConfig::new(1, 1..=7, storage()).is_ok());
+        assert_eq!(StorageIdentity::new(1, 1..=8).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A committed entry this binary cannot apply names its position, so the
+    /// failure on every replay can be traced to one entry.
+    #[test]
+    fn unappliable_committed_entry_reports_its_index_and_term() {
+        let now = Instant::now();
+        let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
+        cluster.campaign().unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        let node = cluster.node.as_mut().unwrap();
+        let index = node.raft.raft_log.last_index() + 1;
+        let term = node.raft.term;
+        node.propose(Vec::new(), vec![9]).unwrap();
+
+        let error = cluster.spin(now, 10, |_| {}).unwrap_err();
+        assert!(
+            matches!(error, ClusterError::BadEntry {
+                index: i,
+                term: t,
+                cause: EntryError::UnknownTag(9),
+            } if i == index && t == term),
+            "{error:?}"
+        );
+        assert_eq!(error.failure_kind(), FailureKind::BadEntry);
+        assert!(error.to_string().contains(&format!("entry {index} (term {term})")));
+        assert!(cluster.is_failed());
+    }
+
+    /// One round of a network where node 1's clock is far ahead, and
+    /// `crashed` neither spins nor receives.
+    fn skewed_round(clusters: &mut [SlashingProtectionCluster], now: Instant, crashed: u64) {
+        let wall_slot = |node_id: u64| if node_id == 1 { 1_000 } else { 10 };
+        let mut messages = Vec::new();
+        for cluster in clusters.iter_mut().filter(|cluster| cluster.node_id() != crashed) {
+            cluster
+                .spin(now, wall_slot(cluster.node_id()), |event| {
+                    if let ClusterEvent::SendRaftMessage(message) = event {
+                        messages.push(message);
+                    }
+                })
+                .unwrap();
+        }
+        for message in messages.into_iter().filter(|message| message.to != crashed) {
+            let target = clusters.iter_mut().find(|c| c.node_id() == message.to).unwrap();
+            let wall_slot = wall_slot(target.node_id());
+            match target.step(message, now, wall_slot) {
+                Ok(()) |
+                Err(ClusterError::MemberMessage(MemberMessageError::LeaderAheadOfClock {
+                    ..
+                })) => {}
+                Err(error) => panic!("{error:?}"),
+            }
+        }
+        assert!(clusters.iter().all(|cluster| cluster.minimum_slot() == 0));
+    }
+
+    #[test]
+    fn followers_replace_a_leader_whose_clock_jumped_forward() {
+        let mut now = Instant::now();
+        let voters = vec![1, 2, 3, 4, 5];
+        let mut clusters: Vec<_> = voters
+            .iter()
+            .map(|node_id| initialized_cluster(test_config(*node_id, voters.clone()), 9, now))
+            .collect();
+        clusters[0].campaign().unwrap();
+        let mut decisions = Vec::new();
+        for _ in 0..10 {
+            pump(&mut clusters, now, 10, &mut decisions);
+        }
+        assert!(clusters[0].is_leader());
+
+        let healthy_leader = |clusters: &[SlashingProtectionCluster], crashed: u64| {
+            clusters[1..]
+                .iter()
+                .find(|cluster| cluster.is_leader() && cluster.node_id() != crashed)
+                .map(SlashingProtectionCluster::node_id)
+        };
+        let mut replacement = None;
+        for _ in 0..500 {
+            now += Duration::from_millis(1);
+            skewed_round(&mut clusters, now, 0);
+            replacement = healthy_leader(&clusters, 0).filter(|_| !clusters[0].is_leader());
+            if replacement.is_some() {
+                break;
+            }
+        }
+        let crashed = replacement.expect("a follower with a correct clock takes over");
+        assert!(clusters[1..].iter().all(|cluster| cluster.leader_boycott.boycotts(1, 10)));
+
+        let mut reelected = None;
+        for _ in 0..2_000 {
+            now += Duration::from_millis(1);
+            skewed_round(&mut clusters, now, crashed);
+            assert!(!clusters[0].is_leader(), "the skewed node led again");
+            reelected = reelected.or(healthy_leader(&clusters, crashed));
+        }
+        assert!(reelected.is_some(), "another follower with a correct clock takes over");
+        assert!(
+            !clusters[1].leader_boycott.boycotts(1, 1_000),
+            "the boycott ends once the clock catches up"
+        );
+    }
+
+    /// raft-rs drops proposals while leadership is being transferred; the
+    /// floor proposal is retried instead of failing the cluster.
+    #[test]
+    fn dropped_minimum_slot_proposal_is_retried() {
+        let now = Instant::now();
+        let voters = vec![1, 2, 3];
+        let mut clusters: Vec<_> = voters
+            .iter()
+            .map(|node_id| initialized_cluster(test_config(*node_id, voters.clone()), 9, now))
+            .collect();
+        clusters[0].campaign().unwrap();
+        let mut decisions = Vec::new();
+        for _ in 0..10 {
+            pump(&mut clusters, now, 9, &mut decisions);
+        }
+        assert!(clusters[0].is_leader());
+
+        clusters[0].node.as_mut().unwrap().transfer_leader(2);
+        clusters[0].spin(now, 9 + 2 * SLOTS_PER_EPOCH, |_| {}).unwrap();
+
+        assert!(!clusters[0].is_failed());
+        assert_eq!(clusters[0].pending_minimum_slot, None, "retried on a later spin");
     }
 
     #[test]
@@ -1050,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn proposal_times_out_at_its_deadline_and_remains_locked() {
+    fn proposal_times_out_at_its_deadline_and_its_late_commit_is_reported() {
         let now = Instant::now();
         let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
         cluster.campaign().unwrap();
@@ -1070,8 +1347,9 @@ mod tests {
             })
             .unwrap();
 
-        assert!(committed.is_empty());
         assert_eq!(timed_out, [proposal_id]);
+        assert!(matches!(&committed[..], [decision]
+            if decision.proposal_id == proposal_id && decision.result == LockResult::Accepted));
         assert_eq!(cluster.pending_proposals(), 0);
         assert_eq!(cluster.state().len(), 1);
         assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::Conflicting);
@@ -1306,7 +1584,7 @@ mod tests {
                 .iter_mut()
                 .find(|cluster| cluster.node_id() == message.to)
                 .expect("Raft message target is a voter")
-                .step(message, now)
+                .step(message, now, 10)
                 .unwrap();
         }
     }
@@ -1360,7 +1638,7 @@ mod tests {
                     .iter_mut()
                     .find(|c| c.node_id() == message.to)
                     .unwrap()
-                    .step(message, now)
+                    .step(message, now, 10)
                     .unwrap();
             }
             now += Duration::from_millis(1);
