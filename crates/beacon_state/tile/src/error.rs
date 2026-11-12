@@ -79,6 +79,12 @@ pub enum PrecheckError {
     #[error("invalid block signature: block_root=0x{}", b256_hex(block_root))]
     InvalidSignature { block_root: B256 },
     #[error(
+        "parking block's proposer not confirmed: proposer_index={proposer_index} \
+         block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    UnconfirmedProposer { proposer_index: u64, block_root: B256 },
+    #[error(
         "bid parent_block_root is not the block's parent: block_root=0x{}",
         b256_hex(block_root)
     )]
@@ -101,6 +107,7 @@ impl PrecheckError {
             }
             Self::PreFinalized { .. } |
             Self::FutureSlot { .. } |
+            Self::UnconfirmedProposer { .. } |
             Self::AwaitingData { .. } |
             Self::Rejected { reason: RejectReason::InvalidPayload, .. } |
             Self::ParentRejected { reason: RejectReason::InvalidPayload, .. } => Feedback::Ignore,

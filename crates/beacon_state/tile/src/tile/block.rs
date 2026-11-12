@@ -389,6 +389,7 @@ impl BeaconStateTile {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
             Err(err) => {
+                let err = self.check_parking_proposer(data, err);
                 silver_log::warn!(head_slot = self.head_state_slot(), "{err}");
                 return Err(err);
             }
@@ -853,6 +854,51 @@ impl BeaconStateTile {
             &rv.imm.genesis_validators_root,
         );
         bls::verify_block_signature(data, proposer_pubkey, &parsed.header.body_root, &domain)
+    }
+
+    /// A block that parks on `err` pins its bytes, and precheck returned before
+    /// the proposer checks. Without the parent the head state stands in: its
+    /// registry is the same up to recent deposits, and its lookahead is the
+    /// same unless the fork predates it.
+    fn check_parking_proposer(&self, data: &[u8], err: PrecheckError) -> PrecheckError {
+        let (PrecheckError::ParentMissing { block_root, .. } |
+        PrecheckError::UnverifiedParentPayload { block_root, .. }) = err
+        else {
+            return err;
+        };
+        let parent_root = SignedBeaconBlockView::parent_root(data);
+        let state_id = self
+            .fork_choice
+            .find_node_idx(parent_root)
+            .map_or(self.last_applied, |idx| self.fork_choice.node(idx).state_id);
+        let rv = self.state.read_view(state_id);
+
+        let block_slot = SignedBeaconBlockView::slot(data);
+        let proposer_index = SignedBeaconBlockView::proposer_index(data);
+        let unconfirmed = PrecheckError::UnconfirmedProposer { proposer_index, block_root };
+        if proposer_index as usize >= rv.validators.count() {
+            return unconfirmed;
+        }
+        let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
+        let expected = block_slot
+            .checked_sub(state_epoch * SLOTS_PER_EPOCH)
+            .and_then(|lookahead_idx| rv.epoch.proposer_at(lookahead_idx as usize));
+        if expected.is_some_and(|expected| expected != proposer_index) {
+            return unconfirmed;
+        }
+
+        let domain = bls::compute_domain(
+            bls::DOMAIN_BEACON_PROPOSER,
+            self.spec.fork_version_at(block_slot / SLOTS_PER_EPOCH),
+            &rv.imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(&block_root, &domain);
+        let proposer_pubkey = rv.validators.pubkey_decompressed(proposer_index as usize);
+        let signature = SignedBeaconBlockView::signature(data);
+        if !bls::verify_one(proposer_pubkey, signature, &signing_root) {
+            return PrecheckError::InvalidSignature { block_root };
+        }
+        err
     }
 
     /// The Gloas gossip rules on the bid: blob count, parent root, and, for a
