@@ -2,9 +2,11 @@ use std::time::{Duration, Instant};
 
 use silver_common::MemberAddress;
 
-/// Proposes this node's advertised address while the replicated one differs.
-/// Only a node with a recorded address announces: the others are dialled at
-/// their configured address.
+use super::membership::ClusterMembership;
+
+/// Proposes this node's advertised address while the replicated one is
+/// missing or differs. Bootstrap members start with none recorded, and an
+/// added member's key is checked against the recorded ones only.
 pub(super) struct AddressAnnouncement {
     stale: bool,
     next_at: Instant,
@@ -30,10 +32,14 @@ impl AddressAnnouncement {
         &mut self,
         node_id: u64,
         advertised: MemberAddress,
-        recorded: Option<MemberAddress>,
+        membership: &ClusterMembership,
     ) {
-        let Some(recorded) = recorded else {
+        if !membership.is_member(node_id) {
             self.stale = false;
+            return;
+        }
+        let Some(recorded) = membership.address(node_id) else {
+            self.stale = true;
             return;
         };
         self.stale = recorded.public_key == advertised.public_key && recorded != advertised;

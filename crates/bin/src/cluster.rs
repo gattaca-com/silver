@@ -62,11 +62,15 @@ impl ClusterStartup {
         local: &Enr,
     ) -> Result<(u64, MemberAddress), Box<dyn Error>> {
         let local = local.node_id();
-        let (&id, enr) = config
-            .nodes
-            .iter()
-            .find(|(_, enr)| enr.node_id() == local)
-            .ok_or("no local node configured in cluster config")?;
+        let mut entries = config.nodes.iter().filter(|(_, enr)| enr.node_id() == local);
+        let (&id, enr) = entries.next().ok_or("no local node configured in cluster config")?;
+        // `nodes` has no order, so a second entry would pick the id at random.
+        if let Some((&other, _)) = entries.next() {
+            return Err(format!(
+                "cluster config lists this node under ids {id} and {other}: keep only its current id"
+            )
+            .into());
+        }
         Ok((id, Self::member_address(id, enr)?))
     }
 
@@ -134,6 +138,8 @@ impl ClusterStartup {
 
 #[cfg(test)]
 mod tests {
+    use silver_common::Keypair;
+
     use super::*;
 
     #[test]
@@ -143,6 +149,22 @@ mod tests {
         assert!(ClusterStartup::lock(directory.path()).is_err());
         drop(first);
         let _second = ClusterStartup::lock(directory.path()).unwrap();
+    }
+
+    #[test]
+    fn local_key_listed_under_two_ids_is_refused() {
+        let local = Enr::empty(Keypair::from_secret(&[1; 32]).unwrap().secret_key()).unwrap();
+        let other = Enr::empty(Keypair::from_secret(&[2; 32]).unwrap().secret_key()).unwrap();
+        let config = |nodes: &[(u64, Enr)]| ClusterConfig {
+            nodes: nodes.iter().cloned().collect(),
+            bootstrap: false,
+            join: false,
+        };
+
+        let duplicated = config(&[(3, local), (2, other), (7, local)]);
+        let error = ClusterStartup::local_member(&duplicated, &local).unwrap_err().to_string();
+        assert!(error.contains("under ids"), "{error}");
+        assert!(ClusterStartup::local_member(&config(&[(2, other)]), &local).is_err());
     }
 
     #[test]

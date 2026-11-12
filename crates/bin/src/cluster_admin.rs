@@ -158,12 +158,10 @@ impl fmt::Display for MembersTable<'_> {
             Some(leader) => writeln!(f, "node {}, leader {leader}", members.node_id)?,
             None => writeln!(f, "node {}, no known leader", members.node_id)?,
         }
-        writeln!(
-            f,
-            "commit {}, next free node id {}",
-            members.commit,
-            members.highest_node_id + 1
-        )?;
+        match members.highest_node_id.checked_add(1) {
+            Some(next) => writeln!(f, "commit {}, next free node id {next}", members.commit)?,
+            None => writeln!(f, "commit {}, no free node id left", members.commit)?,
+        }
         if !leading {
             writeln!(f, "progress is known only on the leader")?;
         }

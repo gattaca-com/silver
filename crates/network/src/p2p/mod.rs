@@ -269,6 +269,7 @@ impl P2p {
         addr: SocketAddr,
     ) {
         self.admission.set_cluster_member_ip(node_id, addr.ip());
+        self.banned.remove(&peer_id);
         let Some(nodes) = context.cluster_nodes.as_mut() else {
             return;
         };

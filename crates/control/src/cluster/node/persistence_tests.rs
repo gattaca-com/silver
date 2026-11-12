@@ -417,7 +417,8 @@ mod disk {
                 now,
             )
             .unwrap();
-            assert!(drain(&mut node, now, 10).is_empty());
+            let events = drain(&mut node, now, 10);
+            assert!(events.iter().all(|event| matches!(event, ClusterEvent::ReachMember(_))));
             assert_eq!(node.state.locks.len(), 1);
             assert_eq!(node.state.locks.apply(&command(10, 5)), LockResult::Conflicting);
         }

@@ -362,6 +362,9 @@ impl NetworkTile {
 impl Tile<SilverSpine> for NetworkTile {
     fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.subscribe_broadcast::<BeaconStateEvent>();
+        // Control sends the cluster members once, possibly before this tile's
+        // first read.
+        adapter.subscribe_broadcast::<PeerControl>();
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {

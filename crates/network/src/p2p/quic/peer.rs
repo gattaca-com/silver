@@ -2163,8 +2163,10 @@ mod tests {
         p2p.peers.insert(handle, client_peer);
         assert_eq!(context.raft_id(handle.0), None);
 
+        p2p.ban_peer(server, Instant::now());
         p2p.set_cluster_member(&mut context, 7, server, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(context.raft_id(handle.0), Some(7));
+        assert!(!p2p.banned.contains(&server), "a member's key is never refused");
         p2p.remove_cluster_member(&mut context, 7);
         assert_eq!(context.raft_id(handle.0), None);
     }

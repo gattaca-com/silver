@@ -396,20 +396,31 @@ fn configured_member_is_reached_until_the_cluster_removes_it() {
     assert_eq!(cluster.reached.len(), 6, "nothing else changed");
 }
 
-/// A joining node knows no members, so it reaches the configured ones. The
-/// others reach it where the change that added it says.
+/// A joining node knows no members, so it first reaches the configured one,
+/// then the others at the addresses its snapshot records. The others reach it
+/// where the change that added it says.
 #[test]
 fn joiner_is_reached_at_its_replicated_address() {
     let mut cluster = Cluster::in_memory(Instant::now());
+    cluster
+        .rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
+    cluster.reached.clear();
     cluster.operate(MembershipOperation::Add { node_id: 4, address: test_address(4) });
     let mut joiner = joiner(4, cluster.now);
     joiner.config.configured_members = vec![member(1)];
     cluster.nodes.push(joiner);
-    cluster.rounds_until(|cluster| cluster.reached.len() == 4);
+    cluster.rounds_until(|cluster| cluster.reached.len() == 6);
 
     let mut reached = cluster.reached.clone();
-    reached.sort_unstable_by_key(|(node_id, _)| *node_id);
-    assert_eq!(reached, [(1, member(4)), (2, member(4)), (3, member(4)), (4, member(1))]);
+    reached.sort_unstable_by_key(|(by, member)| (*by, member.node_id));
+    assert_eq!(reached, [
+        (1, member(4)),
+        (2, member(4)),
+        (3, member(4)),
+        (4, member(1)),
+        (4, member(2)),
+        (4, member(3)),
+    ]);
 }
 
 #[test]
@@ -788,4 +799,37 @@ fn admin_lists_members_on_the_leader_and_names_it_elsewhere() {
             if id == leader && leader_addr == Some(test_address(leader).addr)
     ));
     assert!(matches!(cluster.node(leader).administer(promote, now), ClusterAdminResult::Proposed));
+}
+
+/// A learner under a member's key would take over that member's link on
+/// every node. Bootstrap members announce their addresses, so their keys are
+/// replicated; until then the leader checks the configured ones.
+#[test]
+fn member_keys_cannot_be_added_again() {
+    let mut cluster = Cluster::in_memory(Instant::now());
+    let leader = cluster.elect();
+    let other = cluster.follower();
+    let node = cluster.node(leader);
+    node.config.configured_members = vec![member(other)];
+    node.state.membership = ClusterMembership::new(&[1, 2, 3]);
+    let duplicate =
+        |node_id| MembershipOperation::Add { node_id: 4, address: test_address(node_id) };
+    assert_eq!(
+        node.propose_membership(duplicate(other)),
+        Err(MembershipError::KeyInUse { node_id: other })
+    );
+    assert_eq!(
+        node.propose_membership(duplicate(leader)),
+        Err(MembershipError::KeyInUse { node_id: leader })
+    );
+
+    cluster
+        .rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
+    let third = (1..=3).find(|&id| id != leader && id != other).unwrap();
+    let leader = cluster.elect();
+    cluster.node(leader).config.configured_members.clear();
+    assert_eq!(
+        cluster.node(leader).propose_membership(duplicate(third)),
+        Err(MembershipError::KeyInUse { node_id: third })
+    );
 }

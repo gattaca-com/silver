@@ -326,6 +326,12 @@ impl SlashingProtectionHandler {
         self.clock = Some(ticker);
     }
 
+    /// Status lags while Beacon State is busy, by slots during a long sync:
+    /// a lagging slot refuses honest duties and boycotts an honest leader.
+    fn current_wall_slot(&self) -> u64 {
+        self.clock.as_ref().map_or(self.wall_slot, SlotTicker::current_slot)
+    }
+
     /// `synced` latches the startup floor. It comes from peer-relative sync
     /// state, so a missed slot cannot keep it from latching.
     pub(super) fn on_status(&mut self, wall_slot: u64, synced: bool) {
@@ -369,8 +375,11 @@ impl SlashingProtectionHandler {
         peer_manager: &mut PeerManager,
     ) {
         self.loop_gap.observe(now);
+        let wall_slot = self.current_wall_slot();
         adapter.consume(|message: ClusterIn, _producers| match message {
-            ClusterIn::Msg(message) => self.handle_message(message, inbound_consumer, now),
+            ClusterIn::Msg(message) => {
+                self.handle_message(message, inbound_consumer, now, wall_slot)
+            }
             ClusterIn::NodeUnreachable(id) => {
                 if let Some(cluster) = self.cluster.as_mut() {
                     cluster.report_unreachable(id);
@@ -382,7 +391,14 @@ impl SlashingProtectionHandler {
             self.administer(request, now, producers)
         });
 
-        self.drive(now, local_gossip, gossip_handler, peer_manager, &mut adapter.producers);
+        self.drive(
+            now,
+            wall_slot,
+            local_gossip,
+            gossip_handler,
+            peer_manager,
+            &mut adapter.producers,
+        );
         self.produce_commits(&mut adapter.producers);
         self.sample(now, &mut adapter.producers);
     }
@@ -444,7 +460,8 @@ impl SlashingProtectionHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        if let Err(error) = self.admission.validate(attestation.command.key.slot, self.wall_slot) {
+        let wall_slot = self.current_wall_slot();
+        if let Err(error) = self.admission.validate(attestation.command.key.slot, wall_slot) {
             error.count();
             produce_response(producers, attestation.request.id, Err(admission_failure(error)));
             silver_log::warn!(
@@ -480,7 +497,7 @@ impl SlashingProtectionHandler {
             return;
         };
 
-        match cluster.propose_attestation(attestation.command, self.wall_slot, now) {
+        match cluster.propose_attestation(attestation.command, wall_slot, now) {
             Ok(proposal_id) => {
                 let previous = self.pending_attestations.insert(proposal_id, attestation);
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
@@ -527,7 +544,8 @@ impl SlashingProtectionHandler {
         };
         let signature = *SignedBeaconBlockView::signature(signed_block);
         let command = BlockLockCommand { key, signature };
-        if let Err(error) = self.admission.validate(key.slot, self.wall_slot) {
+        let wall_slot = self.current_wall_slot();
+        if let Err(error) = self.admission.validate(key.slot, wall_slot) {
             error.count();
             produce_response(producers, request_id, Err(admission_failure(error)));
             silver_log::warn!(
@@ -561,7 +579,7 @@ impl SlashingProtectionHandler {
             );
         };
 
-        match cluster.propose_block(command, self.wall_slot, now) {
+        match cluster.propose_block(command, wall_slot, now) {
             Ok(proposal_id) => {
                 let previous = self
                     .pending_blocks
@@ -588,6 +606,7 @@ impl SlashingProtectionHandler {
         inbound: ClusterMsgIn,
         inbound_consumer: &mut TCacheReader,
         now: Instant,
+        wall_slot: u64,
     ) {
         ClusterCounters::MessagesIn.inc();
         let Some(acquired) = inbound_consumer.acquire_strict(inbound.data) else {
@@ -644,7 +663,7 @@ impl SlashingProtectionHandler {
             );
             return;
         }
-        if let Err(error) = cluster.step(message, now, self.wall_slot) {
+        if let Err(error) = cluster.step(message, now, wall_slot) {
             if let ClusterError::MemberMessage(_) = error {
                 ClusterCounters::InboundInvalid.inc();
             }
@@ -655,6 +674,7 @@ impl SlashingProtectionHandler {
     fn drive(
         &mut self,
         now: Instant,
+        wall_slot: u64,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         peer_manager: &mut PeerManager,
@@ -668,7 +688,7 @@ impl SlashingProtectionHandler {
         let pending_blocks = &mut self.pending_blocks;
         let outbound_producer = &mut self.outbound_producer;
         let duty_timers = &mut self.duty_timers;
-        let result = cluster.spin(now, self.wall_slot, |event| match event {
+        let result = cluster.spin(now, wall_slot, |event| match event {
             ClusterEvent::SendRaftMessage(message) => {
                 let to = message.to;
                 match encode_message(message, outbound_producer) {
@@ -757,6 +777,7 @@ impl SlashingProtectionHandler {
 
 #[cfg(test)]
 mod tests {
+    use silver_chain_spec::SpecConfig;
     use silver_common::{
         ClusterAdminCommand, PeerId, SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead,
         TCacheTable, TReadMode,
@@ -1297,6 +1318,28 @@ mod tests {
         ssz
     }
 
+    /// Beacon State's Status trails the clock by slots during a long sync. A
+    /// duty for the clock's slot is admitted, not refused as in the future.
+    #[test]
+    fn duties_are_admitted_against_the_clock_while_status_lags() {
+        let now = Instant::now();
+        let mut standalone = Standalone::new(now);
+        let genesis =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() -
+                12 * 40;
+        let ticker =
+            SlotTicker::new(genesis, &SpecConfig::mainnet(), std::time::Duration::from_secs(4));
+        let wall_slot = ticker.current_slot();
+        standalone.handler.set_clock(ticker);
+        standalone.handler.on_status(wall_slot - 3, true);
+
+        standalone.submit(1, wall_slot, 1, 1, now);
+        assert!(
+            !standalone.harness.responses().contains(&(1, Err(LocalGossipFailure::Future))),
+            "a duty for the clock's slot is not in the future"
+        );
+    }
+
     #[test]
     fn standalone_refuses_surround_votes_while_selected_and_once_evicted() {
         let now = Instant::now();
@@ -1508,6 +1551,7 @@ mod tests {
         handler.cluster.as_mut().unwrap().campaign().unwrap();
         handler.drive(
             now,
+            11,
             &mut harness.local_gossip,
             &mut harness.gossip,
             &mut peer_manager(),
@@ -1529,6 +1573,7 @@ mod tests {
         handler.cluster.as_mut().unwrap().fail_persistence();
         handler.drive(
             now,
+            11,
             &mut harness.local_gossip,
             &mut harness.gossip,
             &mut peer_manager(),

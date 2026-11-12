@@ -135,6 +135,9 @@ impl PeerManager {
     pub fn trust_cluster_member(&mut self, peer_id: PeerId, addr: SocketAddr) {
         self.database.trust_cluster_member(peer_id, addr);
         self.set_live_trust(&peer_id, true);
+        // A key banned as an ordinary peer can come back as a member.
+        self.banned_peers.remove(&peer_id);
+        self.remote_banned_peers.remove(&peer_id);
     }
 
     pub fn untrust_cluster_member(&mut self, peer_id: &PeerId) {
@@ -923,6 +926,20 @@ mod tests {
         mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(dialled(&cap).is_empty());
         assert!(!mgr.database.by_peer_id(&peer_id(8)).unwrap().is_trusted);
+    }
+
+    /// A key evicted while it was an ordinary peer can come back as a member.
+    #[test]
+    fn banned_peer_is_dialled_once_it_becomes_a_cluster_member() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        mgr.banned_peers.insert(peer_id(8), now);
+        mgr.remote_banned_peers.insert(peer_id(8), now);
+        let addr: SocketAddr = "10.0.0.8:9000".parse().unwrap();
+        mgr.trust_cluster_member(peer_id(8), addr);
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dialled(&cap), [(peer_id(8), addr)]);
     }
 
     #[test]

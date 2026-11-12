@@ -111,12 +111,19 @@ impl SlashingProtectionConfig {
         let members = membership.member_ids().filter(|&node_id| node_id != self.node_id);
         members
             .chain(configured.filter(|_| membership.is_empty()))
-            .map(|node_id| (node_id, self.peer_address(membership, node_id)))
+            .map(|node_id| (node_id, self.member_address(membership, node_id)))
     }
 
-    fn peer_address(&self, membership: &ClusterMembership, node_id: u64) -> Option<MemberAddress> {
+    /// The replicated address, else the configured one: bootstrap members
+    /// have no replicated address.
+    fn member_address(
+        &self,
+        membership: &ClusterMembership,
+        node_id: u64,
+    ) -> Option<MemberAddress> {
         let configured = self.configured_members.iter().find(|member| member.node_id == node_id);
-        membership.address(node_id).or(configured.map(|member| member.address))
+        let own = (node_id == self.node_id).then_some(self.advertised);
+        membership.address(node_id).or(configured.map(|member| member.address)).or(own)
     }
 
     fn raft_config(&self) -> Config {
@@ -677,6 +684,9 @@ impl SlashingProtectionCluster {
         let (change, added_learner) = conf_change(operation);
         self.state.membership.check(&change, added_learner)?;
         self.check_leader_can_change(&change)?;
+        if let Some(owner) = added_learner.and_then(|learner| self.configured_key_owner(learner)) {
+            return Err(MembershipError::KeyInUse { node_id: owner });
+        }
         if added_learner.is_some() && self.state.snapshot_len() > MAX_SNAPSHOT_BYTES {
             return Err(MembershipError::SnapshotTooLarge);
         }
@@ -705,6 +715,19 @@ impl SlashingProtectionCluster {
         Ok(())
     }
 
+    /// Covers members whose address announcement has not committed yet.
+    fn configured_key_owner(&self, learner: Member) -> Option<u64> {
+        let key = learner.address.public_key;
+        let configured =
+            self.config.configured_members.iter().map(|member| (member.node_id, member.address));
+        configured
+            .chain([(self.config.node_id, self.config.advertised)])
+            .find(|(node_id, address)| {
+                address.public_key == key && self.state.membership.is_member(*node_id)
+            })
+            .map(|(node_id, _)| node_id)
+    }
+
     pub fn transfer_leader(&mut self, node_id: u64) -> Result<(), MembershipError> {
         self.check_leading()?;
         if node_id == self.config.node_id || !self.state.membership.is_voter(node_id) {
@@ -725,7 +748,7 @@ impl SlashingProtectionCluster {
         if !self.is_leader() {
             let leader_id = self.leader_id();
             let leader_addr = leader_id
-                .and_then(|id| self.config.peer_address(&self.state.membership, id))
+                .and_then(|id| self.config.member_address(&self.state.membership, id))
                 .map(|address| address.addr);
             return Err(MembershipError::NotLeader { leader_id, leader_addr });
         }
@@ -758,7 +781,7 @@ impl SlashingProtectionCluster {
             members.push(ClusterMemberRow {
                 node_id,
                 role,
-                address: self.config.peer_address(membership, node_id),
+                address: self.config.member_address(membership, node_id),
                 caught_up: self.is_leader() && self.is_caught_up(node_id),
                 peer: self.peer_stats(now).find(|stats| stats.node_id == node_id),
             });
@@ -807,9 +830,7 @@ impl SlashingProtectionCluster {
         let membership = &self.state.membership;
         self.peers.set(self.config.peers(membership), emit);
         self.leader_boycott.retain(|node_id| membership.is_member(node_id));
-        let node_id = self.config.node_id;
-        let recorded = membership.address(node_id);
-        self.announcement.follow(node_id, self.config.advertised, recorded);
+        self.announcement.follow(self.config.node_id, self.config.advertised, membership);
 
         if self.is_removed() {
             ClusterCounters::Removed.set(1);
