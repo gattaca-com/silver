@@ -1966,10 +1966,17 @@ impl BeaconStateTile {
         });
     }
 
-    /// Network gossip ignores are deliberately silent. A local API request,
-    /// however, needs a terminal verdict so Control can complete it.
+    /// Network gossip ignores are deliberately silent, except a slot window
+    /// miss: it costs the sender, as nothing else bounds such messages. A
+    /// local API request needs a terminal verdict so Control can complete it.
     pub(super) fn local_verdict(m: &NewGossipMsg, feedback: Feedback, producers: &mut Producers) {
         if m.stream_id != LOCAL_GOSSIP_STREAM_ID {
+            if matches!(feedback, Feedback::TooOld | Feedback::Future) {
+                producers.produce(PeerEvent::P2pGossipOutOfRange {
+                    p2p_peer: m.stream_id.peer(),
+                    topic: m.topic,
+                });
+            }
             return;
         }
         let result = match feedback {

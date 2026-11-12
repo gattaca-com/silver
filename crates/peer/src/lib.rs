@@ -26,6 +26,7 @@ silver_common::declare_counters! {
         GossipInvalidFrame,
         GossipInvalidControl,
         GossipInvalidMsg,
+        GossipOutOfRange,
         // Mesh churn direction.
         MeshPrunedByRemote,
         MeshPrunedByUs,
