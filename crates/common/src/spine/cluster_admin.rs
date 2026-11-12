@@ -141,9 +141,10 @@ impl fmt::Display for MembershipError {
             Self::SnapshotTooLarge => {
                 f.write_str("the locks are too large for the snapshot a new member starts from")
             }
-            Self::IdReused { highest_node_id } => {
-                write!(f, "node ids are never reused; use one above {highest_node_id}")
-            }
+            Self::IdReused { highest_node_id } => match highest_node_id.checked_add(1) {
+                Some(next) => write!(f, "node ids are used in order; the next one is {next}"),
+                None => f.write_str("no free node id left"),
+            },
             Self::KeyInUse { node_id } => write!(f, "node {node_id} already uses this key"),
             Self::NoAddress(id) => write!(f, "node {id} is added without its address"),
             Self::NotAMember(id) => write!(f, "node {id} is not a member"),

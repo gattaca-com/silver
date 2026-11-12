@@ -721,6 +721,7 @@ fn removed_node_stays_removed_after_a_restart() {
         .collect();
     let mut cluster = Cluster::started(nodes, Instant::now());
     let removed = cluster.follower();
+    cluster.commit_attestation(removed, 0);
     cluster.operate(MembershipOperation::Remove { node_id: removed });
     cluster.rounds_until(|cluster| {
         cluster.nodes.iter().any(|node| node.node_id() == removed && node.is_removed())

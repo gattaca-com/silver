@@ -155,7 +155,7 @@ impl ClusterMembership {
         added_learner: Option<Member>,
     ) -> Result<(), MembershipError> {
         let highest_node_id = self.highest_node_id;
-        if node_id <= highest_node_id {
+        if highest_node_id.checked_add(1) != Some(node_id) {
             return Err(MembershipError::IdReused { highest_node_id });
         }
         let Some(learner) = added_learner.filter(|member| member.node_id == node_id) else {
@@ -365,6 +365,7 @@ mod tests {
         let add = |node_id, key| MembershipOperation::Add { node_id, address: test_address(key) };
 
         assert_eq!(check(add(4, 5)), Err(MembershipError::IdReused { highest_node_id: 4 }));
+        assert_eq!(check(add(u64::MAX, 5)), Err(MembershipError::IdReused { highest_node_id: 4 }));
         assert_eq!(check(add(5, 4)), Err(MembershipError::KeyInUse { node_id: 4 }));
         assert_eq!(
             check(MembershipOperation::Promote { node_id: 2 }),
