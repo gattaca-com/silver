@@ -41,6 +41,7 @@ use super::{
     block::{ParsedBlock, StagedBlock},
     block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
+    pending_envelopes::UnverifiedEnvelope,
     shuffling_cache::ShufflingRequest,
     *,
 };
@@ -684,7 +685,7 @@ struct HeadRig {
     adapter: SpineAdapter<SilverSpine>,
     tile: BeaconStateTile,
     anchor: StateId,
-    _gossip: TProducer,
+    gossip: TProducer,
     _rpc: TProducer,
     _spine: TestSpine,
 }
@@ -723,8 +724,7 @@ impl HeadRig {
             anchor,
             8,
         );
-        let mut rig =
-            Self { sink, adapter, tile, anchor, _gossip: gossip, _rpc: rpc, _spine: spine };
+        let mut rig = Self { sink, adapter, tile, anchor, gossip, _rpc: rpc, _spine: spine };
         let _ = rig.crank();
         rig
     }
@@ -852,6 +852,20 @@ impl HeadRig {
         self.tile.recompute_head(|_| {});
         self.tile.publish_status(&mut self.adapter.producers);
         state_id
+    }
+
+    /// An envelope as gossip hands it to the EL, its verdict outstanding.
+    fn envelope_awaiting_verdict(&mut self, block_root: B256, slot: Slot) {
+        let mut reservation = self.gossip.reserve(1, true).expect("reserve");
+        reservation.increment_offset(1);
+        let read = self.tile.reader.acquire(reservation.read());
+        self.gossip.loop_start();
+        self.tile.pending_envelopes.await_verdict(block_root, UnverifiedEnvelope {
+            read,
+            source: BlockSource::Gossip,
+            slot,
+            signature: [0; 96],
+        });
     }
 
     fn verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
@@ -1245,7 +1259,7 @@ fn an_fcu_verdict_for_an_ancestor_payload_does_not_revive_a_rejected_gloas_paylo
 #[test]
 fn a_rejected_envelope_body_leaves_blocks_built_on_its_payload_alone() {
     let mut rig = HeadRig::new();
-    let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     let built_on_full = PayloadAxis {
         bid_block_hash: B_ROOT,
         parent_status: PayloadStatus::Full,
@@ -1255,13 +1269,14 @@ fn a_rejected_envelope_body_leaves_blocks_built_on_its_payload_alone() {
     rig.import_node(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT, built_on_full);
     let _ = rig.crank();
 
+    rig.envelope_awaiting_verdict(A_ROOT, 71);
     rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
     let _ = rig.crank();
     assert!(!rig.tile.fork_choice.is_payload_verified(&A_ROOT), "awaits a real envelope");
     assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Optimistic);
     assert_eq!(rig.execution_status(B_ROOT), ExecutionStatus::Optimistic);
 
-    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    rig.envelope_awaiting_verdict(A_ROOT, 71);
     rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
     let _ = rig.crank();
     assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Valid);

@@ -37,7 +37,7 @@ impl ForkChoice {
 
     /// The nearest ancestor whose payload this node builds on. An EMPTY edge
     /// skips its parent's payload, so the search continues from the parent.
-    fn payload_parent(&self, idx: usize) -> Option<usize> {
+    pub(super) fn payload_parent(&self, idx: usize) -> Option<usize> {
         let mut child = &self.nodes[idx];
         while child.parent_ix != NULL {
             if child.payload.parent_status == PayloadStatus::Full {
@@ -46,14 +46,6 @@ impl ForkChoice {
             child = &self.nodes[child.parent_ix];
         }
         None
-    }
-
-    pub fn chain_execution_status(&self, idx: usize) -> ExecutionStatus {
-        let node = &self.nodes[idx];
-        if !node.payload.is_gloas {
-            return node.execution_status;
-        }
-        self.payload_parent(idx).map_or(node.execution_status, |p| self.nodes[p].execution_status)
     }
 
     #[timed]
@@ -125,17 +117,6 @@ impl ForkChoice {
             self.nodes[idx].payload.verified = true;
             self.head_moved = true;
         }
-    }
-
-    /// False for a pre-Gloas block, whose payload has no separate envelope.
-    pub fn unmark_payload_verified(&mut self, block_root: &B256) -> bool {
-        let Some(idx) = self.find_node_idx(block_root) else { return false };
-        if !self.nodes[idx].payload.is_gloas {
-            return false;
-        }
-        self.nodes[idx].payload.verified = false;
-        self.head_moved = true;
-        true
     }
 
     /// The node at or above `idx` whose block committed to `block_hash`.

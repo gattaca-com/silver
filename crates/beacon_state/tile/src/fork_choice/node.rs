@@ -51,23 +51,19 @@ impl ForkChoiceNode {
     /// leaves on the first round after invalidation, and later deltas aimed at
     /// it are absorbed: the whole of a pre-Gloas block, but only the FULL side
     /// of a Gloas block, which outlives its payload.
-    pub(super) fn apply_weight_delta(&mut self, d: WeightDelta) -> i64 {
-        let live = if self.execution_status != ExecutionStatus::Invalid {
-            self.full.weight = shift(self.full.weight, d.full);
-            d.total()
-        } else if self.payload.is_gloas {
-            let full_removed = std::mem::take(&mut self.full.weight) as i64;
-            d.total() - d.full - full_removed
-        } else {
-            let removed = self.weight as i64;
-            self.full.weight = 0;
-            self.empty.weight = 0;
-            self.weight = 0;
-            return -removed;
-        };
+    pub(super) fn apply_weight_delta(&mut self, mut d: WeightDelta) -> i64 {
+        if self.execution_status == ExecutionStatus::Invalid {
+            if !self.payload.is_gloas {
+                self.full.weight = 0;
+                self.empty.weight = 0;
+                return -(std::mem::take(&mut self.weight) as i64);
+            }
+            d.full = -(self.full.weight as i64);
+        }
+        self.full.weight = shift(self.full.weight, d.full);
         self.empty.weight = shift(self.empty.weight, d.empty);
-        self.weight = shift(self.weight, live);
-        live
+        self.weight = shift(self.weight, d.total());
+        d.total()
     }
 
     #[inline]

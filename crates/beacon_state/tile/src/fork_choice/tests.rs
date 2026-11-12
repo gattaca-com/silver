@@ -1395,7 +1395,7 @@ fn status(fc: &ForkChoice, block_root: B256) -> ExecutionStatus {
 }
 
 fn chain_status(fc: &ForkChoice, block_root: B256) -> ExecutionStatus {
-    fc.chain_execution_status(fc.find_node_idx(&block_root).unwrap())
+    fc.selected_execution_status(fc.find_node_idx(&block_root).unwrap())
 }
 
 #[test]

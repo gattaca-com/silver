@@ -4,7 +4,9 @@ use silver_beacon_state_data::{
 };
 use silver_common::PayloadResolution;
 
-use super::{ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, node::PTC_SIZE};
+use super::{
+    ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, ROOT, node::PTC_SIZE,
+};
 
 impl ForkChoice {
     /// Fold `self.weight_deltas` (staged by the caller) into the node weights.
@@ -96,29 +98,20 @@ impl ForkChoice {
         }
     }
 
-    /// The latest node on the chain ending at `head_idx` whose payload
-    /// resolves FULL, and that payload's hash.
-    fn head_payload(&self, head_idx: usize) -> (usize, B256) {
-        let mut idx = head_idx;
-        loop {
-            if self.resolves_to_full(idx) {
-                return (idx, self.nodes[idx].payload.bid_block_hash);
-            }
-            if self.nodes[idx].parent_ix == NULL {
-                return (idx, self.nodes[idx].execution_block_hash);
-            }
-            idx = self.nodes[idx].parent_ix;
+    /// The node whose payload the chain ending at `idx` last ran, and that
+    /// payload's hash. With no FULL edge up to the root, the root's chain hash.
+    fn head_payload(&self, idx: usize) -> (usize, B256) {
+        if self.resolves_to_full(idx) {
+            return (idx, self.nodes[idx].payload.bid_block_hash);
+        }
+        match self.payload_parent(idx) {
+            Some(owner) => (owner, self.nodes[owner].payload.bid_block_hash),
+            None => (ROOT, self.nodes[ROOT].execution_block_hash),
         }
     }
 
-    /// The status of the payload the node's chain ends on: its own when it
-    /// resolves FULL, otherwise the latest one its branch ran.
     pub fn selected_execution_status(&self, idx: usize) -> ExecutionStatus {
-        if self.resolves_to_full(idx) {
-            self.nodes[idx].execution_status
-        } else {
-            self.chain_execution_status(idx)
-        }
+        self.nodes[self.head_payload(idx).0].execution_status
     }
 
     /// Resolves the node's own payload using the same rule as head selection.

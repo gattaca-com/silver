@@ -9,10 +9,10 @@ use silver_beacon_state_data::{
     gloas::PTC_SIZE,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, BroadcastValidation, EngineNewPayloadEnvelopeReq,
-    EngineNewPayloadResp, EngineReq, GossipTopic, LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure,
-    MAX_BLOBS_PER_BLOCK, NewGossipMsg, PayloadValidationStatus, PeerEvent, SyncNeed, TCacheRead,
-    TRead, compute_subnet_for_attestation, hex32,
+    BeaconStateEvent, BlockSource, BroadcastValidation, EngineNewPayloadEnvelopeReq, EngineReq,
+    GossipTopic, LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg,
+    PayloadValidationStatus, PeerEvent, SyncNeed, TCacheRead, TRead,
+    compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
@@ -1331,31 +1331,33 @@ impl BeaconStateTile {
             .insert(block_root, stf::envelope_execution_requests(signed));
     }
 
+    /// Consensus checks cannot tie an envelope's body to its block hash, so a
+    /// rejected body says nothing about the committed payload: another
+    /// envelope may carry it.
+    pub(super) fn refetch_forged_envelope(
+        &mut self,
+        block_root: B256,
+        envelope: &UnverifiedEnvelope,
+        producers: &mut Producers,
+    ) {
+        self.el_rejected_envelopes.insert(envelope.signature, block_root);
+        self.pending_envelopes.request(block_root, envelope.slot, producers);
+    }
+
     /// The spec stores a payload only once the EL has verified it, SYNCING and
     /// ACCEPTED optimistically, so it counts as verified from here on. One that
     /// failed execution is verified too: it is judged, so its copies and votes
     /// meet that verdict instead of fetching it again.
     pub(super) fn release_el_verified_envelope(
         &mut self,
-        verdict: &EngineNewPayloadResp,
+        block_root: B256,
+        envelope: UnverifiedEnvelope,
+        status: PayloadValidationStatus,
         producers: &mut Producers,
     ) {
-        let block_root = verdict.block_root;
-        let Some(UnverifiedEnvelope { read, source, slot, signature }) =
-            self.pending_envelopes.take_verdict(&block_root)
-        else {
-            return;
-        };
-        if verdict.rejects_body() {
-            self.el_rejected_envelopes.insert(signature, block_root);
-            self.pending_envelopes.request(block_root, slot, producers);
-            return;
-        }
-
+        let UnverifiedEnvelope { read, source, slot, .. } = envelope;
         self.fork_choice.mark_payload_verified(&block_root);
-        if verdict.status == PayloadValidationStatus::Invalid {
-            self.el_rejected_envelopes.insert(signature, block_root);
-        } else {
+        if status != PayloadValidationStatus::Invalid {
             Self::emit_envelope_available(&read, source, slot, block_root, true, producers);
         }
         self.drain_awaiting_payload(block_root, producers);

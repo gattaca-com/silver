@@ -893,14 +893,11 @@ impl BeaconStateTile {
                     }
                     StagedVerdict::Kept => {}
                     StagedVerdict::NotStaged => {
-                        // Consensus checks cannot tie an envelope's body to
-                        // its block hash, so a rejected body says nothing about
-                        // the committed payload: another envelope may carry it.
-                        let envelope_rejected = r.rejects_body() &&
-                            self.fork_choice.unmark_payload_verified(&r.block_root);
-                        if envelope_rejected {
-                            self.release_el_verified_envelope(&r, producers);
-                            self.recompute_head(|event| producers.produce(event));
+                        let envelope = self.pending_envelopes.take_verdict(&r.block_root);
+                        if let Some(envelope) = &envelope &&
+                            r.rejects_body()
+                        {
+                            self.refetch_forged_envelope(r.block_root, envelope, producers);
                             return;
                         }
                         self.on_payload_verdict(
@@ -909,7 +906,14 @@ impl BeaconStateTile {
                             r.status,
                             |event| producers.produce(event),
                         );
-                        self.release_el_verified_envelope(&r, producers);
+                        if let Some(envelope) = envelope {
+                            self.release_el_verified_envelope(
+                                r.block_root,
+                                envelope,
+                                r.status,
+                                producers,
+                            );
+                        }
                         if r.status == PayloadValidationStatus::Valid {
                             self.promote_unknown_root_votes(producers);
                         }

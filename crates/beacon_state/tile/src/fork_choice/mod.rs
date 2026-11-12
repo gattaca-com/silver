@@ -26,6 +26,8 @@ pub use vote::{VoteTracker, WeightDelta};
 pub const FORK_CHOICE_NODES_HINT: usize = 256;
 
 pub(super) const NULL: usize = usize::MAX;
+/// `prune` keeps the finalized node first.
+pub(super) const ROOT: usize = 0;
 
 pub(super) const GENESIS_EPOCH: Epoch = 0;
 
