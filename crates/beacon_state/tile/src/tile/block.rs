@@ -2,7 +2,7 @@ use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, ForkWriter, SLOTS_PER_EPOCH,
-    Slot, StateId, StateReadView, bls, hash_tree_root_block_header,
+    Slot, StateId, StateReadView, StateView, bls, hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
@@ -20,6 +20,14 @@ use crate::{
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
     stf::{self, BlockInput},
 };
+
+/// Fulu proposer selection via `proposer_lookahead`, fixed at the state's
+/// prior epoch boundary. `None` outside its current and next epoch.
+fn lookahead_proposer(rv: &StateView<'_>, block_slot: Slot) -> Option<u64> {
+    let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
+    let lookahead_idx = block_slot.checked_sub(state_epoch * SLOTS_PER_EPOCH)?;
+    rv.epoch.proposer_at(lookahead_idx as usize)
+}
 
 pub(super) struct ParsedBlock {
     pub(super) header: BeaconBlockHeader,
@@ -395,7 +403,9 @@ impl BeaconStateTile {
             }
         };
 
-        if !pre_verified && !self.verify_block_signature(data, &parsed) {
+        if !pre_verified &&
+            !self.verify_block_signature(data, parsed.parent_state_id, &parsed.block_root)
+        {
             silver_log::warn!(
                 head_slot = self.head_state_slot(),
                 block_root = ?hex32(&parsed.block_root),
@@ -763,12 +773,7 @@ impl BeaconStateTile {
             });
         }
 
-        let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
-        // Fulu proposer selection via `proposer_lookahead`, fixed at the
-        // parent's prior epoch boundary and covering only its current + next
-        // epoch.
-        let lookahead_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
-        let relay_eligible = match rv.epoch.proposer_at(lookahead_idx) {
+        let relay_eligible = match lookahead_proposer(&rv, block_slot) {
             Some(expected) if proposer_index != expected => {
                 return Err(PrecheckError::ProposerLookaheadMismatch {
                     expected,
@@ -842,18 +847,20 @@ impl BeaconStateTile {
         Ok(())
     }
 
-    fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {
-        let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
-        let rv = self.state.read_view(parsed.parent_state_id);
+    /// The proposer's key is read from `state_id`, where its index must exist.
+    fn verify_block_signature(&self, data: &[u8], state_id: StateId, block_root: &B256) -> bool {
+        let block_epoch = SignedBeaconBlockView::slot(data) / SLOTS_PER_EPOCH;
+        let rv = self.state.read_view(state_id);
         let fork_version = self.spec.fork_version_at(block_epoch);
-        let proposer_pubkey =
-            rv.validators.pubkey_decompressed(parsed.header.proposer_index as usize);
+        let proposer_index = SignedBeaconBlockView::proposer_index(data);
+        let proposer_pubkey = rv.validators.pubkey_decompressed(proposer_index as usize);
         let domain = bls::compute_domain(
             bls::DOMAIN_BEACON_PROPOSER,
             fork_version,
             &rv.imm.genesis_validators_root,
         );
-        bls::verify_block_signature(data, proposer_pubkey, &parsed.header.body_root, &domain)
+        let signing_root = bls::compute_signing_root(block_root, &domain);
+        bls::verify_one(proposer_pubkey, SignedBeaconBlockView::signature(data), &signing_root)
     }
 
     /// A block that parks on `err` pins its bytes, and precheck returned before
@@ -879,23 +886,12 @@ impl BeaconStateTile {
         if proposer_index as usize >= rv.validators.count() {
             return unconfirmed;
         }
-        let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
-        let expected = block_slot
-            .checked_sub(state_epoch * SLOTS_PER_EPOCH)
-            .and_then(|lookahead_idx| rv.epoch.proposer_at(lookahead_idx as usize));
+        let expected = lookahead_proposer(&rv, block_slot);
         if expected.is_some_and(|expected| expected != proposer_index) {
             return unconfirmed;
         }
 
-        let domain = bls::compute_domain(
-            bls::DOMAIN_BEACON_PROPOSER,
-            self.spec.fork_version_at(block_slot / SLOTS_PER_EPOCH),
-            &rv.imm.genesis_validators_root,
-        );
-        let signing_root = bls::compute_signing_root(&block_root, &domain);
-        let proposer_pubkey = rv.validators.pubkey_decompressed(proposer_index as usize);
-        let signature = SignedBeaconBlockView::signature(data);
-        if !bls::verify_one(proposer_pubkey, signature, &signing_root) {
+        if !self.verify_block_signature(data, state_id, &block_root) {
             return PrecheckError::InvalidSignature { block_root };
         }
         err

@@ -119,7 +119,8 @@ impl BeaconStateTile {
     ) {
         for child in self.held.payload_orphans.take(&verified_root) {
             let do_relay = !child.msg.relayed_once_parsed();
-            self.replay_pending_block(child, do_relay, false, producers);
+            // Pre-verified: the parking check read the same parent state.
+            self.replay_pending_block(child, do_relay, true, producers);
         }
     }
 
