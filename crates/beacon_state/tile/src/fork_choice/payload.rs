@@ -1,6 +1,6 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::B256;
-use silver_log::info;
+use silver_log::{info, warn};
 
 use super::{ExecutionStatus, ForkChoice, NULL, PayloadStatus, node::PTC_SIZE};
 
@@ -14,14 +14,23 @@ impl ForkChoice {
         self.validate_payload_chain(idx);
     }
 
+    /// Invalid is final: an invalid payload's weight has already left its
+    /// ancestors, and reviving it would subtract that weight again.
     fn validate_payload_chain(&mut self, idx: usize) {
         let mut next = Some(idx);
         while let Some(idx) = next {
-            let status = &mut self.nodes[idx].execution_status;
-            if *status == ExecutionStatus::Valid {
-                break;
+            let node = &mut self.nodes[idx];
+            match node.execution_status {
+                ExecutionStatus::Valid => break,
+                ExecutionStatus::Invalid => {
+                    warn!(
+                        block_root = ?node.block_root,
+                        "EL reported VALID for a payload it reported INVALID; keeping it invalid"
+                    );
+                    break;
+                }
+                ExecutionStatus::Optimistic => node.execution_status = ExecutionStatus::Valid,
             }
-            *status = ExecutionStatus::Valid;
             next = self.payload_parent(idx);
         }
     }
