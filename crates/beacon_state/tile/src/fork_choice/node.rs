@@ -1,6 +1,6 @@
 use silver_beacon_state_data::{B256, Checkpoint, Slot, StateId};
 
-use super::NULL;
+use super::{NULL, WeightDelta};
 
 pub(super) const PTC_SIZE: usize = 512;
 
@@ -47,6 +47,29 @@ pub struct ForkChoiceNode {
 }
 
 impl ForkChoiceNode {
+    /// Returns the change to pass to the parent. A dead payload's weight
+    /// leaves on the first round after invalidation, and later deltas aimed at
+    /// it are absorbed: the whole of a pre-Gloas block, but only the FULL side
+    /// of a Gloas block, which outlives its payload.
+    pub(super) fn apply_weight_delta(&mut self, d: WeightDelta) -> i64 {
+        let live = if self.execution_status != ExecutionStatus::Invalid {
+            self.full.weight = shift(self.full.weight, d.full);
+            d.total()
+        } else if self.payload.is_gloas {
+            let full_removed = std::mem::take(&mut self.full.weight) as i64;
+            d.total() - d.full - full_removed
+        } else {
+            let removed = self.weight as i64;
+            self.full.weight = 0;
+            self.empty.weight = 0;
+            self.weight = 0;
+            return -removed;
+        };
+        self.empty.weight = shift(self.empty.weight, d.empty);
+        self.weight = shift(self.weight, live);
+        live
+    }
+
     #[inline]
     pub(super) fn branch(&self, full: bool) -> &Branch {
         if full { &self.full } else { &self.empty }
@@ -63,6 +86,10 @@ pub(super) struct Branch {
     pub best_child: usize,
     pub best_desc: usize,
     pub weight: u64,
+}
+
+fn shift(weight: u64, delta: i64) -> u64 {
+    (weight as i64 + delta).max(0) as u64
 }
 
 impl Branch {

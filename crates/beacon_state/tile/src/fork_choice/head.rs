@@ -19,24 +19,15 @@ impl ForkChoice {
 
         let len = self.nodes.len();
         for i in (0..len).rev() {
-            let d = self.weight_deltas[i];
-            let total = d.total();
-            let parent;
-            let edge;
-            {
-                let n = &mut self.nodes[i];
-                n.empty.weight = (n.empty.weight as i64 + d.empty).max(0) as u64;
-                n.full.weight = (n.full.weight as i64 + d.full).max(0) as u64;
-                n.weight = (n.weight as i64 + total).max(0) as u64;
-                parent = n.parent_ix;
-                edge = n.payload.parent_status;
-            }
+            let n = &mut self.nodes[i];
+            let passed_up = n.apply_weight_delta(self.weight_deltas[i]);
+            let (parent, edge) = (n.parent_ix, n.payload.parent_status);
 
             if parent != NULL {
                 if edge == PayloadStatus::Full {
-                    self.weight_deltas[parent].full += total;
+                    self.weight_deltas[parent].full += passed_up;
                 } else {
-                    self.weight_deltas[parent].empty += total;
+                    self.weight_deltas[parent].empty += passed_up;
                 }
             }
         }

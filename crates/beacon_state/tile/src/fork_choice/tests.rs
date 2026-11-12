@@ -1430,3 +1430,99 @@ fn payload_verdict_does_not_validate_a_payload_skipped_by_an_empty_edge() {
     assert_eq!(status(&fc, root(3)), ExecutionStatus::Valid, "FULL edge");
     assert_eq!(status(&fc, root(2)), ExecutionStatus::Optimistic, "EMPTY edge");
 }
+
+/// Votes for an EL-invalid block count for nothing, so they must not lift its
+/// ancestors over a valid sibling, now or later.
+#[test]
+fn votes_for_an_invalid_block_do_not_weigh_its_ancestors() {
+    let (group, id) = registry(&[42; 16]);
+    let mut fc = anchored(16);
+    let (j, f) = (fc.justified_checkpoint, fc.finalized_checkpoint());
+    fc.on_block(block(1, root(2), root(1), j, f));
+    fc.on_block(block(1, root(3), root(1), j, f));
+    fc.on_block(block(2, root(4), root(2), j, f));
+    install(&mut fc, &group, id);
+    for v in 0..10 {
+        vote(&mut fc, v, root(4), 0);
+    }
+    for v in 10..16 {
+        vote(&mut fc, v, root(3), 0);
+    }
+    fc.recompute_head();
+    assert_eq!(fc.find_head(), root(4));
+
+    fc.on_payload_invalid(&root(4), None);
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(4)), 0);
+    assert_eq!(weight(&fc, root(2)), 0);
+    assert_eq!(weight(&fc, root(1)), 42 * 6);
+    assert_eq!(fc.find_head(), root(3));
+
+    vote(&mut fc, 10, root(4), 1);
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 42 * 5, "a later vote for it is absorbed");
+}
+
+#[test]
+fn proposer_boost_on_an_invalid_block_does_not_weigh_its_ancestors() {
+    let mut fc = anchored(0);
+    let (j, f) = (fc.justified_checkpoint, fc.finalized_checkpoint());
+    fc.on_block(block(1, root(2), root(1), j, f));
+    fc.on_block(block(2, root(4), root(2), j, f));
+    fc.proposer_boost_root = root(4);
+    fc.proposer_boost_score = 100;
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(2)), 100);
+
+    fc.on_payload_invalid(&root(4), None);
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(2)), 0);
+    assert_eq!(weight(&fc, root(1)), 0);
+
+    fc.proposer_boost_root = [0; 32];
+    fc.proposer_boost_score = 0;
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 0, "withdrawing the boost removes nothing twice");
+}
+
+/// A Gloas block outlives its invalid payload, so only the payload's FULL side
+/// stops counting: votes that saw it present and blocks built on it. Blocks
+/// that skipped it still weigh the ancestors.
+#[test]
+fn invalid_gloas_payload_stops_weighing_only_its_full_side() {
+    let (group, id) = registry(&[42; 16]);
+    let mut fc = anchored(16);
+    let (j, f) = (fc.justified_checkpoint, fc.finalized_checkpoint());
+    let full = PayloadStatus::Full;
+    fc.on_block(gloas_block(1, root(2), root(1), j, f, full, true));
+    fc.on_block(gloas_block(1, root(3), root(1), j, f, full, true));
+    fc.on_block(gloas_block(2, root(4), root(2), j, f, full, true));
+    fc.on_block(gloas_block(2, root(5), root(2), j, f, PayloadStatus::Empty, true));
+    install(&mut fc, &group, id);
+    for v in 0..4 {
+        vote(&mut fc, v, root(4), 0);
+    }
+    for v in 4..6 {
+        vote(&mut fc, v, root(5), 0);
+    }
+    let n = fc.vote_tracker.votes.len();
+    let present = VoteTarget {
+        block_root: root(2),
+        target_epoch: 0,
+        attestation_slot: 3,
+        payload_present: true,
+    };
+    fc.record_votes(&present, &[6, 7], n);
+    for v in 8..10 {
+        vote(&mut fc, v, root(3), 0);
+    }
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(2)), 42 * 8);
+
+    fc.on_payload_invalid(&root(2), None);
+    fc.recompute_head();
+    let idx = fc.find_node_idx(&root(2)).unwrap();
+    assert_eq!(fc.nodes[idx].full.weight, 0);
+    assert_eq!(weight(&fc, root(2)), 42 * 2, "the empty-side child still counts");
+    assert_eq!(weight(&fc, root(1)), 42 * 4);
+}
