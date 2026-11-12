@@ -898,10 +898,10 @@ impl BeaconStateTile {
                         // Consensus checks cannot tie an envelope's body to
                         // its block hash, so another envelope may still carry
                         // the committed payload.
-                        if r.status == PayloadValidationStatus::Invalid {
+                        if r.rejects_body() {
                             self.fork_choice.unmark_payload_verified(&r.block_root);
                         }
-                        self.release_el_verified_envelope(&r.block_root, r.status, producers);
+                        self.release_el_verified_envelope(&r, producers);
                         self.on_payload_verdict(
                             &r.block_root,
                             r.latest_valid_hash,

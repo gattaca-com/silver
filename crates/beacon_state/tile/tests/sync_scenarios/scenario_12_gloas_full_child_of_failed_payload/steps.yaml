@@ -1,0 +1,38 @@
+# Scenario 12: block 1's payload fails execution, so the EL names a latest
+# valid hash. No other envelope can carry that payload, so it is not fetched
+# again. Block 2 builds on block 1's FULL variant and arrives by range: it is
+# refused without being imported. Scenario 10 is the forged-body counterpart.
+#
+# Source: EF gloas fork_choice on_block_parent_full_accepts_verified_payload.
+
+startup_checkpoint: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/anchor_state.ssz_snappy
+gloas: true
+slots_missing: 3
+
+steps:
+  - kind: sync_target
+    target: syncing_head
+    target_slot: 2
+  - kind: step
+
+  - kind: blocks_range_resp
+    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/block_0x76bf14e70fc96a5a3442a46dff3bfb897d5568cdb4dc7e94419f625df2fcd9e5.ssz_snappy
+  - kind: envelope_resp
+    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/execution_payload_envelope_0x240ec2c17454f3e653fd3b43961e3c9a16770d336b0e882535c01f99b9223b41.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [block_applied, new_payload_envelope]
+
+  - kind: engine_verdict
+    block_root: "0x76bf14e70fc96a5a3442a46dff3bfb897d5568cdb4dc7e94419f625df2fcd9e5"
+    status: invalid
+    latest_valid_hash: "0x1111111111111111111111111111111111111111111111111111111111111111"
+  - kind: step
+  - kind: check
+    outbound_lacks: [request_envelope]
+
+  - kind: blocks_range_resp
+    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/block_0x7a25db19479cdcc24bd59bb8f5feaeee2e9b24bd25f5eddd54dd809c567b5e5b.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_lacks: [block_applied, block_staged, persist_block]

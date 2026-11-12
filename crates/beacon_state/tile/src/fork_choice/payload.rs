@@ -141,6 +141,11 @@ impl ForkChoice {
         }
     }
 
+    pub fn is_payload_invalid(&self, block_root: &B256) -> bool {
+        self.find_node_idx(block_root)
+            .is_some_and(|idx| self.nodes[idx].execution_status == ExecutionStatus::Invalid)
+    }
+
     pub fn is_payload_verified(&self, block_root: &B256) -> bool {
         self.find_node_idx(block_root).is_some_and(|idx| self.nodes[idx].payload.verified)
     }

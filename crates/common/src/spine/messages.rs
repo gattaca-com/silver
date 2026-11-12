@@ -1605,6 +1605,14 @@ pub struct EngineNewPayloadResp {
     pub latest_valid_hash: Option<[u8; 32]>,
 }
 
+impl EngineNewPayloadResp {
+    /// Engine API: INVALID with a null latest valid hash fails the body before
+    /// execution, on its block hash or blob versioned hashes.
+    pub fn rejects_body(&self) -> bool {
+        self.status == PayloadValidationStatus::Invalid && self.latest_valid_hash.is_none()
+    }
+}
+
 /// The EL's returned payload ID must be fetched using the same fork as this
 /// request.
 #[derive(Clone, Copy, Debug, TypeHash)]

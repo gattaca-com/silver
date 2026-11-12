@@ -9,10 +9,10 @@ use silver_beacon_state_data::{
     gloas::PTC_SIZE,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, BroadcastValidation, EngineNewPayloadEnvelopeReq, EngineReq,
-    GossipTopic, LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg,
-    PayloadValidationStatus, PeerEvent, SyncNeed, TCacheRead, TRead,
-    compute_subnet_for_attestation, hex32,
+    BeaconStateEvent, BlockSource, BroadcastValidation, EngineNewPayloadEnvelopeReq,
+    EngineNewPayloadResp, EngineReq, GossipTopic, LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure,
+    MAX_BLOBS_PER_BLOCK, NewGossipMsg, PayloadValidationStatus, PeerEvent, SyncNeed, TCacheRead,
+    TRead, compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
@@ -1342,19 +1342,21 @@ impl BeaconStateTile {
 
     pub(super) fn release_el_verified_envelope(
         &mut self,
-        block_root: &B256,
-        status: PayloadValidationStatus,
+        verdict: &EngineNewPayloadResp,
         producers: &mut Producers,
     ) {
-        let Some(envelope) = self.envelopes_awaiting_el_verdict.remove(block_root) else {
+        let block_root = verdict.block_root;
+        let Some(envelope) = self.envelopes_awaiting_el_verdict.remove(&block_root) else {
             return;
         };
         let UnverifiedEnvelope { read, source, slot, signature } = envelope;
-        if status == PayloadValidationStatus::Invalid {
-            self.el_rejected_envelopes.insert(signature, *block_root);
-            self.pending_envelopes.request(*block_root, slot, producers);
-        } else {
-            Self::emit_envelope_available(&read, source, slot, *block_root, true, producers);
+        if verdict.status != PayloadValidationStatus::Invalid {
+            Self::emit_envelope_available(&read, source, slot, block_root, true, producers);
+            return;
+        }
+        self.el_rejected_envelopes.insert(signature, block_root);
+        if verdict.rejects_body() {
+            self.pending_envelopes.request(block_root, slot, producers);
         }
     }
 
@@ -1415,8 +1417,11 @@ impl BeaconStateTile {
 
         if self.fork_choice.is_payload_verified(&block_root) {
             producers.produce(SyncNeed::envelope_arrived(block_root, slot));
-            // The copy awaiting its verdict is announced once judged.
-            if !self.envelopes_awaiting_el_verdict.contains_key(&block_root) {
+            // The copy awaiting its verdict is announced once judged, and an
+            // invalid payload is never announced.
+            if !self.envelopes_awaiting_el_verdict.contains_key(&block_root) &&
+                !self.fork_choice.is_payload_invalid(&block_root)
+            {
                 Self::emit_envelope_available(
                     &acquired, source, slot, block_root, false, producers,
                 );

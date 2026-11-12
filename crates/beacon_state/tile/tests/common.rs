@@ -68,8 +68,14 @@ pub enum Step {
     EfBlocks { case: String },
     /// Inject an RPC ExecutionPayloadEnvelopesByRoot response chunk.
     EnvelopeResp { from: String },
-    /// Inject the EL's newPayload verdict for `block_root`.
-    EngineVerdict { block_root: String, status: String },
+    /// Inject the EL's newPayload verdict for `block_root`. An INVALID
+    /// without `latest_valid_hash` rejects the body before execution.
+    EngineVerdict {
+        block_root: String,
+        status: String,
+        #[serde(default)]
+        latest_valid_hash: Option<String>,
+    },
     /// Inject a `DataColumnsAvailable` for the block at `from`.
     DataColumnsAvailable { from: String },
     /// Turn the RPC ring over, so a block held only by its ring handle is gone.
@@ -420,11 +426,16 @@ impl Harness {
         }));
     }
 
-    pub fn inject_engine_verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
+    pub fn inject_engine_verdict(
+        &mut self,
+        block_root: B256,
+        status: PayloadValidationStatus,
+        latest_valid_hash: Option<B256>,
+    ) {
         self.inj_adapter.produce(EngineResp::NewPayload(EngineNewPayloadResp {
             block_root,
             status,
-            latest_valid_hash: None,
+            latest_valid_hash,
         }));
     }
 
@@ -610,13 +621,14 @@ pub fn run_scenario(case_dir: &Path) {
                 let ssz = snappy_decode(&resolve(from));
                 h.inject_envelope_resp(&ssz);
             }
-            Step::EngineVerdict { block_root, status } => {
+            Step::EngineVerdict { block_root, status, latest_valid_hash } => {
                 let status = match status.as_str() {
                     "valid" => PayloadValidationStatus::Valid,
                     "invalid" => PayloadValidationStatus::Invalid,
                     other => panic!("unknown verdict: {other}"),
                 };
-                h.inject_engine_verdict(parse_b256(block_root), status);
+                let latest_valid_hash = latest_valid_hash.as_deref().map(parse_b256);
+                h.inject_engine_verdict(parse_b256(block_root), status, latest_valid_hash);
             }
             Step::DataColumnsAvailable { from } => {
                 let ssz = snappy_decode(&resolve(from));

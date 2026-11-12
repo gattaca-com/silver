@@ -318,7 +318,19 @@ impl ProductionRig {
     }
 
     fn new_payload_verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
-        let verdict = EngineNewPayloadResp { block_root, status, latest_valid_hash: None };
+        self.engine_verdict(EngineNewPayloadResp { block_root, status, latest_valid_hash: None });
+    }
+
+    /// The EL hashed the body correctly and its execution failed.
+    fn execution_failure(&mut self, block_root: B256, latest_valid_hash: B256) {
+        self.engine_verdict(EngineNewPayloadResp {
+            block_root,
+            status: PayloadValidationStatus::Invalid,
+            latest_valid_hash: Some(latest_valid_hash),
+        });
+    }
+
+    fn engine_verdict(&mut self, verdict: EngineNewPayloadResp) {
         self.tile
             .handle_engine_response(EngineResp::NewPayload(verdict), &mut self.adapter.producers);
     }
@@ -418,4 +430,31 @@ fn copy_of_a_rejected_envelope_never_reaches_the_el_again() {
     assert!(engine_requests(&mut rig.sink).is_empty());
 
     assert_eq!(rig.gossip_envelope(&signed), Feedback::Accept, "the real one still gets through");
+}
+
+/// A null latest valid hash is the EL rejecting the body before execution.
+/// A named one means the body hashed correctly and failed execution, and
+/// the block hash admits no other body, so nothing is fetched again.
+#[test]
+fn payload_that_fails_execution_is_not_fetched_again() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+    rig.gossip_envelope(&signed);
+    rig.sync_needs();
+    engine_requests(&mut rig.sink);
+
+    rig.execution_failure(root, [0x11; 32]);
+    let refetch = SyncNeed::missing_envelope(root, rig.proposal.slot);
+    assert!(!rig.sync_needs().contains(&refetch));
+
+    let forged = rig.forge_body(&signed);
+    assert_eq!(rig.gossip_envelope(&forged), Feedback::AlreadySeen);
+    assert!(engine_requests(&mut rig.sink).is_empty());
+    assert!(rig.available_envelopes().is_empty(), "nothing to persist for an invalid payload");
+    assert!(
+        rig.tile.fork_choice.is_payload_verified(&root),
+        "a vote for the payload is judged against its verdict, not sent to fetch it"
+    );
 }
