@@ -28,6 +28,7 @@ fn main() {
         readiness.registry(),
         TokenRange::whole(),
         &binds,
+        &[],
         64,
         Duration::from_secs(75),
         &keypair,

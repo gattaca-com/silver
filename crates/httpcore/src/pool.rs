@@ -7,7 +7,7 @@ use std::{
 use mio::{Events, Interest, Registry, Token, event::Event};
 
 use crate::{
-    ClientConnection, ClientRequest, ClientResponse, Stream, TokenRange,
+    BufferCapacity, ClientConnection, ClientRequest, ClientResponse, Stream, TokenRange,
     address::Address,
     client::frame_request,
     transport::{Tls, Transport},
@@ -74,6 +74,7 @@ struct PooledConnection {
     /// next sweep answers it, so callers gating on capacity do not resend it.
     unframed: Option<&'static str>,
     request_deadline: Option<Instant>,
+    idle_deadline: Option<Instant>,
 }
 
 impl PooledConnection {
@@ -81,11 +82,12 @@ impl PooledConnection {
         Self {
             token,
             conn: Conn::Disconnected,
-            machine: ClientConnection::with_capacity(capacity.read, capacity.write),
+            machine: ClientConnection::new(capacity),
             in_flight: None,
             pending_id: None,
             unframed: None,
             request_deadline: None,
+            idle_deadline: None,
         }
     }
 
@@ -95,10 +97,16 @@ impl PooledConnection {
 
     /// The deadline runs from enqueue rather than from the write hitting the
     /// wire, so a connect that never completes expires on the same deadline.
-    /// `now` is read only for a connection with a request, and once per sweep.
+    /// `now` is read only for a connection with a deadline, and once per sweep.
     fn expired(&self, now: &mut Option<Instant>) -> bool {
         self.request_deadline
             .is_some_and(|deadline| *now.get_or_insert_with(Instant::now) > deadline)
+    }
+
+    fn idled_out(&self, now: &mut Option<Instant>) -> bool {
+        self.is_free() &&
+            self.idle_deadline
+                .is_some_and(|deadline| *now.get_or_insert_with(Instant::now) > deadline)
     }
 
     fn enqueue(
@@ -278,7 +286,12 @@ impl PooledConnection {
         if let Some(id) = self.pending_id.take() {
             on_complete(id, Err(msg));
         }
+        self.disconnect(registry);
+    }
+
+    fn disconnect(&mut self, registry: &Registry) {
         self.request_deadline = None;
+        self.idle_deadline = None;
         self.machine.reset();
         match std::mem::replace(&mut self.conn, Conn::Disconnected) {
             Conn::Connecting(mut stream) => {
@@ -307,12 +320,9 @@ impl PooledConnection {
     }
 }
 
-/// Each pooled connection's buffers, sized for the largest exchange it carries.
-#[derive(Clone, Copy)]
-pub struct BufferCapacity {
-    pub read: usize,
-    pub write: usize,
-}
+/// reqwest's default. Far past a slot, so an endpoint called every slot keeps
+/// its connection.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// One request in flight per connection. Connection `i` registers as
 /// `tokens.at(i)`, so the span bounds how many the pool can ever open.
@@ -324,6 +334,7 @@ pub struct HttpPool {
     tokens: TokenRange,
     capacity: BufferCapacity,
     max_connections: usize,
+    idle_timeout: Duration,
 }
 
 impl HttpPool {
@@ -332,10 +343,20 @@ impl HttpPool {
         tokens: TokenRange,
         capacity: BufferCapacity,
         max_connections: usize,
+        idle_timeout: Duration,
     ) -> io::Result<Self> {
         let Target { host, tls, address } = endpoint.target()?;
         let connections = vec![PooledConnection::new(tokens.at(0), capacity)];
-        Ok(Self { connections, host, tls, address, tokens, capacity, max_connections })
+        Ok(Self {
+            connections,
+            host,
+            tls,
+            address,
+            tokens,
+            capacity,
+            max_connections,
+            idle_timeout,
+        })
     }
 
     /// `enqueue` never refuses work; every caller gates on this before
@@ -367,6 +388,9 @@ impl HttpPool {
             }
         };
         conn.enqueue(id, request, timeout, &self.host, &mut self.address, registry);
+        if let Some(deadline) = conn.request_deadline {
+            conn.idle_deadline = Some(deadline + self.idle_timeout);
+        }
     }
 
     pub fn dispatch_events<F>(&mut self, events: &Events, registry: &Registry, on_complete: &mut F)
@@ -421,6 +445,8 @@ impl HttpPool {
                 conn.fail(&mut self.address, registry, on_complete, "connect failed to start");
             } else if conn.expired(&mut now) {
                 conn.fail(&mut self.address, registry, on_complete, "request timed out");
+            } else if conn.idled_out(&mut now) {
+                conn.disconnect(registry);
             }
         }
     }
@@ -444,12 +470,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{Method, Readiness, transport::client_config};
+    use crate::{MAX_RESPONSE, Method, Readiness, transport::client_config};
 
     /// Longer than any test's 10 s spin deadline: the sweep never fires.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
 
-    const CAPACITY: BufferCapacity = BufferCapacity { read: 4096, write: 4096 };
+    const CAPACITY: BufferCapacity =
+        BufferCapacity { read: 4096, write: 4096, max_response: MAX_RESPONSE };
 
     fn post(body: &[u8]) -> ClientRequest<'_> {
         ClientRequest {
@@ -525,7 +552,8 @@ mod tests {
     fn connect_failure_fails_the_request_and_frees_the_connection() {
         let dir = TempDir::new().unwrap();
         let endpoint = Endpoint::Uds(dir.path().join("missing.sock"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(3, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
@@ -540,7 +568,8 @@ mod tests {
         let socket = dir.path().join("server.sock");
         let mut server = Server::bind(&socket);
         let endpoint = Endpoint::Uds(socket);
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(9, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
@@ -560,7 +589,8 @@ mod tests {
         let mut server = Server::bind(&socket);
         let timeout = Duration::from_millis(200);
         let endpoint = Endpoint::Uds(socket);
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(1, &post(b"{}"), timeout, readiness.registry());
@@ -580,12 +610,80 @@ mod tests {
     }
 
     #[test]
+    fn idle_connection_closes_and_the_next_request_reconnects() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.path().join("server.sock");
+        let mut server = Server::bind(&socket);
+        let timeout = Duration::from_millis(50);
+        let endpoint = Endpoint::Uds(socket);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, timeout).unwrap();
+        let mut readiness = Readiness::new(1);
+        let answer = |server: &mut Server| {
+            server.pump();
+            if std::mem::take(&mut server.received) > 0 {
+                server.answer_ok();
+            }
+        };
+
+        pool.enqueue(1, &post(b"{}"), timeout, readiness.registry());
+        assert_eq!(complete(&mut pool, &mut readiness, || answer(&mut server)), (1, Some(200)));
+
+        let idle_until = Instant::now() + 4 * timeout;
+        while Instant::now() < idle_until {
+            readiness.wait(Duration::from_millis(1));
+            pool.dispatch_events(readiness.events(), readiness.registry(), &mut |id, _| {
+                panic!("request {id} answered with none in flight")
+            });
+        }
+        let first = server.stream.as_mut().unwrap();
+        first.set_nonblocking(false).unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        assert_eq!(first.read(&mut [0; 1]).unwrap(), 0, "the idle connection is closed");
+
+        pool.enqueue(2, &post(b"{}"), timeout, readiness.registry());
+        assert_eq!(complete(&mut pool, &mut readiness, || answer(&mut server)), (2, Some(200)));
+    }
+
+    #[test]
+    fn unsent_request_leaves_its_connection_idling_out() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.path().join("server.sock");
+        let mut server = Server::bind(&socket);
+        let timeout = Duration::from_millis(50);
+        let endpoint = Endpoint::Uds(socket);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, timeout).unwrap();
+        let mut readiness = Readiness::new(1);
+
+        pool.enqueue(1, &post(b"{}"), timeout, readiness.registry());
+        let completed = complete(&mut pool, &mut readiness, || {
+            server.pump();
+            if std::mem::take(&mut server.received) > 0 {
+                server.answer_ok();
+            }
+        });
+        assert_eq!(completed, (1, Some(200)));
+
+        let split = ClientRequest { path: "/a\r\nX-Split: 1", ..post(b"{}") };
+        pool.enqueue(2, &split, timeout, readiness.registry());
+        let idle_until = Instant::now() + 4 * timeout;
+        while Instant::now() < idle_until {
+            readiness.wait(Duration::from_millis(1));
+            pool.dispatch_events(readiness.events(), readiness.registry(), &mut |_, _| {});
+        }
+        let first = server.stream.as_mut().unwrap();
+        first.set_nonblocking(false).unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        assert_eq!(first.read(&mut [0; 1]).unwrap(), 0, "the idle connection is closed");
+    }
+
+    #[test]
     fn request_with_a_line_break_in_its_head_fails_unsent() {
         let dir = TempDir::new().unwrap();
         let socket = dir.path().join("server.sock");
         let mut server = Server::bind(&socket);
         let endpoint = Endpoint::Uds(socket);
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
 
         let split = ClientRequest { path: "/a\r\nX-Split: 1", ..post(b"{}") };
@@ -620,7 +718,8 @@ mod tests {
         let _listener = UnixListener::bind(&socket).unwrap();
 
         let mut pool =
-            HttpPool::new(Endpoint::Uds(socket), TokenRange::whole(), CAPACITY, 1).unwrap();
+            HttpPool::new(Endpoint::Uds(socket), TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT)
+                .unwrap();
         let readiness = Readiness::new(1);
 
         pool.enqueue(7, &post(b"{}"), Duration::from_millis(100), readiness.registry());
@@ -684,7 +783,7 @@ mod tests {
     #[test]
     fn invalid_tls_server_names_fail_the_pool() {
         let endpoint = Endpoint::Http("https://relay..example/".into());
-        assert!(HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).is_err());
+        assert!(HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).is_err());
     }
 
     /// The body outgrows rustls's default plaintext limit, which the
@@ -710,7 +809,8 @@ mod tests {
         });
 
         let endpoint = Endpoint::Http(url);
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut roots = RootCertStore::empty();
         roots.add(cert).unwrap();
         let tls = pool.tls.as_mut().unwrap();
@@ -732,7 +832,8 @@ mod tests {
         thread::spawn(move || answer_one_request(listener.accept().unwrap().0));
 
         let endpoint = Endpoint::Http(format!("http://localhost:{port}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
         pool.enqueue(5, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
         assert!(matches!(pool.connections[0].conn, Conn::Resolving));
@@ -744,7 +845,8 @@ mod tests {
         let local = ("localhost", 0).to_socket_addrs().unwrap().next().unwrap();
         let port = TcpListener::bind(local).unwrap().local_addr().unwrap().port();
         let endpoint = Endpoint::Http(format!("http://localhost:{port}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(1, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
@@ -769,7 +871,8 @@ mod tests {
         thread::spawn(move || drop(listener.accept().unwrap()));
 
         let endpoint = Endpoint::Http(format!("https://localhost:{port}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
         pool.enqueue(1, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
         assert_eq!(complete(&mut pool, &mut readiness, || {}), (1, None), "handshake fails");
@@ -784,7 +887,8 @@ mod tests {
         thread::spawn(move || answer_one_request(listener.accept().unwrap().0));
 
         let endpoint = Endpoint::Http(format!("http://localhost:{port}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
         pool.enqueue(1, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
         assert_eq!(complete(&mut pool, &mut readiness, || {}), (1, Some(200)));
@@ -802,7 +906,8 @@ mod tests {
     fn ip_literals_are_never_looked_up() {
         let addr = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         let endpoint = Endpoint::Http(format!("http://{addr}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut pool =
+            HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(1, &post(b"{}"), LONG_TIMEOUT, readiness.registry());

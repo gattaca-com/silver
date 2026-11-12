@@ -208,6 +208,12 @@ impl Router {
         signatures: &mut EntrySignatures,
         out: &mut Vec<u8>,
     ) -> Outcome {
+        if req.from_web_page {
+            silver_log::warn!("request from a web page refused: {}", req.path);
+            Response::new(out, submissions).error(403, "requests from web pages are refused");
+            return Outcome::Response(None);
+        }
+
         let method = Method::parse(req.method);
         let mut path_known = false;
         for route in &self.routes {
@@ -290,6 +296,8 @@ mod tests {
             eth_consensus_version: None,
             eth_builder_url: None,
             eth_blob_data_included: None,
+            from_web_page: false,
+            host: None,
             version: 1,
             keep_alive: true,
         }
@@ -354,6 +362,8 @@ mod tests {
             eth_consensus_version: None,
             eth_builder_url: None,
             eth_blob_data_included: None,
+            from_web_page: false,
+            host: None,
             version: 1,
             keep_alive: true,
         };
@@ -422,6 +432,23 @@ mod tests {
             expected,
             "longer than pattern"
         );
+    }
+
+    #[test]
+    fn requests_from_web_pages_get_403_before_any_handler() {
+        let router = Router::new(&[(Method::Get, "/metrics", first)], &["/metrics"]);
+        let mut out = Vec::new();
+        let req = ParsedRequest { from_web_page: true, ..request("GET", "/metrics") };
+        let outcome = router.dispatch(
+            &req,
+            &anchor_ctx(),
+            &mut submissions(),
+            &mut EntrySignatures::new(),
+            &mut out,
+        );
+        assert_eq!(outcome, Outcome::Response(None));
+        assert!(out.starts_with(b"HTTP/1.1 403 Forbidden\r\n"));
+        assert_eq!(body(&out), br#"{"code":403,"message":"requests from web pages are refused"}"#);
     }
 
     #[test]

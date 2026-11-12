@@ -69,6 +69,7 @@ fn boundary_tile_with_spec(
     );
     let tile = ApplicationBoundaryTile::new(
         std::slice::from_ref(bind),
+        &[],
         64,
         Duration::from_secs(75),
         &keypair,

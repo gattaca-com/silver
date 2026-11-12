@@ -68,6 +68,7 @@ mod tests {
             content_type: Some(SSZ_MEDIA_TYPE),
             eth_consensus_version: Some("gloas"),
             eth_blob_data_included: Some(if included { "true" } else { "false" }),
+            from_web_page: false,
             ..posting(PATH, "")
         }
     }

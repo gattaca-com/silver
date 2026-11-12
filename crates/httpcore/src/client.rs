@@ -6,13 +6,26 @@ use std::{
 use crate::chunked_decoder::ChunkedDecoder;
 
 // 4096 covers any realistic HTTP response header block; once headers are
-// parsed, reads are sized to exactly the remaining Content-Length.
+// parsed, reads are sized to the remaining Content-Length, a step at a time.
 const HEADER_READ_LEN: usize = 4096;
-// About 5x the largest getPayload with a full blobs bundle; a larger
-// declaration is a broken or hostile server.
-const MAX_RESPONSE: usize = 128 << 20;
+/// The buffer grows only as far ahead of the received bytes as one step, so
+/// a declared length commits no memory before its body arrives.
+const READ_STEP: usize = 1 << 20;
+/// About 5x the largest getPayload with a full blobs bundle; a larger
+/// declaration is a broken or hostile server.
+pub const MAX_RESPONSE: usize = 128 << 20;
+
+/// A connection's buffers, sized for the largest exchange it carries. A read
+/// buffer grown past `read` shrinks back once its response is taken.
+#[derive(Clone, Copy)]
+pub struct BufferCapacity {
+    pub read: usize,
+    pub write: usize,
+    pub max_response: usize,
+}
 
 pub struct ClientConnection {
+    capacity: BufferCapacity,
     write_buf: Vec<u8>,
     write_pos: usize,
     read_buf: Vec<u8>,
@@ -95,11 +108,12 @@ impl Framing {
 }
 
 impl ClientConnection {
-    pub fn with_capacity(read_capacity: usize, write_capacity: usize) -> Self {
+    pub fn new(capacity: BufferCapacity) -> Self {
         Self {
-            write_buf: Vec::with_capacity(write_capacity),
+            capacity,
+            write_buf: Vec::with_capacity(capacity.write),
             write_pos: 0,
-            read_buf: Vec::with_capacity(read_capacity),
+            read_buf: Vec::with_capacity(capacity.read),
             read_end: 0,
             read_offset: 0,
             status: 0,
@@ -130,8 +144,9 @@ impl ClientConnection {
         if self.read_offset != 0 && self.read_offset == self.read_end {
             self.read_end = 0;
             self.read_offset = 0;
+            self.shrink_read_buf();
         }
-        let want = self.framing.read_len(self.read_end - self.read_offset);
+        let want = self.framing.read_len(self.read_end - self.read_offset).min(READ_STEP);
         debug_assert!(want > 0, "complete response pending: take_response before reading more");
         if self.read_buf.len() < self.read_end + want {
             self.read_buf.resize(self.read_end + want, 0);
@@ -155,7 +170,7 @@ impl ClientConnection {
         // Checked before `read_space` sizes the buffer for the rest.
         let buffered = self.read_end - self.read_offset;
         if self.framing.complete_body(buffered).is_none() &&
-            buffered + self.framing.read_len(buffered) > MAX_RESPONSE
+            buffered + self.framing.read_len(buffered) > self.capacity.max_response
         {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "response over its size limit"));
         }
@@ -180,6 +195,13 @@ impl ClientConnection {
         self.read_offset = 0;
         self.status = 0;
         self.framing = Framing::Head;
+        self.shrink_read_buf();
+    }
+
+    fn shrink_read_buf(&mut self) {
+        debug_assert_eq!(self.read_end, 0, "no buffered bytes to drop");
+        self.read_buf.truncate(self.capacity.read);
+        self.read_buf.shrink_to(self.capacity.read);
     }
 }
 
@@ -277,6 +299,8 @@ mod tests {
 
     const BODY: &[u8] = br#"{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}"#;
     const BEARER: &str = "Bearer aGVhZGVy.cGF5bG9hZA.c2ln";
+    const CAPACITY: BufferCapacity =
+        BufferCapacity { read: 4096, write: 4096, max_response: MAX_RESPONSE };
 
     fn post<'a>(body: &'a [u8], authorization: Option<&'a str>) -> ClientRequest<'a> {
         ClientRequest {
@@ -291,7 +315,7 @@ mod tests {
     }
 
     fn machine() -> ClientConnection {
-        ClientConnection::with_capacity(4096, 4096)
+        ClientConnection::new(CAPACITY)
     }
 
     fn make_response(body: &[u8]) -> Vec<u8> {
@@ -658,6 +682,42 @@ mod tests {
 
         feed(&mut conn, &make_response(b"{}")).unwrap();
         assert_eq!(conn.take_response().unwrap().body, b"{}");
+    }
+
+    #[test]
+    fn declared_length_grows_the_buffer_one_step_at_a_time() {
+        let mut conn = machine();
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", 8 * READ_STEP);
+        feed(&mut conn, head.as_bytes()).unwrap();
+        assert_eq!(conn.read_space().len(), READ_STEP);
+        assert_eq!(conn.read_buf.len(), head.len() + READ_STEP);
+    }
+
+    #[test]
+    fn response_over_the_connection_s_own_limit_fails() {
+        let mut conn = ClientConnection::new(BufferCapacity { max_response: 1024, ..CAPACITY });
+        frame_request(conn.begin_request(), "h", &post(b"{}", None), true).unwrap();
+        let err = feed(&mut conn, b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n").unwrap_err();
+        assert_eq!(err.to_string(), "response over its size limit");
+    }
+
+    #[test]
+    fn grown_buffer_shrinks_once_its_response_is_taken() {
+        let mut conn = machine();
+        let body = vec![b'x'; 64 << 10];
+        feed_all(&mut conn, &make_response(&body)).unwrap();
+        assert_eq!(conn.take_response().unwrap().body, body);
+        conn.read_space();
+        assert!(conn.read_buf.capacity() < body.len());
+    }
+
+    #[test]
+    fn grown_buffer_shrinks_on_reset() {
+        let mut conn = machine();
+        let response = make_response(&vec![b'x'; 64 << 10]);
+        feed_all(&mut conn, &response[..32 << 10]).unwrap();
+        conn.reset();
+        assert!(conn.read_buf.capacity() < 32 << 10);
     }
 
     #[test]

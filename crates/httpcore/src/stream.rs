@@ -247,7 +247,9 @@ impl Source for Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{ClientConnection, ClientRequest, Method, frame_request};
+    use crate::client::{
+        BufferCapacity, ClientConnection, ClientRequest, MAX_RESPONSE, Method, frame_request,
+    };
 
     #[test]
     fn parse_socket_addr_is_tcp() {
@@ -347,7 +349,11 @@ mod tests {
     fn uds_pair_round_trip_through_client_connection() {
         let (client_half, mut server_half) = UnixStream::pair().unwrap();
         let mut stream = Stream::Uds(client_half);
-        let mut conn = ClientConnection::with_capacity(4096, 4096);
+        let mut conn = ClientConnection::new(BufferCapacity {
+            read: 4096,
+            write: 4096,
+            max_response: MAX_RESPONSE,
+        });
 
         let body = br#"{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":7}"#;
         let post = ClientRequest {

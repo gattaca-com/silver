@@ -3,7 +3,8 @@ use std::time::Duration;
 use mio::{Events, Registry};
 use silver_config::PbsConfig;
 use silver_httpcore::{
-    BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, Method, TokenRange,
+    BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, IDLE_TIMEOUT, MAX_RESPONSE,
+    Method, TokenRange,
 };
 
 use crate::{CONSENSUS_VERSION, FULU, SidecarCall};
@@ -24,8 +25,9 @@ impl BlockSubmission {
             pool: HttpPool::new(
                 Endpoint::Http(config.endpoint.clone()),
                 tokens,
-                BufferCapacity { read: 4 << 10, write: 64 << 10 },
+                BufferCapacity { read: 4 << 10, write: 64 << 10, max_response: MAX_RESPONSE },
                 1,
+                IDLE_TIMEOUT,
             )
             .expect("pbs.endpoint is http://"),
             timeout: config.submit_blinded_block_timeout(),

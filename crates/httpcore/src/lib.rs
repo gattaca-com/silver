@@ -11,8 +11,11 @@ mod token_range;
 mod transport;
 
 pub use chunked_response::{ChunkedResponse, Closed, frame_chunked_head};
-pub use client::{ClientConnection, ClientRequest, ClientResponse, Method, frame_request};
-pub use pool::{BufferCapacity, Endpoint, HttpPool};
+pub use client::{
+    BufferCapacity, ClientConnection, ClientRequest, ClientResponse, MAX_RESPONSE, Method,
+    frame_request,
+};
+pub use pool::{Endpoint, HttpPool, IDLE_TIMEOUT};
 pub use query::Query;
 pub use readiness::Readiness;
 pub use server::{

@@ -374,6 +374,7 @@ fn status_line(code: u16) -> Option<&'static str> {
         204 => "204 No Content",
         206 => "206 Partial Content",
         400 => "400 Bad Request",
+        403 => "403 Forbidden",
         404 => "404 Not Found",
         405 => "405 Method Not Allowed",
         406 => "406 Not Acceptable",

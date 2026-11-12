@@ -889,13 +889,14 @@ mod tests {
         assert_eq!(received.try_iter().count(), 1);
     }
 
-    /// Preferences take `PREFERENCE_CONNECTIONS` of a builder's connections at
-    /// once; the rest fail, for the VC to send again.
+    /// Preferences take `PREFERENCE_CONNECTIONS` connections at once, whichever
+    /// builders they name; the rest fail, for the VC to send again.
     #[test]
-    fn preferences_past_their_share_of_a_builder_fail() {
+    fn preferences_past_their_share_fail() {
         let (url, received) = builder(false);
-        let entries =
-            vec![preferences_entry(1, &format!("{url}/prefs"), 0); PREFERENCE_CONNECTIONS + 2];
+        let entries: Vec<_> = (0..PREFERENCE_CONNECTIONS + 2)
+            .map(|index| preferences_entry(1, &format!("{url}/prefs/{}", index % 2), 0))
+            .collect();
         let body = list(&entries);
         let mut readiness = Readiness::new(64);
         let mut bids =
@@ -907,6 +908,24 @@ mod tests {
             vec![(PREFERENCE_CONNECTIONS, busy.clone()), (PREFERENCE_CONNECTIONS + 1, busy)];
         assert_eq!(preference_failures(&mut bids, &mut readiness), (8, expected));
         assert_eq!(received.try_iter().count(), PREFERENCE_CONNECTIONS);
+    }
+
+    #[test]
+    fn bids_past_the_request_limit_fail_whichever_builder_they_name() {
+        let (url, _received) = builder(true);
+        let readiness = Readiness::new(64);
+        let mut bids =
+            BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
+
+        let entries: Vec<_> = (0..MAX_REQUESTS)
+            .map(|index| entry(&format!("{url}/{}", index % 2), [0, 0, 100]))
+            .collect();
+        bids.request(&request(), BuilderConfig::parse(&config(0, 100, &entries)).unwrap());
+        assert_eq!(bids.bid_rounds.live.last().unwrap().unanswered, MAX_REQUESTS);
+
+        let body = config(0, 100, &[entry(&format!("{url}/other"), [0, 0, 100])]);
+        bids.request(&request(), BuilderConfig::parse(&body).unwrap());
+        assert_eq!(bids.bid_rounds.live.last().unwrap().unanswered, 0);
     }
 
     /// A burst of preferences leaves bids the connections preferences may not

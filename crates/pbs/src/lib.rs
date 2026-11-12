@@ -5,7 +5,8 @@ use silver_beacon_state_data::{B256, Slot, SpecConfig};
 use silver_common::SidecarBidRequest;
 use silver_config::PbsConfig;
 use silver_httpcore::{
-    BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, Method, TokenRange,
+    BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, IDLE_TIMEOUT, MAX_RESPONSE,
+    Method, TokenRange,
 };
 
 use crate::{
@@ -69,7 +70,8 @@ pub enum SidecarEvent<'a> {
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3 + 1);
 
 /// Buffers grow past this for a large registration set.
-const CONNECTION_CAPACITY: BufferCapacity = BufferCapacity { read: 64 << 10, write: 64 << 10 };
+const CONNECTION_CAPACITY: BufferCapacity =
+    BufferCapacity { read: 64 << 10, write: 64 << 10, max_response: MAX_RESPONSE };
 
 pub struct PbsClient {
     pool: HttpPool,
@@ -111,6 +113,7 @@ impl PbsClient {
                 tokens,
                 CONNECTION_CAPACITY,
                 1,
+                IDLE_TIMEOUT,
             )
             .expect("pbs.endpoint is http://"),
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),

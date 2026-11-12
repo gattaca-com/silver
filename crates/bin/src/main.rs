@@ -370,6 +370,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
     let application_boundary_tile = ApplicationBoundaryTile::new(
         &beacon_api_binds,
+        config.beacon_api_allowed_hosts(),
         config.beacon_api_max_connections(),
         config.beacon_api_idle_timeout(),
         &keypair,
