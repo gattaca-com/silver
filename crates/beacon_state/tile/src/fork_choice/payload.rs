@@ -1,6 +1,6 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::B256;
-use silver_log::info;
+use silver_log::{info, warn};
 
 use super::{ExecutionStatus, ForkChoice, NULL, PayloadStatus, node::PTC_SIZE};
 
@@ -11,20 +11,33 @@ impl ForkChoice {
             return;
         };
         self.head_moved = true;
+        self.validate_payload_chain(idx);
+    }
+
+    /// Invalid is final: an invalid payload's weight has already left its
+    /// ancestors, and reviving it would subtract that weight again.
+    fn validate_payload_chain(&mut self, idx: usize) {
         let mut next = Some(idx);
         while let Some(idx) = next {
-            let status = &mut self.nodes[idx].execution_status;
-            if *status == ExecutionStatus::Valid {
-                break;
+            let node = &mut self.nodes[idx];
+            match node.execution_status {
+                ExecutionStatus::Valid => break,
+                ExecutionStatus::Invalid => {
+                    warn!(
+                        block_root = ?node.block_root,
+                        "EL reported VALID for a payload it reported INVALID; keeping it invalid"
+                    );
+                    break;
+                }
+                ExecutionStatus::Optimistic => node.execution_status = ExecutionStatus::Valid,
             }
-            *status = ExecutionStatus::Valid;
             next = self.payload_parent(idx);
         }
     }
 
     /// The nearest ancestor whose payload this node builds on. An EMPTY edge
     /// skips its parent's payload, so the search continues from the parent.
-    fn payload_parent(&self, idx: usize) -> Option<usize> {
+    pub(super) fn payload_parent(&self, idx: usize) -> Option<usize> {
         let mut child = &self.nodes[idx];
         while child.parent_ix != NULL {
             if child.payload.parent_status == PayloadStatus::Full {
@@ -35,69 +48,68 @@ impl ForkChoice {
         None
     }
 
-    pub fn chain_execution_status(&self, idx: usize) -> ExecutionStatus {
-        let node = &self.nodes[idx];
-        if !node.payload.is_gloas {
-            return node.execution_status;
-        }
-        self.payload_parent(idx).map_or(node.execution_status, |p| self.nodes[p].execution_status)
-    }
-
     #[timed]
     pub fn on_payload_invalid(&mut self, block_root: &B256, latest_valid_hash: Option<B256>) {
-        let Some(head_idx) = self.find_node_idx(block_root) else {
+        let Some(invalid_idx) = self.find_node_idx(block_root) else {
             return;
         };
         self.head_moved = true;
 
-        if self.nodes[head_idx].payload.is_gloas {
-            self.nodes[head_idx].execution_status = ExecutionStatus::Invalid;
-            self.nodes[head_idx].full.best_child = NULL;
-            self.nodes[head_idx].full.best_desc = NULL;
-            return;
-        }
-
         // Two branches can carry the same payload, so only an ancestor counts.
-        let lvh_idx = latest_valid_hash.and_then(|hash| self.payload_owner(head_idx, &hash));
+        let lvh_idx = latest_valid_hash.and_then(|hash| self.payload_ancestor(invalid_idx, &hash));
 
         info!(?block_root, ?latest_valid_hash, "payload invalid, marking branch");
 
-        // Ancestor segment: block down to (exclusive) the last valid ancestor.
-        let mut idx = head_idx;
-        loop {
+        let mut next = Some(invalid_idx);
+        while let Some(idx) = next {
             if Some(idx) == lvh_idx {
-                self.nodes[idx].execution_status = ExecutionStatus::Valid;
+                self.validate_payload_chain(idx);
                 break;
             }
-            let n = &mut self.nodes[idx];
-            if n.execution_status == ExecutionStatus::Valid {
+            if self.nodes[idx].execution_status == ExecutionStatus::Valid {
                 break;
             }
-            n.execution_status = ExecutionStatus::Invalid;
-            n.full.best_child = NULL;
-            n.full.best_desc = NULL;
-            n.empty.best_child = NULL;
-            n.empty.best_desc = NULL;
+            self.invalidate_payload(idx);
             // Unknown ancestor: only `block_root` is provably bad.
-            if n.parent_ix == NULL || lvh_idx.is_none() {
+            if lvh_idx.is_none() {
                 break;
             }
-            idx = n.parent_ix;
+            next = self.payload_parent(idx);
         }
 
-        // Descendants of an invalid node are invalid. Parents always precede
+        // A payload built on an invalid one is invalid. Parents always precede
         // children in `nodes`, so one forward pass suffices.
         for i in 0..self.nodes.len() {
-            let p = self.nodes[i].parent_ix;
-            if p != NULL && self.nodes[p].execution_status == ExecutionStatus::Invalid {
-                let n = &mut self.nodes[i];
-                n.execution_status = ExecutionStatus::Invalid;
-                n.full.best_child = NULL;
-                n.full.best_desc = NULL;
-                n.empty.best_child = NULL;
-                n.empty.best_desc = NULL;
+            if self
+                .payload_parent(i)
+                .is_some_and(|p| self.nodes[p].execution_status == ExecutionStatus::Invalid)
+            {
+                self.invalidate_payload(i);
             }
         }
+    }
+
+    /// A Gloas block outlives its payload as EMPTY; a pre-Gloas block does not.
+    fn invalidate_payload(&mut self, idx: usize) {
+        let n = &mut self.nodes[idx];
+        n.execution_status = ExecutionStatus::Invalid;
+        n.full.best_child = NULL;
+        n.full.best_desc = NULL;
+        if !n.payload.is_gloas {
+            n.empty.best_child = NULL;
+            n.empty.best_desc = NULL;
+        }
+    }
+
+    fn payload_ancestor(&self, idx: usize, block_hash: &B256) -> Option<usize> {
+        let mut next = Some(idx);
+        while let Some(idx) = next {
+            if self.nodes[idx].payload.bid_block_hash == *block_hash {
+                return Some(idx);
+            }
+            next = self.payload_parent(idx);
+        }
+        None
     }
 
     pub fn mark_payload_verified(&mut self, block_root: &B256) {
@@ -119,6 +131,11 @@ impl ForkChoice {
             }
             idx = n.parent_ix;
         }
+    }
+
+    pub fn is_payload_invalid(&self, block_root: &B256) -> bool {
+        self.find_node_idx(block_root)
+            .is_some_and(|idx| self.nodes[idx].execution_status == ExecutionStatus::Invalid)
     }
 
     pub fn is_payload_verified(&self, block_root: &B256) -> bool {

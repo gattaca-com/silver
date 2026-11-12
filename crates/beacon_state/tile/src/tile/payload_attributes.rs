@@ -9,7 +9,10 @@ use silver_common::{
 };
 
 use super::{BeaconStateTile, Producers};
-use crate::stf::{self, get_expected_withdrawals};
+use crate::{
+    fork_choice::FcuExecutionHashes,
+    stf::{self, get_expected_withdrawals},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct PayloadContext {
@@ -97,8 +100,13 @@ impl BeaconStateTile {
             .or(fallback_fee_recipient)
             .ok_or(ProduceBlockFailure::NoFeeRecipient)?;
 
-        let (head_root, head_block_hash, safe_block_hash, finalized_block_hash) =
-            self.fork_choice.fcu_execution_hashes();
+        let FcuExecutionHashes {
+            head_root,
+            head_block_hash,
+            safe_block_hash,
+            finalized_block_hash,
+            ..
+        } = self.fork_choice.fcu_execution_hashes();
         if head_root != self.head_block_root() {
             silver_log::warn!(slot, "head state does not follow fork choice; payload not prepared");
             return Err(ProduceBlockFailure::Internal);

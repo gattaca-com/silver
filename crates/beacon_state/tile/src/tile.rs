@@ -253,6 +253,8 @@ pub struct BeaconStateTile {
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: PendingEnvelopes,
+    /// Signature → block root.
+    el_rejected_envelopes: FxHashMap<[u8; 96], B256>,
     envelope_arrivals: EnvelopeArrivals,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
@@ -340,6 +342,7 @@ impl BeaconStateTile {
             sig_batch: bls::SigBatch::new(),
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: PendingEnvelopes::new(syncing.pending.max_dc),
+            el_rejected_envelopes: FxHashMap::default(),
             envelope_arrivals: EnvelopeArrivals::default(),
             payload_bids_pool: BidPool::default(),
             payload_execution_requests: PayloadExecutionRequests::default(),
@@ -582,7 +585,7 @@ impl BeaconStateTile {
         let root = self.fork_choice.find_head();
         let idx =
             self.fork_choice.find_node_idx(&root).expect("find_head returns a node-resident root");
-        let optimistic = self.fork_choice.chain_execution_status(idx) != ExecutionStatus::Valid;
+        let optimistic = self.fork_choice.selected_execution_status(idx) != ExecutionStatus::Valid;
         let payload = self.fork_choice.payload_resolution(idx);
         SelectedHead { observation: HeadObservation { root, optimistic, payload }, idx }
     }
@@ -890,12 +893,27 @@ impl BeaconStateTile {
                     }
                     StagedVerdict::Kept => {}
                     StagedVerdict::NotStaged => {
+                        let envelope = self.pending_envelopes.take_verdict(&r.block_root);
+                        if let Some(envelope) = &envelope &&
+                            r.rejects_body()
+                        {
+                            self.refetch_forged_envelope(r.block_root, envelope, producers);
+                            return;
+                        }
                         self.on_payload_verdict(
                             &r.block_root,
                             r.latest_valid_hash,
                             r.status,
                             |event| producers.produce(event),
                         );
+                        if let Some(envelope) = envelope {
+                            self.release_el_verified_envelope(
+                                r.block_root,
+                                envelope,
+                                r.status,
+                                producers,
+                            );
+                        }
                         if r.status == PayloadValidationStatus::Valid {
                             self.promote_unknown_root_votes(producers);
                         }

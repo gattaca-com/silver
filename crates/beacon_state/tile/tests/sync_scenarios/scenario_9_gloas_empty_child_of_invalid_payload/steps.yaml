@@ -24,6 +24,7 @@ steps:
   - kind: engine_verdict
     block_root: "0x780218dcb4c1afc8ba72f325eb4f9ad43523356242345752d0e7a52391c15582"
     status: invalid
+    latest_valid_hash: "0x1111111111111111111111111111111111111111111111111111111111111111"
   - kind: step
 
   - kind: blocks_range_resp

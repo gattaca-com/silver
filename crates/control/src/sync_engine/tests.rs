@@ -1757,3 +1757,22 @@ fn target_epoch_saturates_at_the_slot_ceiling() {
     assert_eq!(target.target_slot(), Some(u64::MAX));
     assert_eq!(target.data_availability_floor(0), u64::MAX);
 }
+
+/// Beacon state reports an envelope at consensus verification, ahead of the
+/// EL verdict that gates persisting it.
+#[test]
+fn _envelope_arrival_covers_its_slot() {
+    let now = Instant::now();
+    let mut e = gloas_engine(0, 0);
+    peer_status(&mut e, PEER, HEAD_ROOT, 200);
+    local_status(&mut e, 0, 200);
+    advance(&mut e);
+
+    block_at(&mut e, 1, Some(0));
+    drive_all(&mut e, now);
+    assert_eq!(tail(&e), 0, "the envelope is still owed");
+
+    e.on_sync_need(SyncNeed::Arrived { root: [1; 32], slot: 1, kind: DataKind::Envelope }, now);
+    drive_all(&mut e, now);
+    assert_eq!(tail(&e), 1);
+}

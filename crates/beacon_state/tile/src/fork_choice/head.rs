@@ -4,7 +4,9 @@ use silver_beacon_state_data::{
 };
 use silver_common::PayloadResolution;
 
-use super::{ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, node::PTC_SIZE};
+use super::{
+    ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, ROOT, node::PTC_SIZE,
+};
 
 impl ForkChoice {
     /// Fold `self.weight_deltas` (staged by the caller) into the node weights.
@@ -19,24 +21,15 @@ impl ForkChoice {
 
         let len = self.nodes.len();
         for i in (0..len).rev() {
-            let d = self.weight_deltas[i];
-            let total = d.total();
-            let parent;
-            let edge;
-            {
-                let n = &mut self.nodes[i];
-                n.empty.weight = (n.empty.weight as i64 + d.empty).max(0) as u64;
-                n.full.weight = (n.full.weight as i64 + d.full).max(0) as u64;
-                n.weight = (n.weight as i64 + total).max(0) as u64;
-                parent = n.parent_ix;
-                edge = n.payload.parent_status;
-            }
+            let n = &mut self.nodes[i];
+            let passed_up = n.apply_weight_delta(self.weight_deltas[i]);
+            let (parent, edge) = (n.parent_ix, n.payload.parent_status);
 
             if parent != NULL {
                 if edge == PayloadStatus::Full {
-                    self.weight_deltas[parent].full += total;
+                    self.weight_deltas[parent].full += passed_up;
                 } else {
-                    self.weight_deltas[parent].empty += total;
+                    self.weight_deltas[parent].empty += passed_up;
                 }
             }
         }
@@ -76,38 +69,49 @@ impl ForkChoice {
         self.nodes[justified_idx].block_root
     }
 
-    /// Returns `(head_root, head_exec, safe_exec, finalized_exec)`
-    pub fn fcu_execution_hashes(&self) -> (B256, B256, B256, B256) {
+    pub fn fcu_execution_hashes(&self) -> FcuExecutionHashes {
         let zero = [0u8; 32];
         let Some(ji) = self.find_node_idx(&self.justified_checkpoint.root) else {
-            return (zero, zero, zero, zero);
+            return FcuExecutionHashes {
+                head_root: zero,
+                head_payload_root: zero,
+                head_block_hash: zero,
+                safe_block_hash: zero,
+                finalized_block_hash: zero,
+            };
         };
 
         let best_desc = self.resolved_branch_best_desc(ji);
         let head_idx = if self.node_is_viable_for_head(best_desc) { best_desc } else { ji };
-        let node = &self.nodes[ji];
-        let fin_exec = self
+        let (owner_idx, head_block_hash) = self.head_payload(head_idx);
+        let finalized_block_hash = self
             .find_node_idx(&self.finalized_checkpoint.root)
             .map(|i| self.nodes[i].execution_block_hash)
             .unwrap_or(zero);
 
-        let head_exec = self.head_execution_hash(head_idx);
-        (self.nodes[head_idx].block_root, head_exec, node.execution_block_hash, fin_exec)
+        FcuExecutionHashes {
+            head_root: self.nodes[head_idx].block_root,
+            head_payload_root: self.nodes[owner_idx].block_root,
+            head_block_hash,
+            safe_block_hash: self.nodes[ji].execution_block_hash,
+            finalized_block_hash,
+        }
     }
 
-    /// The execution-payload hash at the canonical tip ending at `head_idx`:
-    /// the latest node on its chain whose payload resolves FULL.
-    fn head_execution_hash(&self, head_idx: usize) -> B256 {
-        let mut idx = head_idx;
-        loop {
-            if self.resolves_to_full(idx) {
-                return self.nodes[idx].payload.bid_block_hash;
-            }
-            if self.nodes[idx].parent_ix == NULL {
-                return self.nodes[idx].execution_block_hash;
-            }
-            idx = self.nodes[idx].parent_ix;
+    /// The node whose payload the chain ending at `idx` last ran, and that
+    /// payload's hash. With no FULL edge up to the root, the root's chain hash.
+    fn head_payload(&self, idx: usize) -> (usize, B256) {
+        if self.resolves_to_full(idx) {
+            return (idx, self.nodes[idx].payload.bid_block_hash);
         }
+        match self.payload_parent(idx) {
+            Some(owner) => (owner, self.nodes[owner].payload.bid_block_hash),
+            None => (ROOT, self.nodes[ROOT].execution_block_hash),
+        }
+    }
+
+    pub fn selected_execution_status(&self, idx: usize) -> ExecutionStatus {
+        self.nodes[self.head_payload(idx).0].execution_status
     }
 
     /// Resolves the node's own payload using the same rule as head selection.
@@ -322,6 +326,17 @@ impl ForkChoice {
         let nb = &self.nodes[b];
         (na.weight, na.block_root) >= (nb.weight, nb.block_root)
     }
+}
+
+/// `head_payload_root` owns `head_block_hash`. It differs from `head_root`
+/// when the head's own payload resolves EMPTY, and the EL verdict on the FCU
+/// belongs to it.
+pub struct FcuExecutionHashes {
+    pub head_root: B256,
+    pub head_payload_root: B256,
+    pub head_block_hash: B256,
+    pub safe_block_hash: B256,
+    pub finalized_block_hash: B256,
 }
 
 /// Spec `compute_shuffling_lookahead_start_slot`: the first slot whose state

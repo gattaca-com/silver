@@ -1,6 +1,8 @@
-# Scenario 10: the EL rejects block 1's payload. Block 2 builds on block 1's
-# FULL variant, so it descends from the invalid payload and is ignored. The
-# same block imports in scenario 8, where the payload is not declared invalid.
+# Scenario 10: the EL rejects block 1's envelope body before execution. Block 2
+# builds on block 1's FULL variant, so it waits for a real envelope instead of
+# importing, and is not reported as rejected. The same block imports in
+# scenario 8, where the payload is not declared invalid; scenario 12 rejects it
+# after an execution failure.
 #
 # Source: EF gloas fork_choice on_block_parent_full_accepts_verified_payload.
 
@@ -26,9 +28,12 @@ steps:
     block_root: "0x76bf14e70fc96a5a3442a46dff3bfb897d5568cdb4dc7e94419f625df2fcd9e5"
     status: invalid
   - kind: step
+  # The envelope may have carried a forged body, so it is fetched again.
+  - kind: check
+    outbound_has: [request_envelope]
 
   - kind: blocks_range_resp
-    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/block_0xfaf1845afc1fff44268e104e3d054597a4d411f8d22da3c52489d5256f1292d4.ssz_snappy
+    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/block_0x7a25db19479cdcc24bd59bb8f5feaeee2e9b24bd25f5eddd54dd809c567b5e5b.ssz_snappy
   - kind: step
   - kind: check
-    outbound_lacks: [block_applied, block_staged, persist_block]
+    outbound_lacks: [block_applied, block_staged, persist_block, block_rejected]

@@ -11,11 +11,12 @@ use silver_beacon_state_data::{
     Withdrawals, hash_tree_root_block_header,
 };
 use silver_common::{
-    BeaconApiResponse, BidPolicy, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
-    EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
-    LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed,
-    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    BeaconApiResponse, BidPolicy, BlockStage, EngineFcuResp, EngineGetPayloadResp,
+    EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation,
+    StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer,
+    block_root_fulu,
     ssz_hash::{BlockFork, HashedBody},
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE,
@@ -40,6 +41,7 @@ use super::{
     block::{ParsedBlock, StagedBlock},
     block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
+    pending_envelopes::UnverifiedEnvelope,
     shuffling_cache::ShufflingRequest,
     *,
 };
@@ -683,7 +685,7 @@ struct HeadRig {
     adapter: SpineAdapter<SilverSpine>,
     tile: BeaconStateTile,
     anchor: StateId,
-    _gossip: TProducer,
+    gossip: TProducer,
     _rpc: TProducer,
     _spine: TestSpine,
 }
@@ -722,8 +724,7 @@ impl HeadRig {
             anchor,
             8,
         );
-        let mut rig =
-            Self { sink, adapter, tile, anchor, _gossip: gossip, _rpc: rpc, _spine: spine };
+        let mut rig = Self { sink, adapter, tile, anchor, gossip, _rpc: rpc, _spine: spine };
         let _ = rig.crank();
         rig
     }
@@ -853,12 +854,50 @@ impl HeadRig {
         state_id
     }
 
+    /// An envelope as gossip hands it to the EL, its verdict outstanding.
+    fn envelope_awaiting_verdict(&mut self, block_root: B256, slot: Slot) {
+        let mut reservation = self.gossip.reserve(1, true).expect("reserve");
+        reservation.increment_offset(1);
+        let read = self.tile.reader.acquire(reservation.read());
+        self.gossip.loop_start();
+        self.tile.pending_envelopes.await_verdict(block_root, UnverifiedEnvelope {
+            read,
+            source: BlockSource::Gossip,
+            slot,
+            signature: [0; 96],
+        });
+    }
+
     fn verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
         self.sink.produce(EngineResp::NewPayload(EngineNewPayloadResp {
             block_root,
             status,
             latest_valid_hash: None,
         }));
+    }
+
+    /// The payload hashed correctly and failed execution on the anchor's.
+    fn execution_failure(&mut self, block_root: B256) {
+        self.sink.produce(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root,
+            status: PayloadValidationStatus::Invalid,
+            latest_valid_hash: Some([0u8; 32]),
+        }));
+    }
+
+    /// Sends the FCU an import would send and answers it as the EL would.
+    fn fcu_verdict(&mut self, status: PayloadValidationStatus) {
+        let request = self.tile.fork_choice_update();
+        self.sink.produce(EngineResp::Fcu(EngineFcuResp {
+            block_root: request.block_root,
+            status,
+            latest_valid_hash: Some(request.head_block_hash),
+        }));
+    }
+
+    fn execution_status(&self, block_root: B256) -> ExecutionStatus {
+        let idx = self.tile.fork_choice.find_node_idx(&block_root).expect("imported");
+        self.tile.fork_choice.node(idx).execution_status
     }
 
     fn advance_to_slot(&mut self, slot: Slot) {
@@ -1020,6 +1059,8 @@ fn gloas_head_change_is_classified_against_the_last_complete_status() {
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     assert_eq!(rig.crank().changes(), [HeadChange::Head]);
 
+    // Judged first, so verifying it moves only the resolution, not optimism.
+    rig.tile.fork_choice.on_payload_valid(&A_ROOT);
     rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
     assert_eq!(rig.crank().changes(), [HeadChange::Payload]);
 
@@ -1152,21 +1193,23 @@ fn head_a_empty(optimistic: bool) -> StatusHead {
 }
 
 /// Mark verification directly to isolate publication from envelope validation.
-/// A Gloas block builds on the anchor's payload, so its own payload's verdict
-/// never decides its execution status.
+/// A head that resolves FULL runs its own payload, so it is optimistic until
+/// the EL judges that payload; resolved EMPTY, it runs the anchor's.
 #[test]
-fn gloas_payload_verification_moves_the_resolution_and_its_verdict_moves_nothing() {
+fn a_full_gloas_head_is_optimistic_until_its_own_payload_is_judged() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     assert_eq!(rig.crank().last_head(), head_a_empty(false));
 
     rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
     let events = rig.crank();
-    assert_eq!(events.last_head(), head_a(false));
+    assert_eq!(events.last_head(), head_a(true));
     assert!(events.reorgs().is_empty(), "the head block did not move");
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
-    assert!(!rig.crank().changes().contains(&HeadChange::Head));
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_a(false));
+    assert_eq!(events.changes(), [HeadChange::Head], "re-announced once its payload is valid");
 }
 
 /// An invalid Gloas payload can leave its block selected with an empty
@@ -1175,12 +1218,69 @@ fn gloas_payload_verification_moves_the_resolution_and_its_verdict_moves_nothing
 fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_reorg() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
-    assert_eq!(rig.crank().last_head(), head_a(false));
+    // Its payload passed consensus checks but has no EL verdict yet.
+    assert_eq!(rig.crank().last_head(), head_a(true));
 
-    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    rig.execution_failure(A_ROOT);
     let events = rig.crank();
     assert_eq!(events.last_head(), head_a_empty(false));
     assert!(events.reorgs().is_empty());
+}
+
+/// The FCU for an EMPTY head carries an ancestor's hash, so its verdict says
+/// nothing about the head's own payload.
+#[test]
+fn an_fcu_verdict_for_an_ancestor_payload_leaves_an_unjudged_gloas_payload_optimistic() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    let _ = rig.crank();
+
+    rig.fcu_verdict(PayloadValidationStatus::Valid);
+    let _ = rig.crank();
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Optimistic);
+}
+
+#[test]
+fn an_fcu_verdict_for_an_ancestor_payload_does_not_revive_a_rejected_gloas_payload() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    rig.execution_failure(A_ROOT);
+    assert_eq!(rig.crank().last_head(), head_a_empty(false));
+
+    rig.fcu_verdict(PayloadValidationStatus::Valid);
+    let _ = rig.crank();
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Invalid);
+    assert_eq!(rig.tile.fork_choice_update().head_block_hash, [0u8; 32], "FCU stays on the anchor");
+}
+
+/// An envelope body the EL rejects before execution says nothing about the
+/// committed payload, so nothing built on that payload may be invalidated: the
+/// real envelope can still arrive and prove it valid.
+#[test]
+fn a_rejected_envelope_body_leaves_blocks_built_on_its_payload_alone() {
+    let mut rig = HeadRig::new();
+    let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    let built_on_full = PayloadAxis {
+        bid_block_hash: B_ROOT,
+        parent_status: PayloadStatus::Full,
+        verified: true,
+        is_gloas: true,
+    };
+    rig.import_node(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT, built_on_full);
+    let _ = rig.crank();
+
+    rig.envelope_awaiting_verdict(A_ROOT, 71);
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let _ = rig.crank();
+    assert!(!rig.tile.fork_choice.is_payload_verified(&A_ROOT), "awaits a real envelope");
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Optimistic);
+    assert_eq!(rig.execution_status(B_ROOT), ExecutionStatus::Optimistic);
+
+    rig.envelope_awaiting_verdict(A_ROOT, 71);
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    let _ = rig.crank();
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Valid);
+    assert_eq!(rig.execution_status(B_ROOT), ExecutionStatus::Optimistic);
 }
 
 /// Inject slot-72 votes early so their weight is already folded while the
@@ -1194,7 +1294,8 @@ fn the_tick_closing_the_previous_slot_window_publishes_the_vote_weighted_resolut
 
     rig.vote_on_payload(A_ROOT, 0..8, false);
     rig.advance_to_slot(72);
-    assert_eq!(rig.crank().last_head(), head_a(false));
+    // Its payload passed consensus checks but has no EL verdict yet.
+    assert_eq!(rig.crank().last_head(), head_a(true));
 
     rig.advance_to_slot(73);
     let events = rig.crank();
@@ -1213,12 +1314,12 @@ fn a_ptc_majority_returns_the_head_to_the_parent_with_its_full_payload() {
 
     rig.tile.fork_choice.set_proposer_boost(B_ROOT);
     rig.import_empty_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
-    let b = StatusHead { slot: 72, ..head_b(false) };
+    let b = StatusHead { slot: 72, ..head_b(true) };
     assert_eq!(rig.crank().last_head(), b, "boost on the empty child resolves A empty");
 
     rig.ptc_majority(A_ROOT);
     let events = rig.crank();
-    assert_eq!(events.last_head(), head_a(false));
+    assert_eq!(events.last_head(), head_a(true));
     assert_eq!(events.reorgs(), [71], "the head left B for its parent");
 }
 

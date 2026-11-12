@@ -11,7 +11,8 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, BroadcastValidation, EngineNewPayloadEnvelopeReq, EngineReq,
     GossipTopic, LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg,
-    PeerEvent, SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
+    PayloadValidationStatus, PeerEvent, SyncNeed, TCacheRead, TRead,
+    compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
@@ -33,6 +34,7 @@ use super::{
     attestation_pool::{InsertOutcome, Participants},
     fork_data_roots::ForkDataRoots,
     held_blocks::BlockSourceMsg,
+    pending_envelopes::UnverifiedEnvelope,
     seen_aggregates::Coverage,
     seen_proposer_preferences::ProposerPreferences,
     shuffling_cache::ShufflingRequest,
@@ -1329,6 +1331,39 @@ impl BeaconStateTile {
             .insert(block_root, stf::envelope_execution_requests(signed));
     }
 
+    /// Consensus checks cannot tie an envelope's body to its block hash, so a
+    /// rejected body says nothing about the committed payload: another
+    /// envelope may carry it.
+    pub(super) fn refetch_forged_envelope(
+        &mut self,
+        block_root: B256,
+        envelope: &UnverifiedEnvelope,
+        producers: &mut Producers,
+    ) {
+        self.el_rejected_envelopes.insert(envelope.signature, block_root);
+        self.pending_envelopes.request(block_root, envelope.slot, producers);
+    }
+
+    /// The spec stores a payload only once the EL has verified it, SYNCING and
+    /// ACCEPTED optimistically, so it counts as verified from here on. One that
+    /// failed execution is verified too: it is judged, so its copies and votes
+    /// meet that verdict instead of fetching it again.
+    pub(super) fn release_el_verified_envelope(
+        &mut self,
+        block_root: B256,
+        envelope: UnverifiedEnvelope,
+        status: PayloadValidationStatus,
+        producers: &mut Producers,
+    ) {
+        let UnverifiedEnvelope { read, source, slot, .. } = envelope;
+        self.fork_choice.mark_payload_verified(&block_root);
+        if status != PayloadValidationStatus::Invalid {
+            Self::emit_envelope_available(&read, source, slot, block_root, true, producers);
+        }
+        self.drain_awaiting_payload(block_root, producers);
+        self.recompute_head(|event| producers.produce(event));
+    }
+
     fn emit_envelope_available(
         acquired: &TRead,
         source: BlockSource,
@@ -1354,6 +1389,13 @@ impl BeaconStateTile {
         source: BlockSource,
         producers: &mut Producers,
     ) -> Feedback {
+        // BLS signatures are deterministic: a rejected one either repeats the
+        // rejected envelope or fails verification.
+        if SignedPayload::check_size(ssz) &&
+            self.el_rejected_envelopes.contains_key(SignedPayload::signature(ssz))
+        {
+            return Feedback::Ignore;
+        }
         let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
             EnvelopeCheck::Ready { block_root, state_id } => (block_root, state_id),
             EnvelopeCheck::AwaitBlock(block_root) => {
@@ -1363,6 +1405,7 @@ impl BeaconStateTile {
             EnvelopeCheck::Ignore => return Feedback::Ignore,
             EnvelopeCheck::Reject => return Feedback::reject("envelope invalid"),
         };
+        let signature = *SignedPayload::signature(ssz);
 
         let rv = self.state.read_view(state_id);
         let slot = rv.slot.slot_number();
@@ -1376,8 +1419,16 @@ impl BeaconStateTile {
         }
         let slot_state = rv.slot;
 
-        if self.fork_choice.is_payload_verified(&block_root) {
-            Self::emit_envelope_available(&acquired, source, slot, block_root, false, producers);
+        let verified = self.fork_choice.is_payload_verified(&block_root);
+        if verified || self.pending_envelopes.awaits_verdict(&block_root) {
+            producers.produce(SyncNeed::envelope_arrived(block_root, slot));
+            // The copy awaiting its verdict is announced once judged, and an
+            // invalid payload is never announced.
+            if verified && !self.fork_choice.is_payload_invalid(&block_root) {
+                Self::emit_envelope_available(
+                    &acquired, source, slot, block_root, false, producers,
+                );
+            }
             return Feedback::AlreadySeen;
         }
 
@@ -1394,7 +1445,8 @@ impl BeaconStateTile {
             return Feedback::Accept;
         }
 
-        self.mark_envelope_verified(block_root, ssz);
+        self.payload_execution_requests.insert(block_root, stf::envelope_execution_requests(ssz));
+        producers.produce(SyncNeed::envelope_arrived(block_root, slot));
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
             data: acquired.to_read(),
             block_root,
@@ -1402,11 +1454,12 @@ impl BeaconStateTile {
             hash_count,
             versioned_hashes,
         }));
-
-        Self::emit_envelope_available(&acquired, source, slot, block_root, true, producers);
-
-        self.drain_awaiting_payload(block_root, producers);
-        self.recompute_head(|event| producers.produce(event));
+        self.pending_envelopes.await_verdict(block_root, UnverifiedEnvelope {
+            read: acquired,
+            source,
+            slot,
+            signature,
+        });
 
         Feedback::Accept
     }

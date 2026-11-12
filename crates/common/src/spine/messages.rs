@@ -921,6 +921,10 @@ impl SyncNeed {
         Self::live_missing(DataKind::Envelope, root, slot, 0)
     }
 
+    pub fn envelope_arrived(root: [u8; 32], slot: u64) -> Self {
+        Self::Arrived { root, slot, kind: DataKind::Envelope }
+    }
+
     pub fn missing_columns(root: [u8; 32], slot: u64, columns: u128) -> Self {
         Self::live_missing(DataKind::Columns, root, slot, columns)
     }
@@ -1604,6 +1608,14 @@ pub struct EngineNewPayloadResp {
     pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
     pub latest_valid_hash: Option<[u8; 32]>,
+}
+
+impl EngineNewPayloadResp {
+    /// Engine API: INVALID with a null latest valid hash fails the body before
+    /// execution, on its block hash or blob versioned hashes.
+    pub fn rejects_body(&self) -> bool {
+        self.status == PayloadValidationStatus::Invalid && self.latest_valid_hash.is_none()
+    }
 }
 
 /// The EL's returned payload ID must be fetched using the same fork as this

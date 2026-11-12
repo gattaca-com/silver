@@ -13,6 +13,7 @@ mod tests;
 mod vote;
 mod vote_targets;
 
+pub use head::FcuExecutionHashes;
 pub(crate) use head::{compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot};
 pub use justified_balances::JustifiedBalances;
 pub use lookup::NodeLookup;
@@ -25,6 +26,8 @@ pub use vote::{VoteTracker, WeightDelta};
 pub const FORK_CHOICE_NODES_HINT: usize = 256;
 
 pub(super) const NULL: usize = usize::MAX;
+/// `prune` keeps the finalized node first.
+pub(super) const ROOT: usize = 0;
 
 pub(super) const GENESIS_EPOCH: Epoch = 0;
 

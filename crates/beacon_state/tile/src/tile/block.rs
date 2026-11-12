@@ -250,17 +250,7 @@ impl BeaconStateTile {
         self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
         producers.produce(BeaconStateEvent::PersistBlock { ssz, source, slot, block_root });
 
-        let (head_root, head, safe, fin) = self.fork_choice.fcu_execution_hashes();
-        producers.produce(EngineReq::Fcu(EngineFcuReq {
-            block_root: head_root,
-            head_block_hash: head,
-            safe_block_hash: safe,
-            finalized_block_hash: fin,
-            is_gloas: self
-                .fork_choice
-                .find_node_idx(&head_root)
-                .is_some_and(|idx| self.fork_choice.node(idx).payload.is_gloas),
-        }));
+        producers.produce(EngineReq::Fcu(self.fork_choice_update()));
 
         self.promote_unknown_root_votes(producers);
         self.drain_pending_envelope(block_root, slot, producers);
@@ -269,6 +259,20 @@ impl BeaconStateTile {
 
         self.replay_orphans(block_root, producers);
         self.precompute_for_next_block();
+    }
+
+    pub(super) fn fork_choice_update(&self) -> EngineFcuReq {
+        let hashes = self.fork_choice.fcu_execution_hashes();
+        EngineFcuReq {
+            block_root: hashes.head_payload_root,
+            head_block_hash: hashes.head_block_hash,
+            safe_block_hash: hashes.safe_block_hash,
+            finalized_block_hash: hashes.finalized_block_hash,
+            is_gloas: self
+                .fork_choice
+                .find_node_idx(&hashes.head_root)
+                .is_some_and(|idx| self.fork_choice.node(idx).payload.is_gloas),
+        }
     }
 
     /// Work the next block would otherwise do inline, run off the newest

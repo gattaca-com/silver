@@ -376,10 +376,11 @@ impl SyncEngine {
             SyncNeed::Missing { root, slot, kind, columns, origin } => {
                 self.ctx.root_requests.want(root, kind, columns, origin, slot, now);
             }
-            SyncNeed::Arrived { root, slot, kind } => {
-                debug_assert_eq!(kind, DataKind::Columns);
-                self.on_columns_covered(slot, root);
-            }
+            SyncNeed::Arrived { root, slot, kind } => match kind {
+                DataKind::Columns => self.on_columns_covered(slot, root),
+                DataKind::Envelope => self.on_envelope_covered(slot, root),
+                DataKind::Block => debug_assert!(false, "a block arrives as `BlockReceived`"),
+            },
             SyncNeed::Persisted { kind, slot, columns, parent_slot } => {
                 self.ctx.backfill.on_persisted(
                     kind,
@@ -414,9 +415,6 @@ impl SyncEngine {
                     self.window.envelope_covered(parent_slot);
                     self.phase.note_report(DataKind::Envelope, parent_slot);
                 }
-            }
-            BeaconStateEvent::EnvelopeAvailable { slot, block_root, .. } => {
-                self.on_envelope_covered(slot, block_root)
             }
             BeaconStateEvent::Reorg { lca_slot } => self.on_reorg(lca_slot),
             _ => {}
