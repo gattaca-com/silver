@@ -29,8 +29,8 @@ impl BeaconStateTile {
         for child in self.held.orphans.take(&parent_root) {
             // First successful validation of an orphan held on a missing
             // parent: relay it now. Recursively applies chained orphans.
-            // Not pre-verified — precheck bailed at parent-missing before
-            // the BLS check, so the signature is still unverified.
+            // Not pre-verified: the signature was checked against the head's
+            // registry and lookahead, not the parent's.
             self.replay_pending_block(child, true, false, producers);
         }
     }
@@ -119,7 +119,8 @@ impl BeaconStateTile {
     ) {
         for child in self.held.payload_orphans.take(&verified_root) {
             let do_relay = !child.msg.relayed_once_parsed();
-            self.replay_pending_block(child, do_relay, false, producers);
+            // Pre-verified: the parking check read the same parent state.
+            self.replay_pending_block(child, do_relay, true, producers);
         }
     }
 

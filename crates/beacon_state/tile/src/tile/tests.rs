@@ -4,11 +4,11 @@ use std::{fs, path::PathBuf};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState,
-    EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PROPOSER_LOOKAHEAD_SIZE,
-    PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    SYNC_SUBCOMMITTEE_SIZE, ShufflingId, StateView, SyncCommittee, TreeGroup, TreeSpec, ValSeed,
-    Withdrawals, hash_tree_root_block_header,
+    BLSPubkey, BeaconBlockHeader, BeaconState, BodyFork, BodyOffsets,
+    EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
+    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, PendingPartialWithdrawal,
+    SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_SIZE, ShufflingId, StateView,
+    SyncCommittee, TreeGroup, TreeSpec, ValSeed, Withdrawals, hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineFcuResp, EngineGetPayloadResp,
@@ -1397,7 +1397,7 @@ fn block_unknown_parent_rejected() {
 #[test]
 fn short_gossip_block_rejected_before_any_field_read() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
-    seed_tile(&mut tile, 4, 10);
+    seed_tile_with_keys(&mut tile, 4, 10);
     tile.sync_target = SyncUpdate::Following;
 
     for len in [0, 1, 100, 107, SIGNED_BEACON_BLOCK_MIN - 1] {
@@ -1422,6 +1422,7 @@ fn short_gossip_block_rejected_before_any_field_read() {
     let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&11u64.to_le_bytes());
     bytes[116] = 0xFF; // unknown parent_root
+    sign_block(&mut bytes);
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
     let pinned = tile.reader.acquire(read);
     let feedback = tile.apply_block(
@@ -2096,7 +2097,63 @@ fn empty_block_at(slot: u64, parent_root: B256) -> Vec<u8> {
     let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     bytes[116..148].copy_from_slice(&parent_root);
+    sign_block(&mut bytes);
     bytes
+}
+
+/// Signs with the key `seed_tile_with_keys` gives the block's proposer, under
+/// the all-default signing domain of `seed_immutable`.
+fn sign_block(bytes: &mut [u8]) {
+    let body = SignedBeaconBlockView::body(bytes);
+    let offsets = BodyOffsets::validated(body, BodyFork::Fulu).unwrap();
+    let proposer_index = SignedBeaconBlockView::proposer_index(bytes);
+    let header = BeaconBlockHeader {
+        slot: SignedBeaconBlockView::slot(bytes),
+        proposer_index,
+        parent_root: *SignedBeaconBlockView::parent_root(bytes),
+        state_root: *SignedBeaconBlockView::state_root(bytes),
+        body_root: HashedBody::of(&offsets).root,
+    };
+    let domain = bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, [0; 4], &[0; 32]);
+    let signing_root = bls::compute_signing_root(&hash_tree_root_block_header(&header), &domain);
+    let key = proposer_index as usize % test_signing::PRIVKEY_HEX.len();
+    bytes[4..100].copy_from_slice(&test_signing::sign(key, &signing_root));
+}
+
+/// A block that would park is checked against the head state first: an
+/// unsigned one is rejected, one from another proposer is ignored.
+#[test]
+fn orphan_parks_only_with_the_expected_proposers_signature() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
+    seed_tile_with_keys(&mut tile, 4, 10);
+    tile.sync_target = SyncUpdate::Following;
+    let mut apply = |tile: &mut BeaconStateTile, bytes: &[u8]| {
+        let (data, read) = publish_block_bytes(&mut gp, bytes);
+        let pinned = tile.reader.acquire(read);
+        tile.apply_block(
+            &data,
+            &pinned,
+            BlockSource::Gossip,
+            false,
+            &mut adapter.producers,
+            |_, _| panic!("an unimportable block must never be relayed"),
+        )
+    };
+
+    let signed = empty_block_at(11, [0xFF; 32]);
+    let mut unsigned = signed.clone();
+    unsigned[4..100].fill(0);
+    let feedback = apply(&mut tile, &unsigned);
+    assert!(matches!(feedback, Feedback::Reject { .. }), "{feedback:?}");
+
+    let mut other_proposer = signed.clone();
+    other_proposer[108..116].copy_from_slice(&1u64.to_le_bytes());
+    sign_block(&mut other_proposer);
+    let feedback = apply(&mut tile, &other_proposer);
+    assert!(matches!(feedback, Feedback::Ignore), "{feedback:?}");
+
+    let feedback = apply(&mut tile, &signed);
+    assert!(matches!(feedback, Feedback::RequestParent { .. }), "{feedback:?}");
 }
 
 fn rpc_block(producer: &mut TProducer, slot: u64, parent_root: B256) -> TCacheRead {
@@ -2128,7 +2185,7 @@ fn missing_blocks(sink: &mut SpineAdapter<SilverSpine>) -> Vec<(B256, u64)> {
 fn parked_orphan_pins_its_bytes_until_replay() {
     const JUNK_BYTES: usize = 1 << 16;
     let (mut tile, _gp, mut rp, mut spine, mut adapter) = tile_with_producers(200);
-    seed_tile(&mut tile, 4, 10);
+    seed_tile_with_keys(&mut tile, 4, 10);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: SyncNeed, _| {});
 
@@ -2212,7 +2269,7 @@ fn rpc_envelope(producer: &mut TProducer, block_root: B256) -> silver_common::TC
 #[test]
 fn backfill_block_response_is_not_parked() {
     let (mut tile, _gp, mut rp, _spine, mut adapter) = tile_with_producers(200);
-    seed_tile(&mut tile, 4, 10);
+    seed_tile_with_keys(&mut tile, 4, 10);
 
     let unknown_parent = [0xB5u8; 32];
     let response = |kind, origin, ssz| {
