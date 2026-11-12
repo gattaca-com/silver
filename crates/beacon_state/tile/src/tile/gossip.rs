@@ -198,6 +198,7 @@ pub(super) struct UnverifiedEnvelope {
     read: TRead,
     source: BlockSource,
     slot: Slot,
+    signature: [u8; 96],
 }
 
 pub(super) enum EnvelopeCheck {
@@ -1348,8 +1349,9 @@ impl BeaconStateTile {
         let Some(envelope) = self.envelopes_awaiting_el_verdict.remove(block_root) else {
             return;
         };
-        let UnverifiedEnvelope { read, source, slot } = envelope;
+        let UnverifiedEnvelope { read, source, slot, signature } = envelope;
         if status == PayloadValidationStatus::Invalid {
+            self.el_rejected_envelopes.insert(signature, *block_root);
             self.pending_envelopes.request(*block_root, slot, producers);
         } else {
             Self::emit_envelope_available(&read, source, slot, *block_root, true, producers);
@@ -1381,6 +1383,13 @@ impl BeaconStateTile {
         source: BlockSource,
         producers: &mut Producers,
     ) -> Feedback {
+        // BLS signatures are deterministic: a rejected one either repeats the
+        // rejected envelope or fails verification.
+        if SignedPayload::check_size(ssz) &&
+            self.el_rejected_envelopes.contains_key(SignedPayload::signature(ssz))
+        {
+            return Feedback::Ignore;
+        }
         let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
             EnvelopeCheck::Ready { block_root, state_id } => (block_root, state_id),
             EnvelopeCheck::AwaitBlock(block_root) => {
@@ -1390,6 +1399,7 @@ impl BeaconStateTile {
             EnvelopeCheck::Ignore => return Feedback::Ignore,
             EnvelopeCheck::Reject => return Feedback::reject("envelope invalid"),
         };
+        let signature = *SignedPayload::signature(ssz);
 
         let rv = self.state.read_view(state_id);
         let slot = rv.slot.slot_number();
@@ -1440,6 +1450,7 @@ impl BeaconStateTile {
             read: acquired,
             source,
             slot,
+            signature,
         });
 
         self.drain_awaiting_payload(block_root, producers);

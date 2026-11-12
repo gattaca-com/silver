@@ -363,7 +363,7 @@ fn envelope_becomes_available_only_after_a_verdict_other_than_invalid() {
     assert!(rig.available_envelopes().is_empty());
 
     rig.gossip_envelope(&signed);
-    assert_eq!(rig.gossip_envelope(&forged), Feedback::AlreadySeen);
+    assert_eq!(rig.gossip_envelope(&signed), Feedback::AlreadySeen);
     assert!(rig.available_envelopes().is_empty(), "verdict pending");
     rig.new_payload_verdict(root, PayloadValidationStatus::Syncing);
     assert_eq!(rig.available_envelopes(), [signed]);
@@ -399,4 +399,23 @@ fn invalid_verdict_asks_sync_for_the_envelope_again() {
 
     rig.new_payload_verdict(root, PayloadValidationStatus::Invalid);
     assert_eq!(rig.sync_needs(), [SyncNeed::missing_envelope(root, rig.proposal.slot)]);
+}
+
+/// Peers can keep serving a rejected envelope back, and each copy would
+/// otherwise cost an EL call.
+#[test]
+fn copy_of_a_rejected_envelope_never_reaches_the_el_again() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+    let forged = rig.forge_body(&signed);
+    rig.gossip_envelope(&forged);
+    engine_requests(&mut rig.sink);
+    rig.new_payload_verdict(root, PayloadValidationStatus::Invalid);
+
+    assert_eq!(rig.gossip_envelope(&forged), Feedback::Ignore);
+    assert!(engine_requests(&mut rig.sink).is_empty());
+
+    assert_eq!(rig.gossip_envelope(&signed), Feedback::Accept, "the real one still gets through");
 }

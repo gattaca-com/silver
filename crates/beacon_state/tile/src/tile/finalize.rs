@@ -48,6 +48,7 @@ impl BeaconStateTile {
             .drop_outdated(|root| fork_choice.find_node_idx(root).is_some());
         self.envelopes_awaiting_el_verdict
             .retain(|root, _| fork_choice.find_node_idx(root).is_some());
+        self.el_rejected_envelopes.retain(|_, root| fork_choice.find_node_idx(root).is_some());
 
         {
             // The head's rebased bundle must publish in the same seqlock

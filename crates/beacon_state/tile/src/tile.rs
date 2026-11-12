@@ -254,6 +254,8 @@ pub struct BeaconStateTile {
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: PendingEnvelopes,
     envelopes_awaiting_el_verdict: FxHashMap<B256, UnverifiedEnvelope>,
+    /// Signature → block root.
+    el_rejected_envelopes: FxHashMap<[u8; 96], B256>,
     envelope_arrivals: EnvelopeArrivals,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
@@ -342,6 +344,7 @@ impl BeaconStateTile {
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: PendingEnvelopes::new(syncing.pending.max_dc),
             envelopes_awaiting_el_verdict: root_map(),
+            el_rejected_envelopes: FxHashMap::default(),
             envelope_arrivals: EnvelopeArrivals::default(),
             payload_bids_pool: BidPool::default(),
             payload_execution_requests: PayloadExecutionRequests::default(),
