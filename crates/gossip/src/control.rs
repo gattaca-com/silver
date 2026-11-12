@@ -11,6 +11,7 @@ use silver_common::{
 use crate::{
     GossipHandlerEvent,
     dedup::DedupCache,
+    field_budget::MAX_RPC_FIELDS,
     generated::{
         ControlGraftView, ControlIDontWantView, ControlIHaveView, ControlIWantView,
         ControlPruneView, rpc::SubOptsView,
@@ -137,6 +138,11 @@ pub(super) fn handle_prunes<'a>(
     }
 }
 
+// A frame's fields besides its ids: control, ihave, topic_id.
+const MAX_IHAVE_IDS: usize = MAX_RPC_FIELDS as usize - 3;
+// control, then iwant or idontwant.
+const MAX_WANT_IDS: usize = MAX_RPC_FIELDS as usize - 2;
+
 pub(super) fn handle_iwants<'a>(
     stream_id: &P2pStreamId,
     wants: &RepeatedView<'a, ControlIWantView<'a>>,
@@ -249,6 +255,7 @@ pub(crate) fn copy_ihaves_to_protobuf_output<'a>(
     // RPC.control = field 3, ControlMessage.ihave = field 1,
     // ControlIHave.topic_id = field 1, ControlIHave.message_ids = field 2.
     const TAG_LEN: usize = 1;
+    let message_ids = message_ids.take(MAX_IHAVE_IDS);
     let (id_count, _) = message_ids.size_hint();
     let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
     //let ids_len: usize =
@@ -297,6 +304,7 @@ pub fn copy_iwants_to_protobuf_output<'a>(
     // RPC.control = field 3, ControlMessage.iwant = field 2,
     // ControlIWant.message_ids = field 1. All ≤ 15 → 1-byte tags.
     const TAG_LEN: usize = 1;
+    let message_ids = message_ids.take(MAX_WANT_IDS);
     let (id_count, _) = message_ids.size_hint();
     let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
     let iwant_inner_len = ids_len;
@@ -338,6 +346,7 @@ pub(crate) fn copy_idontwants_to_protobuf_output<'a>(
     // RPC.control = field 3, ControlMessage.idontwant = field 5,
     // ControlIDontWant.message_ids = field 1. All ≤ 15 → 1-byte tags.
     const TAG_LEN: usize = 1;
+    let message_ids = message_ids.take(MAX_WANT_IDS);
     let (id_count, _) = message_ids.size_hint();
     let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
     let idontwant_inner_len = ids_len;
@@ -642,6 +651,31 @@ mod tests {
         .encode_to_vec();
         let view = ControlMessageView::decode_view(&iwants).unwrap();
         assert_eq!(iwant_entries_len(&view.iwant), iwants.len());
+    }
+
+    #[test]
+    fn id_lists_are_cut_to_the_field_budget() {
+        use crate::field_budget::rpc_within_field_budget;
+
+        let ids = vec![MessageId::default(); MAX_RPC_FIELDS as usize + 1];
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
+
+        let read = copy_ihaves_to_protobuf_output(&mut producer, "t", ids.iter()).unwrap();
+        let frame = read_bytes(read, &producer);
+        assert!(rpc_within_field_budget(&frame));
+        let rpc = RPCView::decode_view(&frame).unwrap();
+        let ihave = rpc.control.as_option().unwrap().ihave.iter().next().unwrap();
+        assert_eq!(ihave.message_ids.len(), MAX_IHAVE_IDS);
+
+        let read = copy_iwants_to_protobuf_output(&mut producer, ids.iter()).unwrap();
+        let frame = read_bytes(read, &producer);
+        assert!(rpc_within_field_budget(&frame));
+        let rpc = RPCView::decode_view(&frame).unwrap();
+        let iwant = rpc.control.as_option().unwrap().iwant.iter().next().unwrap();
+        assert_eq!(iwant.message_ids.len(), MAX_WANT_IDS);
+
+        let read = copy_idontwants_to_protobuf_output(&mut producer, ids.iter()).unwrap();
+        assert!(rpc_within_field_budget(&read_bytes(read, &producer)));
     }
 
     /// Data-column subscriptions carry partial capability flags with the
