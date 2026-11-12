@@ -1,5 +1,6 @@
 mod control;
 mod dedup;
+mod field_budget;
 #[path = "generated/protobuf.gossipsub.rs"]
 #[allow(dead_code)]
 #[rustfmt::skip]

@@ -18,6 +18,7 @@ use crate::{
         ihave_entries_len, iwant_entries_len,
     },
     dedup::DedupCache,
+    field_budget::rpc_within_field_budget,
     generated::RPCView,
     mcache::MessageCache,
     message::{copy_compressed_to_protobuf_output, handle_incoming},
@@ -468,11 +469,19 @@ impl GossipHandler {
             // entries toward their own; the rest of the frame is control.
             let mut counted = 0;
 
-            let gossip_proto = match RPCView::decode_view(buffer) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    silver_log::warn!(?stream_id, len = buffer.len(), ?e, "RPC decode failed");
-                    None
+            let gossip_proto = if !rpc_within_field_budget(buffer) {
+                silver_log::warn!(?stream_id, len = buffer.len(), "RPC field budget exceeded");
+                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidFrame {
+                    p2p_peer: stream_id.peer(),
+                }));
+                None
+            } else {
+                match RPCView::decode_view(buffer) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        silver_log::warn!(?stream_id, len = buffer.len(), ?e, "RPC decode failed");
+                        None
+                    }
                 }
             };
             if let Some(gossip_proto) = gossip_proto {
