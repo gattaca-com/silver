@@ -52,6 +52,8 @@ impl SubmittedEntry for SubmittedAttestation {
             .ok_or("attester_index is past the validator count")?;
         let domain = ctx.domain(bls::DOMAIN_BEACON_ATTESTER, self.data.target.epoch);
         Ok(Some(SignatureCheck {
+            validator: self.attester_index,
+            epoch: self.data.target.epoch,
             pubkey,
             signature: self.signature,
             signing_root: bls::compute_signing_root(&self.data.hash_tree_root(), &domain),
@@ -301,6 +303,8 @@ pub(crate) mod tests {
         testing::{body, dispatch, dispatch_into, posting, status_code, submissions},
     };
 
+    const TARGET_EPOCH: u64 = 300;
+
     /// One entry of the array a validator client posts, spelled as the
     /// schemas do.
     pub(crate) fn entry(attester_index: u64, committee_index: u64) -> String {
@@ -308,31 +312,45 @@ pub(crate) mod tests {
     }
 
     fn entry_signed_by(attester_index: u64, committee_index: u64, signer: u64) -> String {
+        entry_targeting(TARGET_EPOCH, attester_index, committee_index, signer)
+    }
+
+    /// Distinct target epochs give one validator distinct entries in a body.
+    pub(crate) fn entry_targeting(
+        target_epoch: u64,
+        attester_index: u64,
+        committee_index: u64,
+        signer: u64,
+    ) -> String {
         format!(
             "{{\"committee_index\":\"{committee_index}\",\"attester_index\":\"{attester_index}\",\
              \"data\":{{\"slot\":\"{SLOT}\",\"index\":\"0\",\
              \"beacon_block_root\":\"0x{}\",\
              \"source\":{{\"epoch\":\"298\",\"root\":\"0x{}\"}},\
-             \"target\":{{\"epoch\":\"300\",\"root\":\"0x{}\"}}}},\
+             \"target\":{{\"epoch\":\"{target_epoch}\",\"root\":\"0x{}\"}}}},\
              \"signature\":\"0x{}\"}}",
             "11".repeat(32),
             "22".repeat(32),
             "33".repeat(32),
-            hex::encode(signature(signer)),
+            hex::encode(signature_targeting(target_epoch, signer)),
         )
     }
 
     pub(crate) fn signature(signer: u64) -> [u8; 96] {
+        signature_targeting(TARGET_EPOCH, signer)
+    }
+
+    fn signature_targeting(target_epoch: u64, signer: u64) -> [u8; 96] {
         let mut data = [0; ATTESTATION_DATA_SIZE];
         data[0..8].copy_from_slice(&SLOT.to_le_bytes());
         data[16..48].copy_from_slice(&[0x11; 32]);
         data[48..56].copy_from_slice(&298u64.to_le_bytes());
         data[56..88].copy_from_slice(&[0x22; 32]);
-        data[88..96].copy_from_slice(&300u64.to_le_bytes());
+        data[88..96].copy_from_slice(&target_epoch.to_le_bytes());
         data[96..128].copy_from_slice(&[0x33; 32]);
         let data_root = hash_attestation_data(&data);
         let spec = SpecConfig::mainnet();
-        validator_signature(&spec, signer, bls::DOMAIN_BEACON_ATTESTER, 300, &data_root)
+        validator_signature(&spec, signer, bls::DOMAIN_BEACON_ATTESTER, target_epoch, &data_root)
     }
 
     fn submit(ctx: &ApiCtx, body: &str) -> (Outcome, Vec<u8>) {
