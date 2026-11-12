@@ -1153,6 +1153,46 @@ fn latest_valid_hash_resolves_along_the_ancestry() {
     assert_eq!(status(2), ExecutionStatus::Optimistic);
 }
 
+/// The EL's latest valid hash bounds the rejected Gloas payload chain. The
+/// walk follows payload edges, so a payload skipped by an EMPTY edge is not
+/// part of it.
+///
+/// ```text
+///   1 ─ 2 ─ 3 ┬─(empty)─ 4 ─ 5 ┬─ 6
+///             │                └─(empty)─ 7
+///             └─ 8
+/// ```
+#[test]
+fn latest_valid_hash_bounds_the_rejected_gloas_payload_chain() {
+    let g = cp(0, 1);
+    let mut fc = anchored(0);
+    let payload = |b: u8| [0xA0 | b; 32];
+    let mut import = |b: u8, parent: u8, edge| {
+        fc.on_block(BlockImport {
+            bid_block_hash: payload(b),
+            ..gloas_block(b as Slot, root(b), root(parent), g, g, edge, true)
+        })
+    };
+    import(2, 1, PayloadStatus::Full);
+    import(3, 2, PayloadStatus::Full);
+    import(4, 3, PayloadStatus::Empty);
+    import(5, 4, PayloadStatus::Full);
+    import(6, 5, PayloadStatus::Full);
+    import(7, 5, PayloadStatus::Empty);
+    import(8, 3, PayloadStatus::Full);
+
+    fc.on_payload_invalid(&root(5), Some(payload(2)));
+
+    let status = |b| fc.nodes[fc.find_node_idx(&root(b)).unwrap()].execution_status;
+    assert_eq!(status(2), ExecutionStatus::Valid, "the latest valid payload");
+    assert_eq!(status(3), ExecutionStatus::Optimistic, "skipped by 4's empty edge");
+    assert_eq!(status(4), ExecutionStatus::Invalid);
+    assert_eq!(status(5), ExecutionStatus::Invalid);
+    assert_eq!(status(6), ExecutionStatus::Invalid, "extends 5's payload");
+    assert_eq!(status(7), ExecutionStatus::Invalid, "extends 4's payload");
+    assert_eq!(status(8), ExecutionStatus::Optimistic, "extends 3's payload");
+}
+
 /// Proposer boost on a (same-slot) Gloas block is a block-level PENDING
 /// vote, not an EMPTY vote: it must not block the block from resolving FULL
 /// once its envelope is verified. (Regression: routing boost to `empty`
