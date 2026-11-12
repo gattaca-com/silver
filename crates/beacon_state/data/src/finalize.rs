@@ -75,7 +75,7 @@ impl BeaconState {
         survivors.rebase_lazy(|s| &mut s.longtail_idx, |w, ids| self.longtail.finalize(w, ids));
     }
 
-    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent) {
+    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent<'_>) {
         self.validators.free_retired(quiescent);
         self.builders.free_retired(quiescent);
         self.slot_states.free_retired(quiescent);

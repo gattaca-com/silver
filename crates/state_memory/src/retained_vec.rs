@@ -7,22 +7,12 @@ use std::{
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
+use crate::reader_count::Quiescent;
+
 /// Heads every allocation; the elements follow at [`RetainedVec::DATA`].
 struct Header {
     len: AtomicUsize,
     capacity: usize,
-}
-
-/// Proof that no reader holds a slice into a retired block.
-pub struct Quiescent(());
-
-impl Quiescent {
-    /// # Safety
-    /// Every read that began before this call has ended, and every later read
-    /// loads its pointers afresh.
-    pub unsafe fn assume() -> Self {
-        Self(())
-    }
 }
 
 /// A `Vec` for storage that optimistic readers race with.
@@ -137,7 +127,7 @@ impl<T: Copy> RetainedVec<T> {
         }
     }
 
-    pub fn free_retired(&mut self, _: &Quiescent) {
+    pub fn free_retired(&mut self, _: &Quiescent<'_>) {
         for block in self.retired.drain(..) {
             // SAFETY: allocated by `alloc` with this layout; `Quiescent`
             // rules out a reader still inside it.
@@ -343,6 +333,7 @@ impl<T: Copy + Eq> Eq for RetainedVec<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reader_count::ReaderCount;
 
     #[test]
     fn growth_and_copy_keep_all_previous_allocations() {
@@ -385,8 +376,9 @@ mod tests {
         values.reserve(100);
         assert_eq!(values.retired.len(), 2);
 
+        let readers = ReaderCount::default();
         // SAFETY: no reader exists.
-        values.free_retired(&unsafe { Quiescent::assume() });
+        values.free_retired(&unsafe { readers.quiescent() }.unwrap());
         assert!(values.retired.is_empty());
         assert_eq!(values[0], 7);
 

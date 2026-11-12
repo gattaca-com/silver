@@ -352,7 +352,7 @@ impl FinalizedValidators {
         self.val_pubkey.len()
     }
 
-    pub(super) fn free_retired(&mut self, quiescent: &Quiescent) {
+    pub(super) fn free_retired(&mut self, quiescent: &Quiescent<'_>) {
         self.val_pubkey.free_retired(quiescent);
         self.val_pubkey_decompressed.free_retired(quiescent);
         self.val_withdrawal_credentials.free_retired(quiescent);

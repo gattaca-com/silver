@@ -187,7 +187,7 @@ impl ValidatorsDelta {
 }
 
 impl ValidatorsDelta {
-    pub(super) fn free_retired(&mut self, quiescent: &Quiescent) {
+    pub(super) fn free_retired(&mut self, quiescent: &Quiescent<'_>) {
         self.appended.free_retired(quiescent);
         self.credentials_edits.free_retired(quiescent);
         self.effective_balance_edits.free_retired(quiescent);

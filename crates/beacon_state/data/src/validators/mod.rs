@@ -106,7 +106,7 @@ impl ValidatorsGroup {
         fork.commit()
     }
 
-    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent) {
+    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent<'_>) {
         self.finalized.free_retired(quiescent);
         self.deltas.entries_mut().iter_mut().for_each(|delta| delta.free_retired(quiescent));
     }

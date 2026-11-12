@@ -2,15 +2,12 @@ use std::{
     cell::UnsafeCell,
     io,
     ops::{Deref, DerefMut},
-    sync::{
-        self, Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{self, Arc, atomic::Ordering},
 };
 
 use flux::communication::Seqlock;
 use flux_profiler::timed;
-use silver_state_memory::Quiescent;
+use silver_state_memory::{ReadGuard, ReaderCount};
 
 use crate::{
     BeaconState, ForkWriter, StateId, StateReadView, StateView, encode::GLOAS_VAR_LEN_SECTIONS,
@@ -23,15 +20,7 @@ struct StateCell {
     state: UnsafeCell<BeaconState>,
     /// Cross-thread reads in progress. Zero lets the writer free retired
     /// allocations.
-    readers: AtomicUsize,
-}
-
-struct ReadGuard<'a>(&'a AtomicUsize);
-
-impl Drop for ReadGuard<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
+    readers: ReaderCount,
 }
 
 // SAFETY: single writer — `BeaconStateOwner` is the unique write handle (not
@@ -56,8 +45,7 @@ impl StateCell {
     /// loaded, so a writer that sees zero after retiring an allocation knows
     /// no reader holds it or can still load it.
     fn read(&self) -> (ReadGuard<'_>, &BeaconState) {
-        self.readers.fetch_add(1, Ordering::SeqCst);
-        (ReadGuard(&self.readers), self.get())
+        (self.readers.enter(), self.get())
     }
 }
 
@@ -76,7 +64,7 @@ impl BeaconStateOwner {
         Self {
             state: Arc::new(StateCell {
                 state: UnsafeCell::new(state),
-                readers: AtomicUsize::new(0),
+                readers: ReaderCount::default(),
             }),
             inner: Arc::new(Seqlock::default()),
         }
@@ -429,7 +417,7 @@ impl CheckpointCursor {
 
 pub struct WriteGuard<'a> {
     beacon_state: &'a mut BeaconState,
-    readers: &'a AtomicUsize,
+    readers: &'a ReaderCount,
     value: ControlInner,
     inner: &'a Seqlock<ControlInner>,
 }
@@ -464,12 +452,9 @@ impl<'a> Drop for WriteGuard<'a> {
         // Sampled with the window still open: readers waiting it out are not
         // counted yet.
         //
-        // SAFETY: every retire so far precedes this load, and a reader counts
-        // itself before it loads a pointer. With `SeqCst` on all four
-        // operations, zero means no earlier read is in progress and later
-        // ones load the live allocations.
-        let quiescent =
-            (self.readers.load(Ordering::SeqCst) == 0).then(|| unsafe { Quiescent::assume() });
+        // SAFETY: `StateCell::read` is the only cross-thread path to the
+        // state, and it enters this count before it hands the state out.
+        let quiescent = unsafe { self.readers.quiescent() };
         // Order the window's state mutations before the closing control write.
         sync::atomic::fence(Ordering::Release);
         // One seqlock write lands the staged bundle and the even counter
@@ -521,11 +506,12 @@ mod tests {
     fn a_read_in_progress_is_counted() {
         let owner = BeaconStateOwner::published_empty_test(64);
         let reader = owner.reader();
-        let readers = |_: StateReadView<'_>| owner.state.readers.load(Ordering::SeqCst);
+        // SAFETY: nothing is freed.
+        let quiescent = || unsafe { owner.state.readers.quiescent() }.is_some();
 
-        assert_eq!(reader.read(readers), Some(1));
-        assert_eq!(reader.read_pinned(reader.pin().unwrap(), readers), Some(1));
-        assert_eq!(owner.state.readers.load(Ordering::SeqCst), 0);
+        assert_eq!(reader.read(|_| quiescent()), Some(false));
+        assert_eq!(reader.read_pinned(reader.pin().unwrap(), |_| quiescent()), Some(false));
+        assert!(quiescent());
     }
 
     #[test]

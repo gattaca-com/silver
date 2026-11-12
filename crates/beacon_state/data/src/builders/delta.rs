@@ -77,7 +77,7 @@ impl BuildersDelta {
 }
 
 impl BuildersDelta {
-    pub(super) fn free_retired(&mut self, quiescent: &Quiescent) {
+    pub(super) fn free_retired(&mut self, quiescent: &Quiescent<'_>) {
         self.appended.free_retired(quiescent);
         self.edits.free_retired(quiescent);
     }

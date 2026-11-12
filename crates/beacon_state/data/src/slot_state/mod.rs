@@ -70,7 +70,7 @@ impl SlotStateGroup {
         SlotStateWriteView::new(finalized, deltas.roll_from(parent))
     }
 
-    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent) {
+    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent<'_>) {
         let slots = self.deltas.entries_mut().iter_mut().map(|delta| &mut delta.slot);
         for slot in slots.chain([&mut self.finalized.slot]) {
             slot.latest_execution_payload_bid.blob_kzg_commitments.free_retired(quiescent);

@@ -31,7 +31,7 @@ impl<V: Copy> Edits<V> {
         self.inner.clear();
     }
 
-    pub fn free_retired(&mut self, quiescent: &Quiescent) {
+    pub fn free_retired(&mut self, quiescent: &Quiescent<'_>) {
         self.inner.free_retired(quiescent);
     }
 
