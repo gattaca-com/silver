@@ -11,11 +11,12 @@ use silver_beacon_state_data::{
     Withdrawals, hash_tree_root_block_header,
 };
 use silver_common::{
-    BeaconApiResponse, BidPolicy, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
-    EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
-    LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed,
-    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    BeaconApiResponse, BidPolicy, BlockStage, EngineFcuResp, EngineGetPayloadResp,
+    EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation,
+    StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer,
+    block_root_fulu,
     ssz_hash::{BlockFork, HashedBody},
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE,
@@ -861,6 +862,21 @@ impl HeadRig {
         }));
     }
 
+    /// Sends the FCU an import would send and answers it as the EL would.
+    fn fcu_verdict(&mut self, status: PayloadValidationStatus) {
+        let request = self.tile.fork_choice_update();
+        self.sink.produce(EngineResp::Fcu(EngineFcuResp {
+            block_root: request.block_root,
+            status,
+            latest_valid_hash: Some(request.head_block_hash),
+        }));
+    }
+
+    fn execution_status(&self, block_root: B256) -> ExecutionStatus {
+        let idx = self.tile.fork_choice.find_node_idx(&block_root).expect("imported");
+        self.tile.fork_choice.node(idx).execution_status
+    }
+
     fn advance_to_slot(&mut self, slot: Slot) {
         self.tile.ticker.set_since_genesis_ms(slot * 12_000);
     }
@@ -1181,6 +1197,32 @@ fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_r
     let events = rig.crank();
     assert_eq!(events.last_head(), head_a_empty(false));
     assert!(events.reorgs().is_empty());
+}
+
+/// The FCU for an EMPTY head carries an ancestor's hash, so its verdict says
+/// nothing about the head's own payload.
+#[test]
+fn an_fcu_verdict_for_an_ancestor_payload_leaves_an_unjudged_gloas_payload_optimistic() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    let _ = rig.crank();
+
+    rig.fcu_verdict(PayloadValidationStatus::Valid);
+    let _ = rig.crank();
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Optimistic);
+}
+
+#[test]
+fn an_fcu_verdict_for_an_ancestor_payload_does_not_revive_a_rejected_gloas_payload() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    assert_eq!(rig.crank().last_head(), head_a_empty(false));
+
+    rig.fcu_verdict(PayloadValidationStatus::Valid);
+    let _ = rig.crank();
+    assert_eq!(rig.execution_status(A_ROOT), ExecutionStatus::Invalid);
+    assert_eq!(rig.tile.fork_choice_update().head_block_hash, [0u8; 32], "FCU stays on the anchor");
 }
 
 /// Inject slot-72 votes early so their weight is already folded while the

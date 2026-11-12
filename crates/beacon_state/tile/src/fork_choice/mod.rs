@@ -13,6 +13,7 @@ mod tests;
 mod vote;
 mod vote_targets;
 
+pub use head::FcuExecutionHashes;
 pub(crate) use head::{compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot};
 pub use justified_balances::JustifiedBalances;
 pub use lookup::NodeLookup;

@@ -76,35 +76,45 @@ impl ForkChoice {
         self.nodes[justified_idx].block_root
     }
 
-    /// Returns `(head_root, head_exec, safe_exec, finalized_exec)`
-    pub fn fcu_execution_hashes(&self) -> (B256, B256, B256, B256) {
+    pub fn fcu_execution_hashes(&self) -> FcuExecutionHashes {
         let zero = [0u8; 32];
         let Some(ji) = self.find_node_idx(&self.justified_checkpoint.root) else {
-            return (zero, zero, zero, zero);
+            return FcuExecutionHashes {
+                head_root: zero,
+                head_payload_root: zero,
+                head_block_hash: zero,
+                safe_block_hash: zero,
+                finalized_block_hash: zero,
+            };
         };
 
         let best_desc = self.resolved_branch_best_desc(ji);
         let head_idx = if self.node_is_viable_for_head(best_desc) { best_desc } else { ji };
-        let node = &self.nodes[ji];
-        let fin_exec = self
+        let (owner_idx, head_block_hash) = self.head_payload(head_idx);
+        let finalized_block_hash = self
             .find_node_idx(&self.finalized_checkpoint.root)
             .map(|i| self.nodes[i].execution_block_hash)
             .unwrap_or(zero);
 
-        let head_exec = self.head_execution_hash(head_idx);
-        (self.nodes[head_idx].block_root, head_exec, node.execution_block_hash, fin_exec)
+        FcuExecutionHashes {
+            head_root: self.nodes[head_idx].block_root,
+            head_payload_root: self.nodes[owner_idx].block_root,
+            head_block_hash,
+            safe_block_hash: self.nodes[ji].execution_block_hash,
+            finalized_block_hash,
+        }
     }
 
-    /// The execution-payload hash at the canonical tip ending at `head_idx`:
-    /// the latest node on its chain whose payload resolves FULL.
-    fn head_execution_hash(&self, head_idx: usize) -> B256 {
+    /// The latest node on the chain ending at `head_idx` whose payload
+    /// resolves FULL, and that payload's hash.
+    fn head_payload(&self, head_idx: usize) -> (usize, B256) {
         let mut idx = head_idx;
         loop {
             if self.resolves_to_full(idx) {
-                return self.nodes[idx].payload.bid_block_hash;
+                return (idx, self.nodes[idx].payload.bid_block_hash);
             }
             if self.nodes[idx].parent_ix == NULL {
-                return self.nodes[idx].execution_block_hash;
+                return (idx, self.nodes[idx].execution_block_hash);
             }
             idx = self.nodes[idx].parent_ix;
         }
@@ -322,6 +332,17 @@ impl ForkChoice {
         let nb = &self.nodes[b];
         (na.weight, na.block_root) >= (nb.weight, nb.block_root)
     }
+}
+
+/// `head_payload_root` owns `head_block_hash`. It differs from `head_root`
+/// when the head's own payload resolves EMPTY, and the EL verdict on the FCU
+/// belongs to it.
+pub struct FcuExecutionHashes {
+    pub head_root: B256,
+    pub head_payload_root: B256,
+    pub head_block_hash: B256,
+    pub safe_block_hash: B256,
+    pub finalized_block_hash: B256,
 }
 
 /// Spec `compute_shuffling_lookahead_start_slot`: the first slot whose state
