@@ -23,8 +23,10 @@ const CHUNK_BUFFERS: usize = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     Streaming,
-    Syncing,
-    LinkingPubkeys,
+    /// The files sync one at a time, so the store keeps an io-wq worker.
+    SyncingSsz,
+    /// A link waits for the sync before it on its file.
+    SyncingAndLinkingPubkeys,
     LinkingSsz,
     SyncingDirectories,
     /// Dropping the ring would block on the ops still in flight, so it
@@ -98,6 +100,36 @@ impl CheckpointWriter {
     /// commit stage once the current one completed. Dropping the writer
     /// closes its files.
     pub(super) fn step(&mut self) -> CheckpointProgress {
+        self.reap();
+        if let Some(error) = self.failure.take() &&
+            self.stage != Stage::Failing
+        {
+            self.fail(error);
+        }
+        if self.stage == Stage::Failing {
+            if !self.disk.is_idle() {
+                return CheckpointProgress::Pending;
+            }
+            return CheckpointProgress::Failed(self.cursor.slot());
+        }
+        if self.awaiting > 0 {
+            return CheckpointProgress::Pending;
+        }
+        let result = match self.stage {
+            Stage::Streaming => self.stream(),
+            Stage::SyncingSsz => self.sync_and_link_pubkeys(),
+            Stage::SyncingAndLinkingPubkeys => self.link_ssz(),
+            Stage::LinkingSsz => self.sync_directories(),
+            Stage::SyncingDirectories => return CheckpointProgress::Committed(self.cursor.slot()),
+            Stage::Failing => unreachable!("returned above"),
+        };
+        if let Err(error) = result {
+            self.failure = Some(error);
+        }
+        CheckpointProgress::Pending
+    }
+
+    fn reap(&mut self) {
         let (buffers, awaiting, failure) =
             (&mut self.buffers, &mut self.awaiting, &mut self.failure);
         self.disk.poll_with(|event| match event {
@@ -120,36 +152,13 @@ impl CheckpointWriter {
             }
             _ => {}
         });
+    }
 
-        if let Some(error) = self.failure.take() &&
-            self.stage != Stage::Failing
-        {
-            silver_log::error!(?error, slot = self.cursor.slot(), stage = ?self.stage, "checkpoint persist failed");
-            self.disk.close(self.ssz);
-            self.disk.close(self.pubkeys);
-            self.stage = Stage::Failing;
-        }
-        if self.stage == Stage::Failing {
-            if !self.disk.is_idle() {
-                return CheckpointProgress::Pending;
-            }
-            return CheckpointProgress::Failed(self.cursor.slot());
-        }
-        if self.awaiting > 0 {
-            return CheckpointProgress::Pending;
-        }
-        let result = match self.stage {
-            Stage::Streaming => self.stream(),
-            Stage::Syncing => self.link(self.pubkeys, "pubkeys", Stage::LinkingPubkeys),
-            Stage::LinkingPubkeys => self.link(self.ssz, "ssz", Stage::LinkingSsz),
-            Stage::LinkingSsz => self.sync_directories(),
-            Stage::SyncingDirectories => return CheckpointProgress::Committed(self.cursor.slot()),
-            Stage::Failing => unreachable!("returned above"),
-        };
-        if let Err(error) = result {
-            self.failure = Some(error);
-        }
-        CheckpointProgress::Pending
+    fn fail(&mut self, error: Error) {
+        silver_log::error!(?error, slot = self.cursor.slot(), stage = ?self.stage, "checkpoint persist failed");
+        self.disk.close(self.ssz);
+        self.disk.close(self.pubkeys);
+        self.stage = Stage::Failing;
     }
 
     fn stream(&mut self) -> Result<(), Error> {
@@ -158,26 +167,12 @@ impl CheckpointWriter {
             Ok(CheckpointChunk::Ssz) => self.ssz,
             Ok(CheckpointChunk::Pubkeys) => self.pubkeys,
             Ok(CheckpointChunk::Restarted) => {
-                silver_log::debug!(
-                    slot = self.cursor.slot(),
-                    "checkpoint superseded; restarting onto the newer state"
-                );
                 self.buffers.push(buf);
-                // Writes still in flight land in the closed files, which
-                // vanish with them.
-                self.disk.close(self.ssz);
-                self.disk.close(self.pubkeys);
-                (self.ssz, self.pubkeys) = Self::open_unnamed(&mut self.disk, &self.path)?;
-                return Ok(());
+                return self.restart();
             }
             Ok(CheckpointChunk::Done) => {
                 self.buffers.push(buf);
-                let queued = [
-                    self.disk.sync_all(self.ssz),
-                    self.disk.sync_all(self.pubkeys),
-                    self.disk.create_dir(self.directory, self.slot_path())?,
-                ];
-                return self.wait_for(&queued, Stage::Syncing);
+                return self.sync_ssz();
             }
             Err(error) => {
                 self.buffers.push(buf);
@@ -192,10 +187,39 @@ impl CheckpointWriter {
         Ok(())
     }
 
-    fn link(&mut self, file: FileToken, extension: &str, next: Stage) -> Result<(), Error> {
+    fn restart(&mut self) -> Result<(), Error> {
+        silver_log::debug!(
+            slot = self.cursor.slot(),
+            "checkpoint superseded; restarting onto the newer state"
+        );
+        // Writes still in flight land in the closed files, which vanish with
+        // them.
+        self.disk.close(self.ssz);
+        self.disk.close(self.pubkeys);
+        (self.ssz, self.pubkeys) = Self::open_unnamed(&mut self.disk, &self.path)?;
+        Ok(())
+    }
+
+    fn sync_ssz(&mut self) -> Result<(), Error> {
+        let created = self.disk.create_dir(self.directory, self.slot_path())?;
+        let synced = self.disk.sync_all(self.ssz);
+        self.wait_for(&[synced, created], Stage::SyncingSsz)
+    }
+
+    fn sync_and_link_pubkeys(&mut self) -> Result<(), Error> {
+        let synced = self.disk.sync_all(self.pubkeys);
+        let linked = self.disk.link(self.pubkeys, self.named("pubkeys"))?;
+        self.wait_for(&[synced, linked], Stage::SyncingAndLinkingPubkeys)
+    }
+
+    fn link_ssz(&mut self) -> Result<(), Error> {
+        let linked = self.disk.link(self.ssz, self.named("ssz"))?;
+        self.wait_for(&[linked], Stage::LinkingSsz)
+    }
+
+    fn named(&self, extension: &str) -> PathBuf {
         let slot = self.cursor.slot();
-        let queued = self.disk.link(file, self.slot_path().join(format!("{slot}.{extension}")))?;
-        self.wait_for(&[queued], next)
+        self.slot_path().join(format!("{slot}.{extension}"))
     }
 
     fn sync_directories(&mut self) -> Result<(), Error> {

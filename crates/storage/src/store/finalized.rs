@@ -13,7 +13,6 @@ use super::{
 pub(super) struct Finalized {
     blocks: BlockIndex,
     coverage: Coverage,
-    scratch: Vec<u8>,
 }
 
 impl Finalized {
@@ -28,16 +27,7 @@ impl Finalized {
                 coverage
             }
         };
-        Ok(Self { blocks, coverage, scratch: Vec::new() })
-    }
-
-    pub(super) fn coverage_changed(&self) -> bool {
-        self.coverage.changed()
-    }
-
-    pub(super) fn encode_coverage(&mut self) -> (&[u8], u64) {
-        let version = self.coverage.encode_for_persist(&mut self.scratch);
-        (&self.scratch, version)
+        Ok(Self { blocks, coverage })
     }
 
     pub(super) fn coverage_persisted(&mut self, version: u64) {
@@ -82,8 +72,7 @@ impl Finalized {
         self.blocks.index(root, slot);
     }
 
-    /// The block's file is down; the caller appends the returned record to
-    /// the group's index file.
+    /// The block's file is down; returns its index record.
     pub(super) fn landed(&mut self, block: Block) -> Record {
         let record = Record { block_root: block.facts.block_root, slot: block.facts.slot };
         self.blocks.hold(record.block_root, record.slot);

@@ -195,15 +195,20 @@ enum PendingWrite {
         enr: Enr,
     },
     LoadPeers,
-    /// Queued rather than written at once, so appends to one index file
-    /// never overlap.
+    /// Encoded records for `dir`'s index file, appended in one write: a torn
+    /// append misaligns every fixed-width record after it when retried.
     IndexBlock {
         dir: PathBuf,
-        record: Record,
+        records: Vec<u8>,
     },
 }
 
 impl PendingWrite {
+    /// Truncation removes groups that earlier writes may still be filling.
+    fn waits_for_earlier_writes(&self) -> bool {
+        matches!(self, PendingWrite::TruncateHistory { .. })
+    }
+
     fn lands(&self) -> bool {
         match self {
             PendingWrite::Column { .. } |
@@ -226,11 +231,12 @@ impl PendingWrite {
 #[allow(clippy::large_enum_variant)]
 enum WriteTag {
     Queued(PendingWrite),
-    Coverage { version: u64 },
+    Coverage { version: u64, bytes: Vec<u8> },
 }
 
-/// The coverage is mid-change while writes that land are queued, so nothing
-/// is published or linked from it until `landing` is zero.
+/// The coverage is mid-change while writes that land are queued or in
+/// flight, so nothing is published or linked from it until `landing` is
+/// zero. A write counts from its push until it lands.
 #[derive(Default)]
 struct WriteQueue {
     queue: VecDeque<PendingWrite>,
@@ -243,15 +249,27 @@ impl WriteQueue {
         self.queue.push_back(write);
     }
 
-    fn push_front(&mut self, write: PendingWrite) {
-        self.landing += usize::from(write.lands());
-        self.queue.push_front(write);
+    /// Joins a burst of landed blocks into the append already queued last.
+    fn push_index_record(&mut self, dir: PathBuf, record: Record) {
+        if let Some(PendingWrite::IndexBlock { dir: queued, records }) = self.queue.back_mut() &&
+            *queued == dir
+        {
+            records.extend_from_slice(&record.encode());
+            return;
+        }
+        self.push_back(PendingWrite::IndexBlock { dir, records: record.encode().to_vec() });
     }
 
-    fn pop_front(&mut self) -> Option<PendingWrite> {
-        let write = self.queue.pop_front()?;
+    fn insert(&mut self, index: usize, write: PendingWrite) {
+        self.queue.insert(index, write);
+    }
+
+    fn remove(&mut self, index: usize) -> Option<PendingWrite> {
+        self.queue.remove(index)
+    }
+
+    fn landed(&mut self, write: &PendingWrite) {
         self.landing -= usize::from(write.lands());
-        Some(write)
     }
 
     fn landing(&self) -> usize {
@@ -427,8 +445,6 @@ impl PendingQuery {
     }
 }
 
-/// Truncation removes whole slot groups, so the group holding `earliest_slot`
-/// stays and everything below it goes.
 fn disk_ring() -> Result<DiskIo, Error> {
     let unavailable = |e: Error| Error::new(e.kind(), format!("io_uring unavailable: {e}"));
     let mut disk = DiskIo::new(DiskConfig::default()).map_err(unavailable)?;
@@ -436,6 +452,8 @@ fn disk_ring() -> Result<DiskIo, Error> {
     Ok(disk)
 }
 
+/// Truncation removes whole slot groups, so the group holding `earliest_slot`
+/// stays and everything below it goes.
 pub(super) fn first_retained_slot(earliest_slot: u64) -> u64 {
     earliest_slot - earliest_slot % SLOTS_PER_DIR
 }
@@ -490,10 +508,7 @@ pub(super) struct Store {
 
     write_queue: WriteQueue,
     writer: FileWriter<WriteTag>,
-    // Started writes that land; with `write_queue.landing()`, what the
-    // coverage still waits for.
-    landing_in_flight: usize,
-    completed_writes: Vec<(WriteTag, Result<(), Error>)>,
+    coverage_bytes: Vec<u8>,
     // Group directories known to exist, so each is created once.
     known_dirs: FxHashSet<PathBuf>,
     query_queue: VecDeque<PendingQuery>,
@@ -544,8 +559,7 @@ impl Store {
             history_floors: [None; ALL_PAYLOADS.len()],
             write_queue: Default::default(),
             writer,
-            landing_in_flight: 0,
-            completed_writes: Vec::new(),
+            coverage_bytes: Vec::new(),
             known_dirs: FxHashSet::default(),
             query_queue: Default::default(),
             reader: FileReader::new()?,

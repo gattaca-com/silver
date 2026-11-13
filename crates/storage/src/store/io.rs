@@ -8,6 +8,7 @@ use std::{
     fs::File,
     io::{Error, ErrorKind, Read, Write},
     path::{Path, PathBuf},
+    ptr,
     time::Instant,
 };
 
@@ -38,43 +39,64 @@ const MAX_READS_IN_FLIGHT: usize = 64;
 const MAX_ITERATIONS_PER_LOOP: usize = 64;
 
 impl Store {
-    /// Applies finished writes, then starts queued ones in order. A write on
-    /// a file that still has one in flight waits, and so does everything
-    /// queued behind it. Returns the first failure, after which the write is
-    /// dropped.
+    /// Returns the first failure, after which the write is dropped.
     #[timed]
     fn drain_pending_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
     where
         F: FnMut(IoEvent),
     {
         StorageCounters::WriteQueueLength.set(self.write_queue.len() as u64);
-        let mut outcome = Ok(());
+        let finished = self.apply_finished_writes(emit);
+        finished.and(self.start_queued_writes(emit))
+    }
 
-        let mut completed = std::mem::take(&mut self.completed_writes);
-        self.writer.step(|pending, result| completed.push((pending, result)));
-        for (tag, result) in completed.drain(..) {
+    fn apply_finished_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
+        let mut outcome = Ok(());
+        self.writer.step();
+        while let Some((tag, result)) = self.writer.next_finished() {
             outcome = outcome.and(match tag {
-                WriteTag::Queued(pending) => {
-                    self.landing_in_flight -= usize::from(pending.lands());
-                    self.write_landed(pending, result, emit)
-                }
-                WriteTag::Coverage { version } => {
+                WriteTag::Queued(pending) => self.write_landed(pending, result, emit),
+                WriteTag::Coverage { version, bytes } => {
+                    self.coverage_bytes = bytes;
                     result.map(|()| self.finalized.coverage_persisted(version))
                 }
             });
         }
-        self.completed_writes = completed;
+        outcome
+    }
 
-        let mut started = 0;
-        while started < MAX_WRITES_PER_LOOP && self.writer.in_flight() < MAX_WRITES_IN_FLIGHT {
-            let Some(pending) = self.write_queue.pop_front() else { break };
+    /// Starts queued writes in order. A write on a file that still has one in
+    /// flight keeps its place, and so do later writes on that file; the rest
+    /// pass it.
+    fn start_queued_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
+        let mut outcome = Ok(());
+        // Waiting writes stay at the front, so `waiting` indexes the next
+        // write to try. A key busy now stays busy for the whole pass.
+        let (mut started, mut waiting) = (0, 0);
+        for _ in 0..MAX_ITERATIONS_PER_LOOP {
+            if started == MAX_WRITES_PER_LOOP || self.writer.in_flight() == MAX_WRITES_IN_FLIGHT {
+                break;
+            }
+            let Some(pending) = self.write_queue.remove(waiting) else { break };
+            if pending.waits_for_earlier_writes() && (waiting > 0 || self.writer.in_flight() > 0) {
+                self.write_queue.insert(waiting, pending);
+                break;
+            }
             silver_log::debug!(?pending, "process pending write");
-            started += 1;
             match self.start_write(pending, emit) {
-                Start::Done(result) => outcome = outcome.and(result),
+                Start::Done(result) => {
+                    started += 1;
+                    outcome = outcome.and(result);
+                }
                 Start::Busy(pending) => {
-                    self.write_queue.push_front(pending);
-                    break;
+                    self.write_queue.insert(waiting, pending);
+                    waiting += 1;
                 }
             }
         }
@@ -87,7 +109,23 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
-        let op = match &pending {
+        let op = match self.write_op(&pending) {
+            None => return Start::Done(self.apply_without_io(pending, emit)),
+            Some(Err(error)) => return Start::Done(self.write_landed(pending, Err(error), emit)),
+            Some(Ok(op)) => op,
+        };
+        if self.writer.busy_with(op.key()) {
+            return Start::Busy(pending);
+        }
+        // SAFETY: the op's bytes are a `TRead` or records that `pending`
+        // holds, which the writer keeps until the write completes.
+        unsafe { self.writer.start(op, WriteTag::Queued(pending)) };
+        Start::Done(Ok(()))
+    }
+
+    /// `None` for a write with no I/O on the writer.
+    fn write_op(&mut self, pending: &PendingWrite) -> Option<Result<WriteOp, Error>> {
+        Some(match pending {
             PendingWrite::Column { slot, column, ssz, .. } => {
                 self.create(column_path(&self.store_dir, *slot, *column), ssz)
             }
@@ -117,54 +155,40 @@ impl Store {
                 let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
                 Ok(WriteOp::Unlink { path })
             }
-            PendingWrite::IndexBlock { dir, record } => {
-                let path = block_index::file(dir);
-                if self.writer.busy_with(&path) {
-                    return Start::Busy(pending);
-                }
-                // SAFETY: an append copies its bytes before `start` returns.
-                unsafe {
-                    let op = WriteOp::Append { path, bytes: &record.encode() };
-                    self.writer.start(op, WriteTag::Queued(pending))
-                };
-                return Start::Done(Ok(()));
-            }
+            PendingWrite::IndexBlock { dir, records } => Ok(WriteOp::Append {
+                path: block_index::file(dir),
+                bytes: ptr::from_ref(&records[..]),
+            }),
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::BackfillBlock { .. } |
             PendingWrite::PersistPeer { .. } |
-            PendingWrite::LoadPeers => return Start::Done(self.apply_without_io(pending, emit)),
-        };
-        let op = match op {
-            Ok(op) => op,
-            Err(error) => return Start::Done(self.write_landed(pending, Err(error), emit)),
-        };
-        if self.writer.busy_with(op.key()) {
-            return Start::Busy(pending);
-        }
-        self.landing_in_flight += usize::from(pending.lands());
-        // SAFETY: a `Create` points into the `TRead` that `pending` holds,
-        // which the writer keeps until the write completes.
-        unsafe { self.writer.start(op, WriteTag::Queued(pending)) };
-        Start::Done(Ok(()))
+            PendingWrite::LoadPeers => return None,
+        })
     }
 
-    /// Started once nothing is queued or in flight, so the file describes
-    /// data already down.
+    /// Only once nothing is queued or in flight, so the file describes data
+    /// already down. A failed write still replaces the file; a torn one fails
+    /// to decode and is rebuilt.
     fn persist_coverage(&mut self) {
+        let settled = self.write_queue.is_empty() && self.writer.in_flight() == 0;
+        if !settled || !self.finalized.coverage().changed() {
+            return;
+        }
         let (path, staged) = coverage::codec::files(&self.store_dir);
-        let (bytes, version) = self.finalized.encode_coverage();
-        let op = WriteOp::Replace { path, staged, bytes };
-        // SAFETY: a replace copies its bytes before `start` returns.
-        unsafe { self.writer.start(op, WriteTag::Coverage { version }) };
+        let mut bytes = std::mem::take(&mut self.coverage_bytes);
+        let version = self.finalized.coverage().encode_for_persist(&mut bytes);
+        let op = WriteOp::Replace { path, staged, bytes: ptr::from_ref(&bytes[..]) };
+        // SAFETY: the tag holds `bytes` until the write completes.
+        unsafe { self.writer.start(op, WriteTag::Coverage { version, bytes }) };
     }
 
-    fn create<'a>(&mut self, path: PathBuf, ssz: &TRead) -> Result<WriteOp<'a>, Error> {
+    fn create(&mut self, path: PathBuf, ssz: &TRead) -> Result<WriteOp, Error> {
         create_dir_once(&mut self.known_dirs, path.parent().expect("a slot directory"))?;
         let (bytes, _) = ssz.buffer().map_err(Error::other)?;
-        Ok(WriteOp::Create { path, source: bytes.as_ptr(), len: bytes.len() })
+        Ok(WriteOp::Create { path, bytes: ptr::from_ref(bytes) })
     }
 
-    fn promote<'a>(&mut self, slot: u64, key: PayloadKey) -> Result<WriteOp<'a>, Error> {
+    fn promote(&mut self, slot: u64, key: PayloadKey) -> Result<WriteOp, Error> {
         let to = key.finalized_path(&self.store_dir, slot);
         create_dir_once(&mut self.known_dirs, to.parent().expect("a slot directory"))?;
         let from = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
@@ -182,6 +206,7 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
+        self.write_queue.landed(&pending);
         match pending {
             PendingWrite::Column { slot, column, custody_set_complete, .. } => {
                 result?;
@@ -228,7 +253,7 @@ impl Store {
                 self.finalized.envelope_landed(slot);
                 emit(IoEvent::Need(self.finalized.persisted(DataKind::Envelope, slot, None)));
             }
-            PendingWrite::IndexBlock { .. } => result?,
+            PendingWrite::IndexBlock { .. } |
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::PersistPeer { .. } |
             PendingWrite::LoadPeers => result?,
@@ -239,7 +264,7 @@ impl Store {
     fn index_landed(&mut self, block: Block) {
         let dir = slot_dir(&self.store_dir, Payload::Block, block.facts.slot);
         let record = self.finalized.landed(block);
-        self.write_queue.push_back(PendingWrite::IndexBlock { dir, record });
+        self.write_queue.push_index_record(dir, record);
     }
 
     fn block_backfilled<F>(
@@ -266,40 +291,51 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
+        self.write_queue.landed(&pending);
         match pending {
             PendingWrite::TruncateHistory { payload, finalized_slot } => {
-                let epoch = finalized_slot / SLOTS_PER_EPOCH;
-                let earliest_slot =
-                    finalized_slot.saturating_sub(payload.slots_retained(&self.spec, epoch));
-                self.remove_history_below(payload, first_retained_slot(earliest_slot))?;
-                self.finalized.truncated(payload, earliest_slot);
+                self.truncate_history(payload, finalized_slot)
             }
             // A block whose file is indexed is re-served only to link it; a
             // root indexed in memory but never written is not.
             PendingWrite::BackfillBlock { block, ssz } => {
                 let BlockFacts { slot, parent_root, .. } = block.facts;
                 self.finalized.relinked(block);
-                self.block_backfilled(slot, parent_root, &ssz, emit)?;
+                self.block_backfilled(slot, parent_root, &ssz, emit)
             }
-            PendingWrite::PersistPeer { enr } => {
-                let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
-                open_file_write(peer_file, false)?.write_all(enr.to_string().as_bytes())?;
-            }
-            PendingWrite::LoadPeers => {
-                let peer_files = std::fs::read_dir(self.peers_dir())?;
-                for entry in peer_files {
-                    if let Ok(entry) = entry &&
-                        entry.metadata()?.is_file()
-                    {
-                        let mut enr_string = String::new();
-                        open_file_read(entry.path())?.read_to_string(&mut enr_string)?;
-                        let enr =
-                            Enr::from_base64(enr_string.as_str(), false).map_err(Error::other)?;
-                        emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound { enr, reload: true }));
-                    }
-                }
-            }
+            PendingWrite::PersistPeer { enr } => self.persist_peer_file(&enr),
+            PendingWrite::LoadPeers => self.load_peer_files(emit),
             other => unreachable!("{other:?} has I/O for the writer"),
+        }
+    }
+
+    fn truncate_history(&mut self, payload: Payload, finalized_slot: u64) -> Result<(), Error> {
+        let epoch = finalized_slot / SLOTS_PER_EPOCH;
+        let earliest_slot =
+            finalized_slot.saturating_sub(payload.slots_retained(&self.spec, epoch));
+        self.remove_history_below(payload, first_retained_slot(earliest_slot))?;
+        self.finalized.truncated(payload, earliest_slot);
+        Ok(())
+    }
+
+    fn persist_peer_file(&self, enr: &Enr) -> Result<(), Error> {
+        let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
+        open_file_write(peer_file, false)?.write_all(enr.to_string().as_bytes())
+    }
+
+    fn load_peer_files<F>(&self, emit: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
+        for entry in std::fs::read_dir(self.peers_dir())? {
+            if let Ok(entry) = entry &&
+                entry.metadata()?.is_file()
+            {
+                let mut enr_string = String::new();
+                open_file_read(entry.path())?.read_to_string(&mut enr_string)?;
+                let enr = Enr::from_base64(enr_string.as_str(), false).map_err(Error::other)?;
+                emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound { enr, reload: true }));
+            }
         }
         Ok(())
     }
@@ -314,7 +350,18 @@ impl Store {
         F: FnMut(IoEvent),
     {
         StorageCounters::ReadQueueLength.set(self.query_queue.len() as u64);
+        self.deliver_finished_reads(fork_digest_at, producer, emit);
+        self.start_reads(emit);
+    }
 
+    fn deliver_finished_reads<F>(
+        &mut self,
+        fork_digest_at: impl Fn(u64) -> [u8; 4],
+        producer: &mut TProducer,
+        emit: &mut F,
+    ) where
+        F: FnMut(IoEvent),
+    {
         let query_queue = &mut self.query_queue;
         self.reader.step(producer, |(mut query, unit), outcome| match outcome {
             ReadOutcome::Sent(read) => {
@@ -332,10 +379,15 @@ impl Store {
                 query.finish(true, emit);
             }
         });
+    }
 
-        // Round-robin, one unit in flight per query: a query's chunks go out
-        // in order, and a large range cannot block other peers' queries.
-        // `MAX_ITERATIONS_PER_LOOP` bounds drained-request churn.
+    /// Round-robin, one unit in flight per query: a query's chunks go out in
+    /// order, and a large range cannot block other peers' queries.
+    /// `MAX_ITERATIONS_PER_LOOP` bounds drained-request churn.
+    fn start_reads<F>(&mut self, emit: &mut F)
+    where
+        F: FnMut(IoEvent),
+    {
         let mut iterations = 0;
         while iterations < MAX_ITERATIONS_PER_LOOP && self.reader.in_flight() < MAX_READS_IN_FLIGHT
         {
@@ -392,7 +444,7 @@ impl Store {
             &mut self.write_queue,
         );
         self.history.expire(Instant::now());
-        if self.head.root != [0u8; 32] && self.write_queue.landing() + self.landing_in_flight == 0 {
+        if self.head.root != [0u8; 32] && self.write_queue.landing() == 0 {
             self.history.step(
                 self.head,
                 !self.sync_target.is_syncing(),
@@ -403,12 +455,7 @@ impl Store {
             );
         }
 
-        if self.write_queue.is_empty() &&
-            self.writer.in_flight() == 0 &&
-            self.finalized.coverage_changed()
-        {
-            self.persist_coverage();
-        }
+        self.persist_coverage();
 
         self.step_checkpoint();
         self.remover.step();

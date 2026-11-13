@@ -331,7 +331,7 @@ fn storage_bench_truncate_column_group() {
         finalized_slot: COLUMN_SLOTS_RETAINED + SLOTS_PER_DIR,
     });
     sample.file_io(&mut store, &mut producer);
-    while !store.remover.is_idle() {
+    while !store.write_queue.is_empty() || !store.remover.is_idle() {
         sample.file_io(&mut store, &mut producer);
     }
     assert!(!super::slot_dir(&store_dir, Payload::Column, 0).exists());

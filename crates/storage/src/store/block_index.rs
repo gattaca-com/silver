@@ -37,8 +37,6 @@ impl Record {
     }
 }
 
-/// Appended in one write: a torn append misaligns every fixed-width record
-/// after it when the write is retried.
 pub(super) fn file(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }

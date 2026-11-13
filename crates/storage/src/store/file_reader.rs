@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use flux_disk::{DiskEvent, DiskIo, FailedOp, FileToken, OpenOptions};
+use flux_disk::{DiskEvent, DiskIo, FileToken, OpenOptions};
 use silver_common::{TCacheProducer, TCacheRead, TProducer, TReservation};
 
 pub(super) enum ReadOutcome {
@@ -19,12 +19,6 @@ enum State {
     /// The kernel is filling the reservation, so it must not drop yet.
     Reading(TReservation, usize),
     Done(ReadOutcome),
-}
-
-enum Update {
-    Len(usize),
-    Read(usize, Option<Error>),
-    Failed(Error),
 }
 
 struct Read<T> {
@@ -72,26 +66,28 @@ impl<T> FileReader<T> {
     pub(super) fn step(&mut self, producer: &mut TProducer, mut done: impl FnMut(T, ReadOutcome)) {
         let reads = &mut self.reads;
         self.disk.poll_with(|event| {
-            let (file, update) = match event {
-                DiskEvent::FileLen { file, len } => (file, Update::Len(len as usize)),
-                DiskEvent::ReadInto { file, len, error, .. } => (file, Update::Read(len, error)),
-                DiskEvent::Failed {
-                    file, op: FailedOp::Open | FailedOp::FileLen, error, ..
-                } => (file, Update::Failed(error)),
+            let file = match &event {
+                DiskEvent::FileLen { file, .. } |
+                DiskEvent::ReadInto { file, .. } |
+                DiskEvent::Failed { file, .. } => *file,
                 _ => return,
             };
             if let Some(read) = reads.iter_mut().find(|read| read.file == Some(file)) {
-                read.state = read.state_after(update);
+                read.state = std::mem::replace(&mut read.state, State::Sizing).after(event);
             }
         });
 
         let mut index = 0;
         while index < self.reads.len() {
             let read = &mut self.reads[index];
-            if let State::Reserving(len) = read.state &&
-                let Some(reservation) = producer.reserve(len, true)
-            {
-                read.state = fill(&mut self.disk, read.file, reservation, len);
+            if let State::Reserving(len) = read.state {
+                if len > producer.cache_ref().max_payload_len() {
+                    let error = Error::other(format!("{len} bytes exceed the tcache"));
+                    read.state = State::Done(ReadOutcome::Failed(error));
+                } else if let Some(reservation) = producer.reserve(len, true) {
+                    let file = read.file.expect("a sized read has a file");
+                    read.state = fill(&mut self.disk, file, reservation, len);
+                }
             }
             if !matches!(read.state, State::Done(_)) {
                 index += 1;
@@ -107,37 +103,36 @@ impl<T> FileReader<T> {
     }
 }
 
-impl<T> Read<T> {
-    fn state_after(&mut self, update: Update) -> State {
-        match (std::mem::replace(&mut self.state, State::Sizing), update) {
-            (State::Sizing, Update::Len(len)) => State::Reserving(len),
-            (State::Sizing, Update::Failed(error)) if error.kind() == ErrorKind::NotFound => {
-                State::Done(ReadOutcome::Missing)
-            }
-            (State::Sizing, Update::Failed(error)) => State::Done(ReadOutcome::Failed(error)),
-            (State::Reading(mut reservation, expected), Update::Read(len, None))
-                if len == expected =>
+impl State {
+    fn after(self, event: DiskEvent) -> Self {
+        match (self, event) {
+            (Self::Sizing, DiskEvent::FileLen { len, .. }) => Self::Reserving(len as usize),
+            (Self::Sizing, DiskEvent::Failed { error, .. })
+                if error.kind() == ErrorKind::NotFound =>
             {
-                reservation.increment_offset(len);
-                State::Done(ReadOutcome::Sent(reservation.read()))
+                Self::Done(ReadOutcome::Missing)
             }
-            (State::Reading(_, expected), Update::Read(len, error)) => {
-                State::Done(ReadOutcome::Failed(
-                    error
-                        .unwrap_or_else(|| Error::other(format!("read {len} of {expected} bytes"))),
-                ))
+            (Self::Sizing, DiskEvent::Failed { error, .. }) => {
+                Self::Done(ReadOutcome::Failed(error))
+            }
+            (
+                Self::Reading(mut reservation, expected),
+                DiskEvent::ReadInto { len, error: None, .. },
+            ) if len == expected => {
+                reservation.increment_offset(len);
+                Self::Done(ReadOutcome::Sent(reservation.read()))
+            }
+            (Self::Reading(_, expected), DiskEvent::ReadInto { len, error, .. }) => {
+                let error = error
+                    .unwrap_or_else(|| Error::other(format!("read {len} of {expected} bytes")));
+                Self::Done(ReadOutcome::Failed(error))
             }
             (state, _) => state,
         }
     }
 }
 
-fn fill(
-    disk: &mut DiskIo,
-    file: Option<FileToken>,
-    mut reservation: TReservation,
-    len: usize,
-) -> State {
+fn fill(disk: &mut DiskIo, file: FileToken, mut reservation: TReservation, len: usize) -> State {
     let target = match reservation.buffer() {
         Ok(buffer) => buffer.as_mut_ptr(),
         Err(error) => return State::Done(ReadOutcome::Failed(error)),
@@ -146,7 +141,6 @@ fn fill(
         reservation.increment_offset(0);
         return State::Done(ReadOutcome::Sent(reservation.read()));
     }
-    let Some(file) = file else { return State::Done(ReadOutcome::Failed(Error::other("no file"))) };
     // SAFETY: the reservation's `len` bytes stay valid and untouched: it is
     // held in `State::Reading` until the completion, and `disk` drops first.
     if !unsafe { disk.read_at_into(file, 0, target, len) } {
