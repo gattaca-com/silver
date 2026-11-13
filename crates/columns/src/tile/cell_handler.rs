@@ -4,7 +4,7 @@ use flux::spine::SpineProducers;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, ForkName, GossipDomain, GossipTopic, IngestionTime, PeerEvent,
     SilverSpineProducers, SszCache, SyncNeed, TCacheError, TCacheId, TCacheRead, TCacheReader,
-    TCacheTable, TRead, TReadMode, TileId, Wheel,
+    TCacheTable, TRead, TReadMode, TileId,
     cell_store::{
         CellOrigin, CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
         ColumnRef, CommitmentContext, ContextData, DataColumnCounters, HeaderValidationRequest,
@@ -14,13 +14,14 @@ use silver_common::{
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, NUMBER_OF_COLUMNS},
 };
 
+use super::held_columns::HeldColumns;
 use crate::{
     BlockRoot,
     availability::ColumnTracker,
     batch::{PendingCellKzg, PendingKzg, PreparedCells},
     cell_store::CellStore,
     sync::SyncStatus,
-    validate::{ColumnValidator, HeaderOutcome, PendingColumn},
+    validate::{ColumnValidator, HeaderOutcome},
 };
 
 pub(crate) struct CellHandler {
@@ -272,19 +273,13 @@ impl CellHandler {
     pub(super) fn advance_retention(
         &mut self,
         event: RetentionEvent,
-        pending: [&mut Wheel<BlockRoot, Vec<PendingColumn>, 4>; 2],
+        pending: [&mut HeldColumns; 2],
     ) {
         self.store.expire_through(event.expired_slot);
         self.pending.retain_from(event.retain_from);
         self.headers.retain_from(event.retain_from);
         for pending in pending {
-            pending.retain(|_, columns| {
-                columns.retain(|column| {
-                    column.ssz_cache != SszCache::DataColumns ||
-                        column.sidecar.seq() >= event.retain_from
-                });
-                !columns.is_empty()
-            });
+            pending.retain_from(event.retain_from);
         }
     }
 

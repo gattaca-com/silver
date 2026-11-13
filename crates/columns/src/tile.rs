@@ -17,13 +17,13 @@ use silver_common::{
     GossipTopic, IngestionTime, LockedProposal, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
     RequestId, RpcInbound, RpcOffence, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache,
     SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
-    TProducer, TRead, TReadMode, TileId, Wheel, block_root,
+    TProducer, TRead, TReadMode, TileId, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
         RetentionEvent, StoreError,
     },
     column_util::{self as util, KzgScratch},
-    ssz_view::{BYTES_PER_KZG_COMMITMENT, NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
+    ssz_view::{BYTES_PER_KZG_COMMITMENT, SignedBeaconBlockView, StatusView},
     ticker::SlotTicker,
 };
 
@@ -37,9 +37,11 @@ use crate::{
 };
 
 pub(crate) mod cell_handler;
+mod held_columns;
 mod proposal;
 
 use cell_handler::CellHandler;
+use held_columns::HeldColumns;
 use proposal::ProposedBlocks;
 
 /// Only `Batched` sidecars can end up forwarded / republished on gossip
@@ -62,11 +64,11 @@ pub struct DataColumnsTile {
 
     tracker: ColumnTracker,
     // Gloas: columns whose block (hence commitments) hasn't been seen yet.
-    gloas_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
+    gloas_pending_columns: HeldColumns,
     // Fulu: columns held until their parent block validates. Keyed by the
     // sidecar's parent_root; drained on Status head advances and on block
     // arrivals (the arriving block's own parent_root).
-    parent_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
+    parent_pending_columns: HeldColumns,
 
     sync_state: SyncStatus,
 
@@ -101,8 +103,8 @@ impl DataColumnsTile {
             spec,
             kzg_batch: KzgBatch::new(),
             tracker: ColumnTracker::new(custody_group_columns, epoch_duration),
-            gloas_pending_columns: Wheel::new(epoch_duration),
-            parent_pending_columns: Wheel::new(Duration::from_secs(24)),
+            gloas_pending_columns: HeldColumns::new(epoch_duration),
+            parent_pending_columns: HeldColumns::new(Duration::from_secs(24)),
             sync_state: SyncStatus::default(),
             el_fetcher: ElBlobFetcher::new(epoch_duration),
             kzg_scratch: KzgScratch::default(),
@@ -291,6 +293,7 @@ impl DataColumnsTile {
         frame: Option<GossipSidecarFrame>,
         producers: &mut SilverSpineProducers,
     ) -> ColumnDisposition {
+        let stream_id = column.stream_id;
         match outcome {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
             ColumnOutcome::AlreadyHeld { block_root, slot } => {
@@ -307,29 +310,15 @@ impl DataColumnsTile {
             ColumnOutcome::Reject { block_root, slot, column } => {
                 ColumnDisposition::Rejected { block_root, slot, column }
             }
-            ColumnOutcome::Buffer { block_root } => {
-                if self.gloas_pending_columns.len() >= 2 * SLOTS_PER_EPOCH as usize &&
-                    !self.gloas_pending_columns.contains(&block_root)
-                {
-                    return ColumnDisposition::Ignored;
-                }
-                let pending = self.gloas_pending_columns.entry(block_root).or_default();
-                if pending.len() < NUMBER_OF_COLUMNS {
-                    silver_log::debug!(stream_id = ?column.stream_id, "gloas column before block — buffering");
-                    pending.push(column);
+            ColumnOutcome::Buffer { block_root, column_index } => {
+                if self.gloas_pending_columns.hold_for_block(block_root, column_index, column) {
+                    silver_log::debug!(?stream_id, "gloas column before block — buffering");
                 }
                 ColumnDisposition::Ignored
             }
-            ColumnOutcome::AwaitParent { parent_root } => {
-                if self.parent_pending_columns.len() >= 2 * SLOTS_PER_EPOCH as usize &&
-                    !self.parent_pending_columns.contains(&parent_root)
-                {
-                    return ColumnDisposition::Ignored;
-                }
-                let pending = self.parent_pending_columns.entry(parent_root).or_default();
-                if pending.len() < NUMBER_OF_COLUMNS {
-                    silver_log::info!(stream_id = ?column.stream_id, "column parent pending — buffering");
-                    pending.push(column);
+            ColumnOutcome::AwaitParent { parent_root, block_root, column_index } => {
+                if self.parent_pending_columns.hold(parent_root, block_root, column_index, column) {
+                    silver_log::info!(?stream_id, "column parent pending — buffering");
                 }
                 ColumnDisposition::Ignored
             }
@@ -441,7 +430,7 @@ impl DataColumnsTile {
         block_root: BlockRoot,
         producers: &mut SilverSpineProducers,
     ) {
-        let pending = self.gloas_pending_columns.remove(&block_root);
+        let pending = self.gloas_pending_columns.take(&block_root);
         self.drain_entries(pending, producers);
     }
 
@@ -451,7 +440,7 @@ impl DataColumnsTile {
         parent_root: BlockRoot,
         producers: &mut SilverSpineProducers,
     ) {
-        let pending = self.parent_pending_columns.remove(&parent_root);
+        let pending = self.parent_pending_columns.take(&parent_root);
         if pending.is_some() {
             silver_log::info!(
                 root = hex::encode(parent_root),
@@ -465,7 +454,7 @@ impl DataColumnsTile {
     /// disposition is dropped, matching the pre-batch behaviour.
     fn drain_entries(
         &mut self,
-        pending: Option<Vec<PendingColumn>>,
+        pending: Option<impl Iterator<Item = PendingColumn>>,
         producers: &mut SilverSpineProducers,
     ) {
         let Some(pending) = pending else {

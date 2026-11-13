@@ -16,12 +16,12 @@ use silver_common::{
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
-        ExecutionPayloadEnvelopeView as Envelope, PAYLOAD_ATTESTATION_MESSAGE_SIZE,
-        PROPOSER_SLASHING_SIZE, PayloadAttestationDataView, PayloadAttestationMessageView,
-        ProposerPreferencesView as Prefs, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_MSG_SIZE,
-        SignedBeaconBlockView, SignedBlsToExecutionChangeView,
+        ExecutionPayloadEnvelopeView as Envelope, ExecutionPayloadView,
+        PAYLOAD_ATTESTATION_MESSAGE_SIZE, PROPOSER_SLASHING_SIZE, PayloadAttestationDataView,
+        PayloadAttestationMessageView, ProposerPreferencesView as Prefs, ProposerSlashingView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
+        SIGNED_PROPOSER_PREFERENCES_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SYNC_COMMITTEE_MSG_SIZE, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
         SignedExecutionPayloadEnvelopeView as SignedPayload, SignedProposerPreferencesView,
         SignedSyncCommitteeProofView, SignedVoluntaryExitView, SingleAttestationView,
         SyncCommitteeView,
@@ -32,16 +32,17 @@ use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
     attestation_pool::{InsertOutcome, Participants},
+    block::lookahead_proposer,
     fork_data_roots::ForkDataRoots,
     held_blocks::BlockSourceMsg,
-    pending_envelopes::UnverifiedEnvelope,
+    pending_envelopes::{BLOCK_WAIT_SLOTS, ParkedEnvelope, ParkedKind, UnverifiedEnvelope},
     seen_aggregates::Coverage,
     seen_proposer_preferences::ProposerPreferences,
     shuffling_cache::ShufflingRequest,
 };
 use crate::{
     counters::BeaconStateCounters,
-    error::VoluntaryExitError,
+    error::{EnvelopeError, VoluntaryExitError},
     fork_choice::{
         ExecutionStatus, PayloadAxis, compute_shuffling_dependent_slot,
         compute_shuffling_lookahead_start_slot,
@@ -1399,12 +1400,25 @@ impl BeaconStateTile {
         let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
             EnvelopeCheck::Ready { block_root, state_id } => (block_root, state_id),
             EnvelopeCheck::AwaitBlock(block_root) => {
-                self.pending_envelopes.park(block_root, acquired, false);
-                return Feedback::Ignore;
+                return self.park_signed_envelope(block_root, acquired, ssz);
             }
             EnvelopeCheck::Ignore => return Feedback::Ignore,
             EnvelopeCheck::Reject => return Feedback::reject("envelope invalid"),
         };
+        self.submit_verified_envelope(acquired, ssz, block_root, state_id, source, producers)
+    }
+
+    /// `ssz` passed `verify_execution_payload_envelope` against `state_id`, the
+    /// state of `block_root`.
+    fn submit_verified_envelope(
+        &mut self,
+        acquired: TRead,
+        ssz: &[u8],
+        block_root: B256,
+        state_id: StateId,
+        source: BlockSource,
+        producers: &mut Producers,
+    ) -> Feedback {
         let signature = *SignedPayload::signature(ssz);
 
         let rv = self.state.read_view(state_id);
@@ -1441,7 +1455,8 @@ impl BeaconStateTile {
         };
 
         if hash_count > 0 && self.columns_pending(&block_root) {
-            self.pending_envelopes.park(block_root, acquired, false);
+            let parked = ParkedEnvelope { read: acquired, kind: ParkedKind::Verified };
+            self.pending_envelopes.park(block_root, parked);
             return Feedback::Accept;
         }
 
@@ -1464,6 +1479,55 @@ impl BeaconStateTile {
         Feedback::Accept
     }
 
+    /// The spec only ignores an envelope for an unseen block. Checking its
+    /// signature first keeps a peer without the signer's key from displacing
+    /// the real envelope, or from filling the buffer.
+    fn park_signed_envelope(&mut self, block_root: B256, acquired: TRead, ssz: &[u8]) -> Feedback {
+        if !SignedPayload::check_canonical(ssz) {
+            return Feedback::reject("envelope malformed");
+        }
+        let envelope = SignedPayload::message(ssz);
+        let slot = ExecutionPayloadView::slot_number(Envelope::payload(envelope));
+        let builder_index = Envelope::builder_index(envelope);
+        let awaits_block = self.ticker.is_within_slot_range(
+            slot,
+            BLOCK_WAIT_SLOTS - 1,
+            MAXIMUM_GOSSIP_CLOCK_DISPARITY,
+        );
+        if !awaits_block || !self.pending_envelopes.admits_signed(&block_root, slot, builder_index)
+        {
+            return Feedback::Ignore;
+        }
+
+        // The block's own state is unknown; its parent's has the same signer
+        // keys unless the parent's payload itself registered this builder.
+        let Some(parent_idx) =
+            self.fork_choice.find_node_idx(Envelope::parent_beacon_block_root(envelope))
+        else {
+            return Feedback::Ignore;
+        };
+        let rv = self.state.read_view(self.fork_choice.node(parent_idx).state_id);
+        let fork_version = self.spec.fork_version_at(slot / SLOTS_PER_EPOCH);
+        match stf::verify_envelope_signature(&rv, ssz, fork_version, lookahead_proposer(&rv, slot))
+        {
+            Ok(()) => {}
+            Err(EnvelopeError::BuilderOutOfRange { .. }) => return Feedback::Ignore,
+            Err(e) => {
+                silver_log::info!(
+                    error = %e,
+                    block = hex32(&block_root),
+                    "envelope for an unseen block rejected"
+                );
+                return Feedback::reject("envelope signature");
+            }
+        }
+
+        let parked =
+            ParkedEnvelope { read: acquired, kind: ParkedKind::Signed { slot, builder_index } };
+        self.pending_envelopes.park(block_root, parked);
+        Feedback::Ignore
+    }
+
     pub(super) fn drain_pending_envelope(
         &mut self,
         block_root: B256,
@@ -1484,15 +1548,33 @@ impl BeaconStateTile {
             return;
         };
 
-        if parked.from_disk {
-            return self.apply_disk_envelope(parked.read, |event| producers.produce(event));
+        let feedback = match parked.kind {
+            ParkedKind::FromDisk => {
+                return self.apply_disk_envelope(parked.read, |event| producers.produce(event));
+            }
+            // Its block's state checks the signer again: the block can change
+            // the builder registry the parking check read.
+            ParkedKind::Signed { .. } => {
+                let read = parked.read.clone();
+                self.handle_execution_payload_envelope(read, ssz, BlockSource::Gossip, producers)
+            }
+            ParkedKind::Verified => {
+                let Some(idx) = self.fork_choice.find_node_idx(&block_root) else { return };
+                let state_id = self.fork_choice.node(idx).state_id;
+                let (read, source) = (parked.read.clone(), BlockSource::Gossip);
+                self.submit_verified_envelope(read, ssz, block_root, state_id, source, producers)
+            }
+        };
+        // Its signer can still have signed a body the bid does not commit to,
+        // and the honest copy was not parked beside it.
+        if matches!(feedback, Feedback::Reject { .. }) {
+            silver_log::info!(
+                block = hex32(&block_root),
+                slot,
+                "parked envelope rejected; refetching"
+            );
+            self.pending_envelopes.request(block_root, slot, producers);
         }
-        self.handle_execution_payload_envelope(
-            parked.read.clone(),
-            ssz,
-            BlockSource::Gossip,
-            producers,
-        );
     }
 
     /// The vote's checks that need its block, its committees read from
