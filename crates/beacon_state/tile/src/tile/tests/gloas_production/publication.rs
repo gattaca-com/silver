@@ -7,6 +7,13 @@ use super::*;
 
 impl ProductionRig {
     fn self_build_for_publication(blobs: u8) -> (Self, Vec<u8>, Vec<u8>) {
+        let (mut rig, signed_block, signed, frame) = Self::self_build_unimported(blobs);
+        rig.import_block(&signed_block);
+        (rig, signed, frame)
+    }
+
+    /// The signed block and its signed envelope, the block not yet imported.
+    fn self_build_unimported(blobs: u8) -> (Self, Vec<u8>, Vec<u8>, Vec<u8>) {
         let mut rig = Self::new("empty_block_transition");
         rig.tile.sync_target = SyncUpdate::Following;
         let attrs = rig.start(1);
@@ -29,29 +36,54 @@ impl ProductionRig {
         let mut signed_block = 100u32.to_le_bytes().to_vec();
         signed_block.extend_from_slice(&signature);
         signed_block.extend_from_slice(&block);
-        let (_, read) = publish_block_bytes(&mut rig.gossip, &signed_block);
-        let acquired = rig.tile.reader.acquire(read);
-        let feedback = rig.tile.apply_block(
-            &signed_block,
-            &acquired,
-            BlockSource::Gossip,
-            false,
-            &mut rig.adapter.producers,
-            |_, _| {},
-        );
-        assert_eq!(feedback, Feedback::BlockImported(root));
         let payload = PayloadFrame::parse(&frame).unwrap();
         let mut signed = vec![0; 100];
         signed[..4].copy_from_slice(&100u32.to_le_bytes());
         signed.extend_from_slice(&built.envelope_header.unwrap());
         signed.extend_from_slice(payload.execution_payload);
         signed.extend_from_slice(payload.execution_requests);
-        rig.sign_envelope(&mut signed);
+        rig.sign_envelope_as(&mut signed, proposer);
         rig.sink.consume(|_: BeaconStateEvent, _| {});
         rig.sink.consume(|_: BeaconApiRequest, _| {});
         rig.sink.consume(|_: BeaconApiResponse, _| {});
         engine_requests(&mut rig.sink);
-        (rig, signed, frame)
+        (rig, signed_block, signed, frame)
+    }
+
+    fn import_block(&mut self, signed_block: &[u8]) {
+        let (_, read) = publish_block_bytes(&mut self.gossip, signed_block);
+        let acquired = self.tile.reader.acquire(read);
+        let feedback = self.tile.apply_block(
+            signed_block,
+            &acquired,
+            BlockSource::Gossip,
+            false,
+            &mut self.adapter.producers,
+            |_, _| {},
+        );
+        assert!(matches!(feedback, Feedback::BlockImported(_)), "{feedback:?}");
+        self.sink.consume(|_: BeaconStateEvent, _| {});
+        self.sink.consume(|_: BeaconApiRequest, _| {});
+        self.sink.consume(|_: BeaconApiResponse, _| {});
+        engine_requests(&mut self.sink);
+    }
+
+    /// Signs with validator `signer`'s fixture key at the proposal's slot,
+    /// without reading the envelope's block, which may be unknown.
+    fn sign_envelope_as(&self, signed: &mut [u8], signer: usize) {
+        let envelope = SignedExecutionPayloadEnvelopeView::message(signed);
+        let view = self.tile.state.read_view(self.tile.canonical_state_id());
+        let domain = bls::compute_domain(
+            bls::DOMAIN_BEACON_BUILDER,
+            self.tile.spec.fork_version_at(self.proposal.slot / SLOTS_PER_EPOCH),
+            &view.imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(
+            &ExecutionPayloadEnvelopeView::hash_tree_root(envelope),
+            &domain,
+        );
+        let signature = fixture_secret_key(signer).sign(&signing_root, bls::DST, &[]).to_bytes();
+        signed[4..100].copy_from_slice(&signature);
     }
 
     fn sign_envelope(&self, signed: &mut [u8]) {
@@ -478,4 +510,189 @@ fn payload_counts_as_verified_only_once_the_el_accepts_it() {
         rig.new_payload_verdict(root, verdict);
         assert!(rig.tile.fork_choice.is_payload_verified(&root), "{verdict:?}");
     }
+}
+
+const BUILDER_INDEX: std::ops::Range<usize> = 108..116;
+const BLOCK_ROOT: std::ops::Range<usize> = 116..148;
+const PARENT_ROOT: std::ops::Range<usize> = 148..180;
+const PAYLOAD_BLOCK_HASH: usize = 180 + 472;
+
+struct UnseenBlockRig {
+    rig: ProductionRig,
+    signed_block: Vec<u8>,
+    signed: Vec<u8>,
+    root: B256,
+    proposer: usize,
+}
+
+impl UnseenBlockRig {
+    fn new() -> Self {
+        let (rig, signed_block, signed, _) = ProductionRig::self_build_unimported(0);
+        let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+            SignedExecutionPayloadEnvelopeView::message(&signed),
+        );
+        let proposer = u64::from_le_bytes(signed_block[108..116].try_into().unwrap()) as usize;
+        Self { rig, signed_block, signed, root, proposer }
+    }
+
+    fn resigned(&self, edit: impl FnOnce(&mut [u8])) -> Vec<u8> {
+        let mut envelope = self.signed.clone();
+        edit(&mut envelope);
+        self.rig.sign_envelope_as(&mut envelope, self.proposer);
+        envelope
+    }
+
+    fn signed_by_another_key(&self) -> Vec<u8> {
+        let mut envelope = self.signed.clone();
+        self.rig.sign_envelope_as(&mut envelope, self.proposer + 1);
+        envelope
+    }
+
+    /// Signed by the proposer, with a block hash its bid does not commit to.
+    fn signer_forgery(&self) -> Vec<u8> {
+        self.resigned(|envelope| envelope[PAYLOAD_BLOCK_HASH] ^= 1)
+    }
+
+    fn import_block(&mut self) {
+        let block = self.signed_block.clone();
+        self.rig.import_block(&block);
+    }
+
+    fn holds(&self, root: &B256) -> bool {
+        self.rig.tile.pending_envelopes.holds(root)
+    }
+}
+
+#[test]
+fn envelope_for_an_unseen_block_with_a_bad_signature_is_rejected_unparked() {
+    let mut u = UnseenBlockRig::new();
+    let forged = u.signed_by_another_key();
+
+    assert!(matches!(u.rig.gossip_envelope(&forged), Feedback::Reject { .. }));
+    assert!(!u.holds(&u.root));
+}
+
+/// A forgery either side of the real envelope, then the block imports.
+#[test]
+fn keyless_forgery_cannot_displace_the_parked_envelope() {
+    let mut u = UnseenBlockRig::new();
+    let (signed, root) = (u.signed.clone(), u.root);
+    let forged = u.signed_by_another_key();
+
+    assert!(matches!(u.rig.gossip_envelope(&forged), Feedback::Reject { .. }));
+    assert_eq!(u.rig.gossip_envelope(&signed), Feedback::Ignore);
+    assert!(u.holds(&root));
+    assert_eq!(u.rig.gossip_envelope(&forged), Feedback::Ignore, "held root costs no BLS");
+
+    u.import_block();
+    assert!(u.rig.tile.pending_envelopes.awaits_verdict(&root), "the real one reached the EL");
+    u.rig.new_payload_verdict(root, PayloadValidationStatus::Valid);
+    assert!(u.rig.tile.fork_choice.is_payload_verified(&root));
+}
+
+/// The signer's own forgery parks first and shuts out the real envelope, so
+/// its rejection at import must ask for the payload again.
+#[test]
+fn signer_forgery_parked_first_is_refetched_at_import() {
+    let mut u = UnseenBlockRig::new();
+    let (signed, root) = (u.signed.clone(), u.root);
+    let forged = u.signer_forgery();
+
+    assert_eq!(u.rig.gossip_envelope(&forged), Feedback::Ignore);
+    assert_eq!(u.rig.gossip_envelope(&signed), Feedback::Ignore);
+    u.rig.sync_needs();
+
+    u.import_block();
+    assert!(!u.holds(&root));
+    let slot = u.rig.proposal.slot;
+    assert!(u.rig.sync_needs().contains(&SyncNeed::missing_envelope(root, slot)));
+
+    assert_eq!(u.rig.gossip_envelope(&signed), Feedback::Accept, "the refetched copy applies");
+}
+
+#[test]
+fn signer_parks_one_envelope_per_slot() {
+    let mut u = UnseenBlockRig::new();
+    let (signed, root) = (u.signed.clone(), u.root);
+    let other_root = [0x77; 32];
+    let spam = u.resigned(|envelope| envelope[BLOCK_ROOT].copy_from_slice(&other_root));
+
+    assert_eq!(u.rig.gossip_envelope(&spam), Feedback::Ignore);
+    assert_eq!(u.rig.gossip_envelope(&signed), Feedback::Ignore);
+    assert!(u.holds(&other_root));
+    assert!(!u.holds(&root));
+}
+
+#[test]
+fn envelope_outside_the_block_wait_is_not_parked() {
+    let mut u = UnseenBlockRig::new();
+    let (signed, root, slot) = (u.signed.clone(), u.root, u.rig.proposal.slot);
+
+    let past_disparity = MAXIMUM_GOSSIP_CLOCK_DISPARITY.as_millis() as u64 + 1;
+    u.rig.tile.ticker.set_since_genesis_ms((slot + BLOCK_WAIT_SLOTS) * 12_000 + past_disparity);
+    assert_eq!(u.rig.gossip_envelope(&signed), Feedback::Ignore);
+    assert!(!u.holds(&root), "too late");
+
+    u.rig.tile.ticker.set_current_slot(slot - 1);
+    assert_eq!(u.rig.gossip_envelope(&signed), Feedback::Ignore);
+    assert!(!u.holds(&root), "too early");
+
+    u.rig.tile.ticker.set_current_slot(slot + BLOCK_WAIT_SLOTS - 1);
+    assert_eq!(u.rig.gossip_envelope(&signed), Feedback::Ignore);
+    assert!(u.holds(&root), "last slot of the wait");
+}
+
+#[test]
+fn parked_envelope_is_dropped_once_its_block_wait_ends() {
+    let mut u = UnseenBlockRig::new();
+    let (signed, root, slot) = (u.signed.clone(), u.root, u.rig.proposal.slot);
+    u.rig.gossip_envelope(&signed);
+
+    u.rig.tile.pending_envelopes.drop_signed_before(slot);
+    assert!(u.holds(&root));
+    u.rig.tile.pending_envelopes.drop_signed_before(slot + 1);
+    assert!(!u.holds(&root));
+}
+
+/// A signer the parent's state cannot name may still be valid in the block's
+/// own state, so it is not the sender's fault.
+#[test]
+fn envelope_with_an_unknown_signer_is_ignored_not_rejected() {
+    let mut u = UnseenBlockRig::new();
+    let unknown_builder =
+        u.resigned(|envelope| envelope[BUILDER_INDEX].copy_from_slice(&1_000_000u64.to_le_bytes()));
+    let unknown_parent = u.resigned(|envelope| envelope[PARENT_ROOT].fill(0x55));
+
+    assert_eq!(u.rig.gossip_envelope(&unknown_builder), Feedback::Ignore);
+    assert_eq!(u.rig.gossip_envelope(&unknown_parent), Feedback::Ignore);
+    assert!(!u.holds(&u.root));
+}
+
+/// A rejected copy over RPC must not tell sync the payload is covered.
+#[test]
+fn rejected_envelope_does_not_cover_its_slot() {
+    let mut u = UnseenBlockRig::new();
+    u.import_block();
+    let forged = u.signer_forgery();
+    u.rig.sync_needs();
+
+    assert!(matches!(u.rig.gossip_envelope(&forged), Feedback::Reject { .. }));
+    assert!(u.rig.sync_needs().is_empty());
+}
+
+#[test]
+fn verified_envelope_reaches_the_el_once_its_columns_arrive() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(1);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+
+    assert_eq!(rig.gossip_envelope(&signed), Feedback::Accept);
+    assert!(engine_requests(&mut rig.sink).is_empty(), "waits on columns");
+    assert!(rig.tile.pending_envelopes.holds(&root));
+
+    let slot = rig.proposal.slot;
+    rig.tile.handle_data_columns_available(root, slot, &mut rig.adapter.producers);
+    assert!(matches!(engine_requests(&mut rig.sink)[..], [EngineReq::NewPayloadEnvelope(_)]));
+    assert!(rig.tile.pending_envelopes.awaits_verdict(&root));
 }
