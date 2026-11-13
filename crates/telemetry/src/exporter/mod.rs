@@ -40,6 +40,7 @@ const KINDS: usize = Kind::LAST as usize + 1;
 /// UDP send accounting between measurement logs.
 struct Sink {
     socket: UdpSocket,
+    dest: SocketAddr,
     bytes: [u64; KINDS],
     datagrams: u64,
     dropped: u64,
@@ -49,7 +50,7 @@ impl Sink {
     /// Nonblocking: a full send buffer or an absent dashboard drops the
     /// datagram rather than stalling the drain.
     fn send(&mut self, dgram: &[u8]) {
-        match self.socket.send(dgram) {
+        match self.socket.send_to(dgram, self.dest) {
             Ok(_) => {
                 let kind = Header::parse(dgram).expect("encoder output parses").kind;
                 self.bytes[kind as usize] += dgram.len() as u64;
@@ -81,7 +82,6 @@ impl Exporter {
         let bind: SocketAddr =
             if dest.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { ([0u16; 8], 0).into() };
         let socket = UdpSocket::bind(bind).map_err(|e| format!("bind: {e}"))?;
-        socket.connect(dest).map_err(|e| format!("connect {dest}: {e}"))?;
         socket.set_nonblocking(true).map_err(|e| format!("nonblocking: {e}"))?;
         info!(%dest, label, "exporting to dashboard");
 
@@ -96,7 +96,7 @@ impl Exporter {
             encoder: Encoder::new(instance_id, now.0),
             sources: ExportSources::default(),
             peers: LatestPeerStats::default(),
-            sink: Sink { socket, bytes: [0; KINDS], datagrams: 0, dropped: 0 },
+            sink: Sink { socket, dest, bytes: [0; KINDS], datagrams: 0, dropped: 0 },
             next_bucket: now,
             next_fast: now,
             next_peers: now,
