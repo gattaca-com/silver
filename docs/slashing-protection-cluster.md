@@ -40,8 +40,9 @@ memory only.
 - A cluster has at most 7 nodes. Use an odd count: 4 nodes tolerate one
   failure, like 3, but need more votes for every commit.
 - Each node's journal (`data_storage_dir/attestation-cluster.wal`) records its
-  own id and the voter set. A node whose config disagrees with its journal
-  refuses to start, and names both identities.
+  own id and the voter set it started with. A node whose config gives another
+  id refuses to start, and names both ids.
+- On restart, the voter set comes from the journal, not from the config.
 - There is no live way to add, remove or replace a node yet.
 
 ## Bootstrap exactly once
@@ -117,5 +118,8 @@ log line `slashing protection spin failed` carries the detail.
 | 2 bad entry | A committed entry this binary cannot apply. The log names its index and term. | Every restart fails on the same entry. Run a binary that can apply it, usually by finishing an upgrade. |
 | 3 snapshot | An installed or recovered snapshot is invalid. | Treat as corruption. Restore the journal, or reset the cluster as above. |
 | 4 raft | raft-rs returned an error. | Restart, and report it. |
+
+A node replays its journal before it starts. A journal that is missing or
+cannot be replayed stops the start, with the cause in the error.
 
 Alert queries for these counters are in `telemetry-counters.md`.

@@ -1,16 +1,21 @@
+use bytes::BytesMut;
 use raft::{
     Storage,
-    eraftpb::{HardState, MessageType, Snapshot},
+    eraftpb::{ConfState, HardState, MessageType, Snapshot},
 };
 use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
 use super::*;
-use crate::cluster::AttestationKey;
+use crate::cluster::{
+    AttestationKey, SlashingLockStore, membership::ClusterMembership,
+    raft_storage::validate_snapshot, test_address,
+};
 
 fn config(id: u64) -> SlashingProtectionConfig {
     let mut config = SlashingProtectionConfig::new(
         id,
         [1, 2, 3],
+        test_address(id),
         ClusterStorageConfig::Create("unused-test-journal".into()),
     )
     .unwrap();
@@ -34,12 +39,16 @@ fn snapshot(index: u64) -> Snapshot {
     let mut state = SlashingLockStore::default();
     state.advance_minimum_slot(68);
     state.apply(&command(7, 1));
-    let mut snapshot =
-        Snapshot { data: state.encode_snapshot().unwrap().into(), ..Snapshot::default() };
+    let members = ConfState { voters: vec![1, 2, 3], ..ConfState::default() };
+    let mut data = BytesMut::new();
+    ReplicatedState { locks: state, membership: ClusterMembership::new(&members.voters) }
+        .encode_snapshot(&mut data)
+        .unwrap();
+    let mut snapshot = Snapshot { data: data.freeze(), ..Snapshot::default() };
     let metadata = snapshot.mut_metadata();
     metadata.index = index;
     metadata.term = 2;
-    metadata.mut_conf_state().voters = vec![1, 2, 3];
+    metadata.set_conf_state(members);
     snapshot
 }
 
@@ -56,7 +65,7 @@ fn snapshot_message(snapshot: Snapshot) -> Message {
 }
 
 fn quiet(node: &SlashingProtectionCluster) -> bool {
-    node.is_ready() && !node.persistence.is_pending() && !node.node.as_ref().unwrap().has_ready()
+    node.is_ready() && !node.persistence.is_pending() && !node.node.has_ready()
 }
 
 #[test]
@@ -67,16 +76,16 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     node.persistence.paused = true;
     node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
     node.spin(now, 100, |_| panic!("snapshot acknowledged before sync")).unwrap();
-    assert_eq!(node.state.len(), 0);
-    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 0);
+    assert_eq!(node.state.locks.len(), 0);
+    assert_eq!(node.node.raft.raft_log.applied, 0);
     node.persistence.paused = false;
     let mut messages = Vec::new();
     node.spin(now, 100, |event| messages.push(event)).unwrap();
     assert!(messages.iter().any(|event| matches!(event, ClusterEvent::SendRaftMessage(message)
         if message.msg_type == MessageType::MsgAppendResponse && message.index == 10)));
-    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 10);
-    assert_eq!(node.state.minimum_slot(), 68);
-    assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
+    assert_eq!(node.node.raft.raft_log.applied, 10);
+    assert_eq!(node.state.locks.minimum_slot(), 68);
+    assert_eq!(node.state.locks.apply(&command(7, 2)), LockResult::Conflicting);
     assert!(
         node.admission.validate(99, 100).is_err(),
         "snapshot must not replace startup admission"
@@ -96,7 +105,7 @@ fn snapshot_below_the_commit_index_is_not_decoded() {
     node.step(snapshot_message(stale), now, 100).unwrap();
     node.spin(now, 100, |_| {}).unwrap();
     assert!(!node.is_failed());
-    assert_eq!(node.state.len(), 1);
+    assert_eq!(node.state.locks.len(), 1);
 }
 
 /// raft-rs panics on a follower when an append claims a committed index with
@@ -108,7 +117,7 @@ fn forged_append_and_heartbeat_are_refused_on_a_follower() {
     node.set_startup_wall_slot(99);
     node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
     node.spin(now, 100, |_| {}).unwrap();
-    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.committed, 10);
+    assert_eq!(node.node.raft.raft_log.committed, 10);
 
     let leader = |msg_type| Message { msg_type, from: 2, to: 1, term: 2, ..Message::default() };
     let append = Message {
@@ -145,7 +154,7 @@ fn invalid_snapshot_payload_or_membership_is_refused() {
         let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
         let mut snapshot = snapshot(10);
         if bad_membership {
-            snapshot.mut_metadata().mut_conf_state().voters = vec![1, 4];
+            snapshot.mut_metadata().mut_conf_state().learners = vec![1];
         } else {
             snapshot.data = vec![0; 20].into();
         }
@@ -156,6 +165,66 @@ fn invalid_snapshot_payload_or_membership_is_refused() {
         node.spin(now, 100, |_| panic!("released invalid snapshot")).unwrap();
         assert!(!node.is_failed());
     }
+}
+
+#[test]
+fn snapshot_membership_is_checked_for_shape_alone() {
+    let with_membership = |edit: fn(&mut ConfState)| {
+        let mut snapshot = snapshot(10);
+        edit(snapshot.mut_metadata().mut_conf_state());
+        validate_snapshot(&snapshot).is_ok()
+    };
+    assert!(with_membership(|membership| membership.voters = vec![4, 5, 6]));
+    assert!(with_membership(|membership| membership.learners = vec![4]));
+    assert!(with_membership(|membership| {
+        membership.voters_outgoing = vec![1, 2, 4];
+        membership.learners_next = vec![4];
+        membership.auto_leave = true;
+    }));
+
+    assert!(!with_membership(|membership| membership.voters.clear()));
+    assert!(!with_membership(|membership| membership.voters = vec![1, 1, 2]));
+    assert!(!with_membership(|membership| membership.voters = vec![0, 1, 2]));
+    assert!(!with_membership(|membership| membership.voters = (1..=8).collect()));
+    assert!(!with_membership(|membership| membership.learners = vec![2]));
+    assert!(!with_membership(|membership| membership.learners_next = vec![4]));
+    assert!(!with_membership(|membership| membership.auto_leave = true));
+}
+
+#[test]
+fn snapshot_buffers_reclaim_an_allocation_once_its_snapshot_is_dropped() {
+    let mut buffers = SnapshotBuffers::default();
+    let mut write = |byte| {
+        buffers
+            .write(1024, |data| {
+                data.extend_from_slice(&[byte; 1024]);
+                Ok(())
+            })
+            .unwrap()
+    };
+    let first = write(1);
+    let first_allocation = first.as_ptr();
+    let second = write(2);
+    drop(first);
+
+    let third = write(3);
+    assert_eq!(third.as_ptr(), first_allocation);
+    let fourth = write(4);
+    assert_ne!(fourth.as_ptr(), second.as_ptr(), "a held snapshot is never overwritten");
+    assert_eq!(
+        (&second[..], &third[..], &fourth[..]),
+        (&[2; 1024][..], &[3; 1024][..], &[4; 1024][..])
+    );
+}
+
+/// raft-rs refuses a snapshot whose membership lacks it, so a learner added
+/// after this one waits for the next.
+#[test]
+fn storage_serves_a_snapshot_only_to_its_members() {
+    let mut storage = RaftStorage::new(&[1, 2, 3]);
+    storage.install_snapshot(snapshot(10)).unwrap();
+    assert!(storage.snapshot(0, 2).is_ok());
+    assert!(storage.snapshot(0, 4).is_err());
 }
 
 #[test]
@@ -206,6 +275,7 @@ impl Network {
                         panic!("unexpected block decision {decision:?}")
                     }
                     ClusterEvent::ProposalTimedOut(_) => panic!("proposal timed out"),
+                    ClusterEvent::ReachMember(_) | ClusterEvent::ForgetMember(_) => {}
                 })
                 .unwrap();
             }
@@ -258,8 +328,8 @@ impl Network {
         }
         assert_eq!(self.decisions.len(), 24);
         assert!(self.decisions.iter().all(AttestationDecision::may_validate));
-        assert!(self.nodes[0].node.as_ref().unwrap().store().first_index().unwrap() > 1);
-        assert_eq!(self.nodes[2].state.len(), 0);
+        assert!(self.nodes[0].node.store().first_index().unwrap() > 1);
+        assert_eq!(self.nodes[2].state.locks.len(), 0);
     }
 
     fn reconnect(&mut self) {
@@ -267,7 +337,7 @@ impl Network {
         for _ in 0..70 {
             self.now += Duration::from_millis(100);
             self.settle();
-            if self.nodes[2].state.len() == 24 {
+            if self.nodes[2].state.locks.len() == 24 {
                 return;
             }
         }
@@ -286,7 +356,7 @@ fn a_lost_snapshot_is_retried_and_a_lagging_follower_catches_up() {
     network.reconnect();
     assert!(network.snapshots >= 2);
     for node in &mut network.nodes {
-        assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
+        assert_eq!(node.state.locks.apply(&command(7, 2)), LockResult::Conflicting);
     }
     let request = network.nodes[2].propose_attestation(command(50, 1), 100, network.now).unwrap();
     network.settle();
@@ -318,7 +388,7 @@ fn _unreachable_peer_fails_its_snapshot_transfer_at_once() {
     network.nodes[0].report_unreachable(3);
     assert!(!network.nodes[0].snapshot_transfers.is_pending(3));
     let started = network.now;
-    while network.nodes[2].state.len() < 24 {
+    while network.nodes[2].state.locks.len() < 24 {
         network.now += Duration::from_millis(100);
         network.settle();
         assert!(network.now - started < Duration::from_secs(2), "waited for the timeout");
@@ -342,7 +412,7 @@ fn a_lost_snapshot_ack_does_not_stall_replication() {
     assert!(network.snapshots >= 2);
     network.nodes[0].propose_attestation(command(50, 1), 100, network.now).unwrap();
     network.settle();
-    assert_eq!(network.nodes[2].state.len(), 25);
+    assert_eq!(network.nodes[2].state.locks.len(), 25);
 }
 
 #[test]
@@ -385,9 +455,9 @@ fn durable_snapshot_catch_up_survives_a_full_cluster_restart() {
     network.settle();
     assert!(network.decisions.is_empty());
     for node in &mut network.nodes {
-        assert_eq!(node.state.len(), 24);
-        assert_eq!(node.state.minimum_slot(), 68);
-        assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
-        assert!(node.node.as_ref().unwrap().store().snapshot_index() > 0);
+        assert_eq!(node.state.locks.len(), 24);
+        assert_eq!(node.state.locks.minimum_slot(), 68);
+        assert_eq!(node.state.locks.apply(&command(7, 2)), LockResult::Conflicting);
+        assert!(node.node.store().snapshot_index() > 0);
     }
 }

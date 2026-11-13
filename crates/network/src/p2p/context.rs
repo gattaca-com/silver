@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use fxhash::FxHashMap;
 use silver_common::{
-    Enr, PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheProducer, TCacheReader, TProducer,
+    PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheProducer, TCacheReader, TProducer,
     TReadMode, TileId, ssz_view::MAX_PAYLOAD_SIZE,
 };
 
@@ -66,8 +64,9 @@ impl Context {
     }
 }
 
+#[derive(Default)]
 pub struct ClusterNodes {
-    /// Fixed membership keyed by authenticated peer identity.
+    /// Membership keyed by authenticated peer identity.
     by_peer_id: FxHashMap<PeerId, u64>,
     /// Mapping of raft id to conneciton id, used in the dispatch
     /// of outbound cluster messages.
@@ -78,15 +77,6 @@ pub struct ClusterNodes {
 }
 
 impl ClusterNodes {
-    pub fn new(nodes: HashMap<u64, Enr>) -> Self {
-        let mut by_peer_id = FxHashMap::default();
-        for (id, enr) in nodes {
-            let peer_id = PeerId::from_secp256k1_pubkey(&enr.public_key().serialize());
-            by_peer_id.insert(peer_id, id);
-        }
-        Self { by_peer_id, by_raft_id: FxHashMap::default(), by_conn_id: FxHashMap::default() }
-    }
-
     pub fn raft_id(&self, conn_id: &usize) -> Option<u64> {
         self.by_conn_id.get(conn_id).copied()
     }
@@ -97,6 +87,18 @@ impl ClusterNodes {
 
     pub fn connection_id(&self, raft_id: u64) -> Option<usize> {
         self.by_raft_id.get(&raft_id).copied()
+    }
+
+    /// The peer's open connections become cluster links through `connected`.
+    pub fn set_member(&mut self, raft_id: u64, peer_id: PeerId) {
+        self.by_peer_id.retain(|_, id| *id != raft_id);
+        self.by_peer_id.insert(peer_id, raft_id);
+    }
+
+    pub fn remove(&mut self, raft_id: u64) {
+        self.by_peer_id.retain(|_, id| *id != raft_id);
+        self.by_conn_id.retain(|_, id| *id != raft_id);
+        self.by_raft_id.remove(&raft_id);
     }
 
     pub fn connected(&mut self, peer: &RemotePeer) {
@@ -135,14 +137,33 @@ mod tests {
 
     fn cluster() -> (ClusterNodes, RemotePeer) {
         let keypair = Keypair::from_secret(&[1; 32]).unwrap();
-        let enr = Enr::empty(keypair.secret_key()).unwrap();
-        let nodes = ClusterNodes::new(HashMap::from([(7, enr)]));
+        let mut nodes = ClusterNodes::default();
+        nodes.set_member(7, keypair.peer_id());
         let peer = RemotePeer {
             peer_id: keypair.peer_id(),
             connection: 10,
             addr: "127.0.0.1:9000".parse().unwrap(),
         };
         (nodes, peer)
+    }
+
+    #[test]
+    fn members_set_at_runtime_are_mapped_and_removed() {
+        let (mut nodes, peer) = cluster();
+        let joiner = Keypair::from_secret(&[2; 32]).unwrap().peer_id();
+        nodes.set_member(8, joiner);
+        let joined = RemotePeer { peer_id: joiner, connection: 20, addr: peer.addr };
+        nodes.connected(&joined);
+        assert_eq!(nodes.connection_id(8), Some(20));
+
+        nodes.remove(8);
+        assert_eq!((nodes.connection_id(8), nodes.raft_id(&20)), (None, None));
+        nodes.connected(&joined);
+        assert_eq!(nodes.raft_id(&20), None, "a removed member is an ordinary peer");
+
+        nodes.set_member(7, joiner);
+        nodes.connected(&peer);
+        assert_eq!(nodes.raft_id(&peer.connection), None, "the old key no longer maps to 7");
     }
 
     #[test]

@@ -5,9 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use silver_common::Enr;
+use silver_common::{Enr, MemberAddress};
 use silver_config::ClusterConfig;
-use silver_control::cluster::{ClusterStorageConfig, SlashingProtectionConfig, StorageIdentity};
+use silver_control::cluster::{
+    ClusterStorageConfig, Member, SlashingProtectionConfig, StorageIdentity,
+};
 
 const JOURNAL_FILE: &str = "attestation-cluster.wal";
 
@@ -22,16 +24,22 @@ impl ClusterStartup {
         local: &Enr,
         directory: &Path,
     ) -> Result<Self, Box<dyn Error>> {
-        let node_id = Self::local_node_id(config, local)?;
-        let voters = || config.nodes.keys().copied();
+        let (node_id, advertised) = Self::local_member(config, local)?;
+        // A joining node starts with no voters: its membership arrives with its
+        // first snapshot.
+        let voters = || config.nodes.keys().copied().filter(|_| !config.join);
         let identity = StorageIdentity::new(node_id, voters())?;
         let journal_lock = Self::lock(directory)?;
-        let storage = Self::journal(config.bootstrap, directory.join(JOURNAL_FILE))?;
+        let storage = Self::journal(config.bootstrap, config.join, directory.join(JOURNAL_FILE))?;
         Self::check_identity(&storage, &identity)?;
-        Ok(Self {
-            config: SlashingProtectionConfig::new(node_id, voters(), storage)?,
-            _journal_lock: journal_lock,
-        })
+        let mut cluster = SlashingProtectionConfig::new(node_id, voters(), advertised, storage)?;
+        cluster.configured_members = config
+            .nodes
+            .iter()
+            .filter(|&(&id, _)| id != node_id)
+            .map(|(&id, enr)| Ok(Member { node_id: id, address: Self::member_address(id, enr)? }))
+            .collect::<Result<_, Box<dyn Error>>>()?;
+        Ok(Self { config: cluster, _journal_lock: journal_lock })
     }
 
     /// Standalone locks live in memory only. A journal left by a clustered
@@ -47,38 +55,60 @@ impl ClusterStartup {
         }
     }
 
-    fn local_node_id(config: &ClusterConfig, local: &Enr) -> Result<u64, Box<dyn Error>> {
+    /// The local entry is the ENR the other members dial, so its address is
+    /// the one announced to them.
+    fn local_member(
+        config: &ClusterConfig,
+        local: &Enr,
+    ) -> Result<(u64, MemberAddress), Box<dyn Error>> {
         let local = local.node_id();
-        let (&id, _) = config
-            .nodes
-            .iter()
-            .find(|(_, enr)| enr.node_id() == local)
-            .ok_or("no local node configured in cluster config")?;
-        Ok(id)
+        let mut entries = config.nodes.iter().filter(|(_, enr)| enr.node_id() == local);
+        let (&id, enr) = entries.next().ok_or("no local node configured in cluster config")?;
+        // `nodes` has no order, so a second entry would pick the id at random.
+        if let Some((&other, _)) = entries.next() {
+            return Err(format!(
+                "cluster config lists this node under ids {id} and {other}: keep only its current id"
+            )
+            .into());
+        }
+        Ok((id, Self::member_address(id, enr)?))
     }
 
-    /// A journal that contradicts `bootstrap` would only fail later, inside
-    /// Control, and leave the node running with the cluster refusing every
-    /// duty.
-    fn journal(bootstrap: bool, path: PathBuf) -> Result<ClusterStorageConfig, Box<dyn Error>> {
-        match (bootstrap, path.try_exists()?) {
-            (true, false) => Ok(ClusterStorageConfig::Create(path)),
-            (false, true) => Ok(ClusterStorageConfig::Open(path)),
-            (true, true) => Err(format!(
-                "cluster bootstrap = true, but {} already exists: set bootstrap = false",
+    fn member_address(id: u64, enr: &Enr) -> Result<MemberAddress, Box<dyn Error>> {
+        MemberAddress::from_enr(enr)
+            .ok_or_else(|| format!("cluster config ENR of node {id} has no QUIC address").into())
+    }
+
+    /// A journal that contradicts `bootstrap` or `join` would only fail
+    /// later, inside Control, and leave the node running with the cluster
+    /// refusing every duty.
+    fn journal(
+        bootstrap: bool,
+        join: bool,
+        path: PathBuf,
+    ) -> Result<ClusterStorageConfig, Box<dyn Error>> {
+        let exists = path.try_exists()?;
+        let created = if bootstrap { "bootstrap" } else { "join" };
+        match (bootstrap, join, exists) {
+            (true, true, _) => Err("cluster bootstrap and join cannot both be set".into()),
+            (true, false, false) | (false, true, false) => Ok(ClusterStorageConfig::Create(path)),
+            (false, false, true) => Ok(ClusterStorageConfig::Open(path)),
+            (_, _, true) => Err(format!(
+                "cluster {created} = true, but {} already exists: set {created} = false",
                 path.display()
             )
             .into()),
-            (false, false) => Err(format!(
-                "cluster journal {} is missing: restore it, never bootstrap a single node over it",
+            (false, false, false) => Err(format!(
+                "cluster journal {} is missing: restore it, never bootstrap a single node over \
+                 it; a new node joins with join = true",
                 path.display()
             )
             .into()),
         }
     }
 
-    /// An existing journal written for another node or voter set would
-    /// likewise fail only inside Control.
+    /// An existing journal written for another node would likewise fail only
+    /// inside Control.
     fn check_identity(
         storage: &ClusterStorageConfig,
         identity: &StorageIdentity,
@@ -108,6 +138,8 @@ impl ClusterStartup {
 
 #[cfg(test)]
 mod tests {
+    use silver_common::Keypair;
+
     use super::*;
 
     #[test]
@@ -120,21 +152,35 @@ mod tests {
     }
 
     #[test]
-    fn journal_must_agree_with_bootstrap() {
+    fn local_key_listed_under_two_ids_is_refused() {
+        let local = Enr::empty(Keypair::from_secret(&[1; 32]).unwrap().secret_key()).unwrap();
+        let other = Enr::empty(Keypair::from_secret(&[2; 32]).unwrap().secret_key()).unwrap();
+        let config = |nodes: &[(u64, Enr)]| ClusterConfig {
+            nodes: nodes.iter().cloned().collect(),
+            bootstrap: false,
+            join: false,
+        };
+
+        let duplicated = config(&[(3, local), (2, other), (7, local)]);
+        let error = ClusterStartup::local_member(&duplicated, &local).unwrap_err().to_string();
+        assert!(error.contains("under ids"), "{error}");
+        assert!(ClusterStartup::local_member(&config(&[(2, other)]), &local).is_err());
+    }
+
+    #[test]
+    fn journal_must_agree_with_bootstrap_and_join() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("attestation-cluster.wal");
+        let journal = |bootstrap, join| ClusterStartup::journal(bootstrap, join, path.clone());
 
-        assert!(matches!(
-            ClusterStartup::journal(true, path.clone()),
-            Ok(ClusterStorageConfig::Create(_))
-        ));
-        assert!(ClusterStartup::journal(false, path.clone()).is_err(), "missing journal");
+        assert!(matches!(journal(true, false), Ok(ClusterStorageConfig::Create(_))));
+        assert!(matches!(journal(false, true), Ok(ClusterStorageConfig::Create(_))));
+        assert!(journal(false, false).is_err(), "missing journal");
+        assert!(journal(true, true).is_err(), "both flags");
 
         File::create(&path).unwrap();
-        assert!(matches!(
-            ClusterStartup::journal(false, path.clone()),
-            Ok(ClusterStorageConfig::Open(_))
-        ));
-        assert!(ClusterStartup::journal(true, path).is_err(), "bootstrap over a journal");
+        assert!(matches!(journal(false, false), Ok(ClusterStorageConfig::Open(_))));
+        assert!(journal(true, false).is_err(), "bootstrap over a journal");
+        assert!(journal(false, true).is_err(), "join over a journal");
     }
 }

@@ -1,16 +1,13 @@
 use std::{fmt, ops::Deref};
 
 use flux::utils::ArrayVec;
+use silver_common::MAX_CLUSTER_VOTERS;
 
-/// raft-rs computes the commit index on the stack for up to 7 voters and
-/// allocates above that. etcd, whose raft raft-rs ports, also advises at most
-/// 7 members.
-pub(super) const MAX_VOTERS: usize = 7;
-
-/// A static voter set that includes its local node: distinct non-zero ids,
-/// sorted.
+/// The voters a journal starts with: distinct non-zero ids, sorted, among them
+/// the local node. Empty for a node that joins a running cluster, whose
+/// membership arrives with its first snapshot.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Voters(ArrayVec<u64, MAX_VOTERS>);
+pub struct Voters(ArrayVec<u64, MAX_CLUSTER_VOTERS>);
 
 impl Voters {
     pub fn new(node_id: u64, ids: impl IntoIterator<Item = u64>) -> Result<Self, &'static str> {
@@ -27,15 +24,10 @@ impl Voters {
         if voters.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err("Raft voter ids must be unique");
         }
-        if node_id == 0 || !voters.contains(&node_id) {
+        if node_id == 0 || !(voters.is_empty() || voters.contains(&node_id)) {
             return Err("local Raft node is not in voter set");
         }
         Ok(Self(voters))
-    }
-
-    /// Whether `ids` holds exactly these voters, in any order.
-    pub(super) fn matches(&self, ids: &[u64]) -> bool {
-        ids.len() == self.len() && self.iter().all(|voter| ids.contains(voter))
     }
 }
 

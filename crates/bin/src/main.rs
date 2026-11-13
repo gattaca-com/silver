@@ -45,6 +45,7 @@ use crate::{args::Args, checkpoint::BootCheckpoint, cluster::ClusterStartup};
 mod args;
 mod checkpoint;
 mod cluster;
+mod cluster_admin;
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -85,7 +86,15 @@ fn publish_build_info() -> io::Result<()> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if let Some(command) = args.command.take() {
+        if let Err(error) = command.run() {
+            eprintln!("silver: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let build_info_log = format!("silver build info: {BUILD_INFO}");
     let _tracing = initialise_tracing_log_on_core(
         "silver",
@@ -190,25 +199,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             None
         }
     };
-    let cluster_nodes = config.cluster_config().map(|cluster| {
-        let mut nodes = cluster.nodes.clone();
-        nodes.retain(|_, enr| enr.node_id() != local_enr.node_id());
-        nodes
-    });
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
     let mut discv5 =
         DiscV5::new(config.discovery_config(), *keypair.secret_key(), local_enr, fork_digest);
 
-    // Cluster peers are added as trusted peers
-    let cluster_peers = cluster_nodes
-        .as_ref()
-        .map(|m| m.values())
-        .unwrap_or_default()
-        .filter(|enr| enr.node_id() != local_enr.node_id());
-    let trusted_peers =
-        config.trusted_peers().iter().chain(cluster_peers).cloned().collect::<Vec<_>>();
+    let trusted_peers = config.trusted_peers().to_vec();
     let trusted_ips = trusted_peers
         .iter()
         .filter_map(|enr| enr.ip4().map(IpAddr::from).or(enr.ip6().map(IpAddr::from)))
@@ -277,7 +274,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         gossip_producer: network_ingress_producer,
         rpc_producer: network_processing_producer,
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
-        cluster_nodes: cluster_nodes.map(ClusterNodes::new),
+        cluster_nodes: config.cluster_config().map(|_| ClusterNodes::default()),
         cluster_inbound_producer,
         partial_columns: partial_columns.supports_sending(),
         reader: TCacheReader::new(tcaches),

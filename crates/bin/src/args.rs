@@ -1,7 +1,7 @@
 use clap::Parser;
 use silver_config::{Config, Network, Overrides};
 
-use crate::BUILD_INFO;
+use crate::{BUILD_INFO, cluster_admin::ClusterCommand};
 
 /// High-performance Ethereum consensus client. Flags override the config file.
 #[derive(Parser)]
@@ -29,6 +29,8 @@ pub struct Args {
     /// Builder API URL of the PBS sidecar, e.g. `http://localhost:18550`.
     #[arg(long)]
     pbs_endpoint: Option<String>,
+    #[command(subcommand)]
+    pub command: Option<ClusterCommand>,
 }
 
 impl Args {

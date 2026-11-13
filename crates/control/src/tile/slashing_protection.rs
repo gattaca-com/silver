@@ -4,8 +4,9 @@ use flux::spine::{SpineAdapter, SpineProducers};
 use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
-    BroadcastValidation, CLUSTER_STATS_INTERVAL, ClusterDuty, ClusterIn, ClusterMsgIn,
-    ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult, LockedProposal, PeerStats,
+    BroadcastValidation, CLUSTER_STATS_INTERVAL, ClusterAdminRequest, ClusterAdminResponse,
+    ClusterAdminResult, ClusterDuty, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic,
+    LocalGossipFailure, LocalGossipResult, LockedProposal, MembershipError, PeerControl, PeerStats,
     SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer, TRead,
     block_contents::SignedBlockContents,
     ssz_view::{
@@ -14,12 +15,13 @@ use silver_common::{
     ticker::SlotTicker,
 };
 use silver_gossip::GossipHandler;
+use silver_peer::PeerManager;
 
 use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
     AdmissionError, AttestationDecision, AttestationKey, AttestationLockCommand, BlockDecision,
     BlockKey, BlockLockCommand, ClusterCounters, ClusterError, ClusterEvent, DutyTimers,
-    LockResult, LoopGap, ProposalId, ProposeError, SlashingAdmission, SlashingLockStore,
+    LockResult, LoopGap, Member, ProposalId, ProposeError, SlashingAdmission, SlashingLockStore,
     SlashingProtectionCluster, SlashingProtectionConfig, decode_message, encode_message,
 };
 
@@ -324,6 +326,12 @@ impl SlashingProtectionHandler {
         self.clock = Some(ticker);
     }
 
+    /// Status lags while Beacon State is busy, by slots during a long sync:
+    /// a lagging slot refuses honest duties and boycotts an honest leader.
+    fn current_wall_slot(&self) -> u64 {
+        self.clock.as_ref().map_or(self.wall_slot, SlotTicker::current_slot)
+    }
+
     /// `synced` latches the startup floor. It comes from peer-relative sync
     /// state, so a missed slot cannot keep it from latching.
     pub(super) fn on_status(&mut self, wall_slot: u64, synced: bool) {
@@ -364,19 +372,59 @@ impl SlashingProtectionHandler {
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         inbound_consumer: &mut TCacheReader,
+        peer_manager: &mut PeerManager,
     ) {
         self.loop_gap.observe(now);
+        let wall_slot = self.current_wall_slot();
         adapter.consume(|message: ClusterIn, _producers| match message {
-            ClusterIn::Msg(message) => self.handle_message(message, inbound_consumer, now),
+            ClusterIn::Msg(message) => {
+                self.handle_message(message, inbound_consumer, now, wall_slot)
+            }
             ClusterIn::NodeUnreachable(id) => {
                 if let Some(cluster) = self.cluster.as_mut() {
                     cluster.report_unreachable(id);
                 }
             }
         });
-        self.drive(now, local_gossip, gossip_handler, &mut adapter.producers);
+
+        adapter.consume(|request: ClusterAdminRequest, producers| {
+            self.administer(request, now, producers)
+        });
+
+        self.drive(
+            now,
+            wall_slot,
+            local_gossip,
+            gossip_handler,
+            peer_manager,
+            &mut adapter.producers,
+        );
         self.produce_commits(&mut adapter.producers);
         self.sample(now, &mut adapter.producers);
+    }
+
+    fn administer(
+        &mut self,
+        request: ClusterAdminRequest,
+        now: Instant,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let result = match self.cluster.as_mut() {
+            Some(cluster) => cluster.administer(request.command, now),
+            None => ClusterAdminResult::Refused(MembershipError::NotClustered),
+        };
+        match result {
+            ClusterAdminResult::Refused(error) => silver_log::info!(
+                command = ?request.command,
+                %error,
+                "cluster admin request refused"
+            ),
+            ClusterAdminResult::Proposed => {
+                silver_log::info!(command = ?request.command, "cluster admin request proposed")
+            }
+            ClusterAdminResult::Members(_) => {}
+        }
+        producers.produce(ClusterAdminResponse { request_id: request.request_id, result });
     }
 
     fn produce_commits(&mut self, producers: &mut SilverSpineProducers) {
@@ -412,7 +460,8 @@ impl SlashingProtectionHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        if let Err(error) = self.admission.validate(attestation.command.key.slot, self.wall_slot) {
+        let wall_slot = self.current_wall_slot();
+        if let Err(error) = self.admission.validate(attestation.command.key.slot, wall_slot) {
             error.count();
             produce_response(producers, attestation.request.id, Err(admission_failure(error)));
             silver_log::warn!(
@@ -448,7 +497,7 @@ impl SlashingProtectionHandler {
             return;
         };
 
-        match cluster.propose_attestation(attestation.command, self.wall_slot, now) {
+        match cluster.propose_attestation(attestation.command, wall_slot, now) {
             Ok(proposal_id) => {
                 let previous = self.pending_attestations.insert(proposal_id, attestation);
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
@@ -495,7 +544,8 @@ impl SlashingProtectionHandler {
         };
         let signature = *SignedBeaconBlockView::signature(signed_block);
         let command = BlockLockCommand { key, signature };
-        if let Err(error) = self.admission.validate(key.slot, self.wall_slot) {
+        let wall_slot = self.current_wall_slot();
+        if let Err(error) = self.admission.validate(key.slot, wall_slot) {
             error.count();
             produce_response(producers, request_id, Err(admission_failure(error)));
             silver_log::warn!(
@@ -529,7 +579,7 @@ impl SlashingProtectionHandler {
             );
         };
 
-        match cluster.propose_block(command, self.wall_slot, now) {
+        match cluster.propose_block(command, wall_slot, now) {
             Ok(proposal_id) => {
                 let previous = self
                     .pending_blocks
@@ -556,6 +606,7 @@ impl SlashingProtectionHandler {
         inbound: ClusterMsgIn,
         inbound_consumer: &mut TCacheReader,
         now: Instant,
+        wall_slot: u64,
     ) {
         ClusterCounters::MessagesIn.inc();
         let Some(acquired) = inbound_consumer.acquire_strict(inbound.data) else {
@@ -612,7 +663,7 @@ impl SlashingProtectionHandler {
             );
             return;
         }
-        if let Err(error) = cluster.step(message, now, self.wall_slot) {
+        if let Err(error) = cluster.step(message, now, wall_slot) {
             if let ClusterError::MemberMessage(_) = error {
                 ClusterCounters::InboundInvalid.inc();
             }
@@ -623,8 +674,10 @@ impl SlashingProtectionHandler {
     fn drive(
         &mut self,
         now: Instant,
+        wall_slot: u64,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
+        peer_manager: &mut PeerManager,
         producers: &mut SilverSpineProducers,
     ) {
         let Some(cluster) = self.cluster.as_mut() else {
@@ -635,7 +688,7 @@ impl SlashingProtectionHandler {
         let pending_blocks = &mut self.pending_blocks;
         let outbound_producer = &mut self.outbound_producer;
         let duty_timers = &mut self.duty_timers;
-        let result = cluster.spin(now, self.wall_slot, |event| match event {
+        let result = cluster.spin(now, wall_slot, |event| match event {
             ClusterEvent::SendRaftMessage(message) => {
                 let to = message.to;
                 match encode_message(message, outbound_producer) {
@@ -694,6 +747,17 @@ impl SlashingProtectionHandler {
                     );
                 }
             }
+            ClusterEvent::ReachMember(Member { node_id, address }) => {
+                let (peer_id, addr) = (address.peer_id(), address.addr);
+                peer_manager.trust_cluster_member(peer_id, addr);
+                let control = PeerControl::ClusterMember { node_id, peer_id, addr };
+                producers.peer_control.produce(&control.into());
+            }
+            ClusterEvent::ForgetMember(Member { node_id, address }) => {
+                peer_manager.untrust_cluster_member(&address.peer_id());
+                let control = PeerControl::ClusterMemberRemoved { node_id };
+                producers.peer_control.produce(&control.into());
+            }
         });
         if let Err(error) = result {
             silver_log::error!(
@@ -713,15 +777,34 @@ impl SlashingProtectionHandler {
 
 #[cfg(test)]
 mod tests {
+    use silver_chain_spec::SpecConfig;
     use silver_common::{
-        SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TReadMode,
+        ClusterAdminCommand, PeerId, SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead,
+        TCacheTable, TReadMode,
     };
+    use silver_peer::SyncingConfig;
 
     use super::*;
     use crate::{
-        cluster::ClusterStorageConfig,
-        tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
+        cluster::{ClusterStorageConfig, test_address},
+        tile::{
+            METADATA_SIZE,
+            local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
+        },
     };
+
+    fn peer_manager() -> PeerManager {
+        PeerManager::new(
+            PeerId::default(),
+            vec![],
+            vec![],
+            Default::default(),
+            SyncingConfig::default(),
+            [0; 4],
+            [0; METADATA_SIZE],
+            0,
+        )
+    }
 
     #[test]
     fn surround_and_double_vote_are_told_apart() {
@@ -935,6 +1018,7 @@ mod tests {
         let mut config = SlashingProtectionConfig::new(
             1,
             [1],
+            test_address(1),
             ClusterStorageConfig::Create("unused-test-journal".into()),
         )
         .unwrap();
@@ -955,12 +1039,65 @@ mod tests {
         assert_eq!(handler.pending_blocks.len(), 1);
 
         let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
-        handler.spin(now, adapter, local_gossip, gossip, &mut submissions.reader);
+        handler.spin(
+            now,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut submissions.reader,
+            &mut peer_manager(),
+        );
 
         assert!(handler.pending_blocks.is_empty());
         harness.pop_gossip();
         assert_eq!(locked_proposals(&mut harness), 1, "the committed block's contents follow");
         assert!(harness.responses().is_empty());
+    }
+
+    fn administer(
+        handler: &mut SlashingProtectionHandler,
+        command: ClusterAdminCommand,
+        now: Instant,
+    ) -> ClusterAdminResult {
+        let mut harness = Harness::new();
+        let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
+        adapter.subscribe_broadcast::<ClusterAdminRequest>();
+        adapter.subscribe_broadcast::<ClusterAdminResponse>();
+        adapter.produce(ClusterAdminRequest { request_id: 7, command });
+        handler.spin(
+            now,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut Submissions::new().reader,
+            &mut peer_manager(),
+        );
+        let mut results = Vec::new();
+        adapter.consume(|response: ClusterAdminResponse, _| {
+            assert_eq!(response.request_id, 7);
+            results.push(response.result);
+        });
+        assert_eq!(results.len(), 1, "one answer per request");
+        results[0]
+    }
+
+    #[test]
+    fn admin_requests_are_answered_with_or_without_a_cluster() {
+        let now = Instant::now();
+        assert!(matches!(
+            administer(&mut handler(now), ClusterAdminCommand::Members, now),
+            ClusterAdminResult::Refused(MembershipError::NotClustered)
+        ));
+
+        let mut handler = clustered_handler(now);
+        handler.cluster.as_mut().unwrap().campaign().unwrap();
+        let ClusterAdminResult::Members(members) =
+            administer(&mut handler, ClusterAdminCommand::Members, now)
+        else {
+            panic!("members are listed");
+        };
+        assert_eq!(members.node_id, 1);
+        assert_eq!(members.members.iter().map(|row| row.node_id).collect::<Vec<_>>(), [1]);
     }
 
     const TEST_PROPOSAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
@@ -970,6 +1107,7 @@ mod tests {
         let mut config = SlashingProtectionConfig::new(
             1,
             [1],
+            test_address(1),
             ClusterStorageConfig::Create("unused-test-journal".into()),
         )
         .unwrap();
@@ -995,7 +1133,14 @@ mod tests {
     ) {
         let later = now + TEST_PROPOSAL_TIMEOUT;
         let Harness { local_gossip, gossip, adapter, .. } = harness;
-        handler.spin(later, adapter, local_gossip, gossip, &mut submissions.reader);
+        handler.spin(
+            later,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut submissions.reader,
+            &mut peer_manager(),
+        );
     }
 
     #[test]
@@ -1082,6 +1227,7 @@ mod tests {
         let mut config = SlashingProtectionConfig::new(
             1,
             [1],
+            test_address(1),
             ClusterStorageConfig::Create("unused-test-journal".into()),
         )
         .unwrap();
@@ -1100,7 +1246,14 @@ mod tests {
         assert!(harness.responses().is_empty(), "nothing is answered before the lock commits");
 
         let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
-        handler.spin(now, adapter, local_gossip, gossip, &mut submissions.reader);
+        handler.spin(
+            now,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut submissions.reader,
+            &mut peer_manager(),
+        );
 
         assert_eq!(harness.responses(), [(1, Ok(()))]);
         assert!(harness.gossip.pop_event().is_none());
@@ -1163,6 +1316,28 @@ mod tests {
         ssz[16..24].copy_from_slice(&slot.to_le_bytes());
         ssz[104..112].copy_from_slice(&(slot / SLOTS_PER_EPOCH).to_le_bytes());
         ssz
+    }
+
+    /// Beacon State's Status trails the clock by slots during a long sync. A
+    /// duty for the clock's slot is admitted, not refused as in the future.
+    #[test]
+    fn duties_are_admitted_against_the_clock_while_status_lags() {
+        let now = Instant::now();
+        let mut standalone = Standalone::new(now);
+        let genesis =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() -
+                12 * 40;
+        let ticker =
+            SlotTicker::new(genesis, &SpecConfig::mainnet(), std::time::Duration::from_secs(4));
+        let wall_slot = ticker.current_slot();
+        standalone.handler.set_clock(ticker);
+        standalone.handler.on_status(wall_slot - 3, true);
+
+        standalone.submit(1, wall_slot, 1, 1, now);
+        assert!(
+            !standalone.harness.responses().contains(&(1, Err(LocalGossipFailure::Future))),
+            "a duty for the clock's slot is not in the future"
+        );
     }
 
     #[test]
@@ -1363,6 +1538,7 @@ mod tests {
                 SlashingProtectionConfig::new(
                     1,
                     [1],
+                    test_address(1),
                     ClusterStorageConfig::Create("unused-test-journal".into()),
                 )
                 .unwrap(),
@@ -1375,8 +1551,10 @@ mod tests {
         handler.cluster.as_mut().unwrap().campaign().unwrap();
         handler.drive(
             now,
+            11,
             &mut harness.local_gossip,
             &mut harness.gossip,
+            &mut peer_manager(),
             &mut harness.adapter.producers,
         );
 
@@ -1395,8 +1573,10 @@ mod tests {
         handler.cluster.as_mut().unwrap().fail_persistence();
         handler.drive(
             now,
+            11,
             &mut harness.local_gossip,
             &mut harness.gossip,
+            &mut peer_manager(),
             &mut harness.adapter.producers,
         );
         assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::Internal))]);
@@ -1450,7 +1630,8 @@ fn block_message(
 fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
     match error {
         ProposeError::Admission(error) => admission_failure(*error),
-        ProposeError::NotReady |
+        ProposeError::NotMember |
+        ProposeError::Removed |
         ProposeError::Failed |
         ProposeError::SequenceExhausted |
         ProposeError::DeadlineOverflow => LocalGossipFailure::Internal,

@@ -1,16 +1,21 @@
 use std::fmt;
 
-use raft::eraftpb::{Entry, EntryType};
-use silver_common::ssz_view::SINGLE_ATT_SIZE;
+use raft::eraftpb::{ConfChangeV2, Entry, EntryType};
+use silver_common::{MEMBER_ADDRESS_LEN, MemberAddress, ssz_view::SINGLE_ATT_SIZE};
 
-use super::{admission::SlashingAdmission, node::ProposalId};
+use super::{
+    admission::SlashingAdmission, membership::Member, node::ProposalId,
+    wire::decode_membership_change,
+};
 
 const LOCK_COMMAND_TAG: u8 = 0;
 const ADVANCE_MINIMUM_SLOT_TAG: u8 = 1;
 const BLOCK_LOCK_TAG: u8 = 2;
+const ANNOUNCE_ADDRESS_TAG: u8 = 3;
 const ENCODED_LOCK_COMMAND_LEN: usize = 1 + 8 + 8 + 8 + SINGLE_ATT_SIZE;
 const ENCODED_ADVANCE_MINIMUM_SLOT_LEN: usize = 1 + 8;
 const ENCODED_BLOCK_LOCK_LEN: usize = 1 + 8 + 8 + 96;
+const ENCODED_ANNOUNCE_ADDRESS_LEN: usize = 1 + MEMBER_ADDRESS_LEN;
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct AttestationKey {
@@ -47,6 +52,7 @@ pub(super) enum ReplicatedCommand {
     Lock(AttestationLockCommand),
     AdvanceMinimumSlot(u64),
     BlockLock(BlockLockCommand),
+    AnnounceAddress(MemberAddress),
 }
 
 impl ReplicatedCommand {
@@ -75,6 +81,12 @@ impl ReplicatedCommand {
                 encoded.extend_from_slice(&command.signature);
                 encoded
             }
+            Self::AnnounceAddress(address) => {
+                let mut encoded = Vec::with_capacity(ENCODED_ANNOUNCE_ADDRESS_LEN);
+                encoded.push(ANNOUNCE_ADDRESS_TAG);
+                address.encode(&mut encoded);
+                encoded
+            }
         }
     }
 
@@ -86,6 +98,7 @@ impl ReplicatedCommand {
             LOCK_COMMAND_TAG => ENCODED_LOCK_COMMAND_LEN,
             ADVANCE_MINIMUM_SLOT_TAG => ENCODED_ADVANCE_MINIMUM_SLOT_LEN,
             BLOCK_LOCK_TAG => ENCODED_BLOCK_LOCK_LEN,
+            ANNOUNCE_ADDRESS_TAG => ENCODED_ANNOUNCE_ADDRESS_LEN,
             _ => return Err(EntryError::UnknownTag(tag)),
         };
         if encoded.len() != expected {
@@ -105,24 +118,45 @@ impl ReplicatedCommand {
                 key: BlockKey { proposer_index: u64_at(0), slot: u64_at(8) },
                 signature: payload[16..].try_into().expect("slice is one signature"),
             }),
+            ANNOUNCE_ADDRESS_TAG => Self::AnnounceAddress(
+                MemberAddress::decode(payload.try_into().expect("slice is one member address"))
+                    .map_err(|_| EntryError::InvalidAddress)?,
+            ),
             _ => Self::AdvanceMinimumSlot(u64_at(0)),
         })
     }
 }
 
 /// A log entry's command, with the proposal it answers. The leader proposes
-/// `AdvanceMinimumSlot` itself, so only lock commands carry a proposal.
+/// `AdvanceMinimumSlot` and membership changes itself, so they carry none.
 #[allow(clippy::large_enum_variant)]
 pub(super) enum DecodedEntry {
     Lock(AttestationLockCommand, ProposalId),
     BlockLock(BlockLockCommand, ProposalId),
     AdvanceMinimumSlot(u64),
+    AnnounceAddress(MemberAddress, ProposalId),
+    /// A new leader's first entry.
+    Empty,
+    /// Empty `data` is the change that leaves a joint config.
+    MembershipChange {
+        change: ConfChangeV2,
+        added_learner: Option<Member>,
+    },
 }
 
 impl DecodedEntry {
     pub(super) fn decode(entry: &Entry) -> Result<Self, EntryError> {
-        if entry.get_entry_type() != EntryType::EntryNormal {
-            return Err(EntryError::UnsupportedType(entry.get_entry_type()));
+        match entry.get_entry_type() {
+            EntryType::EntryNormal if entry.data.is_empty() => return Ok(Self::Empty),
+            EntryType::EntryNormal => {}
+            EntryType::EntryConfChangeV2 => {
+                let change = decode_membership_change(&entry.data)
+                    .map_err(|_| EntryError::InvalidMembershipChange)?;
+                let added_learner = Member::decode_added_learner(&entry.context)
+                    .map_err(|_| EntryError::InvalidMembershipChange)?;
+                return Ok(Self::MembershipChange { change, added_learner });
+            }
+            entry_type => return Err(EntryError::UnsupportedType(entry_type)),
         }
         let proposal_id =
             || ProposalId::decode(&entry.context).map_err(EntryError::ProposalContextLength);
@@ -130,6 +164,9 @@ impl DecodedEntry {
             ReplicatedCommand::Lock(command) => Self::Lock(command, proposal_id()?),
             ReplicatedCommand::BlockLock(command) => Self::BlockLock(command, proposal_id()?),
             ReplicatedCommand::AdvanceMinimumSlot(slot) => Self::AdvanceMinimumSlot(slot),
+            ReplicatedCommand::AnnounceAddress(address) => {
+                Self::AnnounceAddress(address, proposal_id()?)
+            }
         })
     }
 
@@ -139,6 +176,7 @@ impl DecodedEntry {
             Self::Lock(command, _) => command.key.slot,
             Self::BlockLock(command, _) => command.key.slot,
             Self::AdvanceMinimumSlot(floor) => SlashingAdmission::wall_slot_for_floor(*floor),
+            Self::AnnounceAddress { .. } | Self::Empty | Self::MembershipChange { .. } => 0,
         }
     }
 }
@@ -146,6 +184,8 @@ impl DecodedEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryError {
     UnsupportedType(EntryType),
+    InvalidMembershipChange,
+    InvalidAddress,
     Empty,
     UnknownTag(u8),
     InvalidLength { tag: u8, expected: usize, actual: usize },
@@ -156,6 +196,8 @@ impl fmt::Display for EntryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedType(entry_type) => write!(f, "unsupported entry type {entry_type:?}"),
+            Self::InvalidMembershipChange => f.write_str("undecodable Raft membership change"),
+            Self::InvalidAddress => f.write_str("invalid cluster member address"),
             Self::Empty => f.write_str("empty Raft command"),
             Self::UnknownTag(tag) => write!(f, "unknown Raft command tag {tag}"),
             Self::InvalidLength { tag, expected, actual } => {
@@ -171,6 +213,7 @@ impl fmt::Display for EntryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cluster::membership::test_address;
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; SINGLE_ATT_SIZE];
@@ -190,6 +233,7 @@ mod tests {
             ReplicatedCommand::Lock(command(42, 3)),
             ReplicatedCommand::AdvanceMinimumSlot(37),
             ReplicatedCommand::BlockLock(block),
+            ReplicatedCommand::AnnounceAddress(test_address(4)),
         ] {
             assert_eq!(ReplicatedCommand::decode(&command.encode()), Ok(command));
         }

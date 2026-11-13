@@ -658,6 +658,7 @@ impl Tile<SilverSpine> for Controller {
             &mut self.local_gossip,
             &mut self.gossip_handler,
             &mut self.reader,
+            &mut self.peer_manager,
         );
 
         adapter.consume(|need: SyncNeed, _producers| self.sync_engine.on_sync_need(need, now));

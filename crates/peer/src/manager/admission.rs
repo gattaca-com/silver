@@ -3,7 +3,7 @@
 //! and the graylist — eviction, the bans it feeds, and their expiry.
 
 use std::{
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
 
@@ -13,6 +13,7 @@ use silver_common::{
 };
 
 use super::{GOODBYE_TOO_MANY_PEERS, IDLE_PEER_MAX_SCORE, IDLE_PEER_MIN_AGE, PeerManager};
+use crate::database::PeerRecord;
 
 const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
 
@@ -129,6 +130,29 @@ impl PeerManager {
         self.database.add_enr(enr);
     }
 
+    /// Live peer state follows too, so an already connected member is
+    /// trusted at once.
+    pub fn trust_cluster_member(&mut self, peer_id: PeerId, addr: SocketAddr) {
+        self.database.trust_cluster_member(peer_id, addr);
+        self.set_live_trust(&peer_id, true);
+        // A key banned as an ordinary peer can come back as a member.
+        self.banned_peers.remove(&peer_id);
+        self.remote_banned_peers.remove(&peer_id);
+    }
+
+    pub fn untrust_cluster_member(&mut self, peer_id: &PeerId) {
+        self.database.untrust_cluster_member(peer_id);
+        let trusted = self.database.by_peer_id(peer_id).is_some_and(|record| record.is_trusted);
+        self.set_live_trust(peer_id, trusted);
+    }
+
+    fn set_live_trust(&mut self, peer_id: &PeerId, trusted: bool) {
+        if let Some(state) = self.peers_by_id.get(peer_id).and_then(|conn| self.peers.get_mut(conn))
+        {
+            state.is_trusted = trusted;
+        }
+    }
+
     /// The sole dial issuer: connects disconnected-but-known peers from the
     /// database up to `target_peers`, or `max_priority_peers` for candidates
     /// covering a subnet/custody column we need. Below
@@ -137,6 +161,17 @@ impl PeerManager {
     /// the database; this loop dials on the next tick.
     #[timed]
     pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        // Trusted peers are redialled however full the node is: a lost cluster
+        // member would otherwise stay lost.
+        for record in self.database.trusted_redial_candidates(now) {
+            let Some((peer_id, addr)) = self.dial_target(record) else {
+                continue;
+            };
+            silver_log::info!(?addr, "dialling trusted peer");
+            self.dialing.insert(peer_id, now);
+            emit(PeerControl::P2pDial { p2p: peer_id, addr });
+        }
+
         let mut connected = self.peers.len() + self.dialing.len();
         let mut dialled = self.dialled_peer_count() + self.dialing.len();
         let deficit_cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;
@@ -148,35 +183,22 @@ impl PeerManager {
             return;
         }
         for record in self.database.redial_candidates(now) {
-            let (Some(peer_id), Some(enr)) = (record.peer_id, record.enr.as_ref()) else {
+            let (Some((peer_id, addr)), Some(enr)) = (self.dial_target(record), &record.enr) else {
                 continue;
             };
-            if self.dialing.contains_key(&peer_id) ||
-                self.banned_peers.contains_key(&peer_id) ||
-                self.remote_banned_peers.contains_key(&peer_id)
-            {
-                continue;
-            }
-            let ip = enr.ip4().map(IpAddr::V4).or_else(|| enr.ip6().map(IpAddr::V6));
-            if ip.is_some_and(|ip| self.banned_ips.contains_key(&ip)) {
-                continue;
-            }
-
             if self.our_fork_digest.is_some() &&
                 enr.eth2().is_none_or(|e| !self.is_our_fork_digest(&e[..4]))
             {
                 continue;
             }
+
             // Three tiers: a peer covering a subnet the sweep could not fill
             // dials into the headroom above `max_priority_peers` — a fresh
             // peer scores 0, and `manage_peers` only trims negatives, so it
             // survives there. A peer merely covering something we subscribe
             // to gets the ordinary priority cap; everyone else stops at
             // `target_peers`.
-            let cap = if record.is_trusted {
-                silver_log::info!(quic=?enr.quic4_socket(), "dialling trusted peer");
-                usize::MAX
-            } else if enr_matches_subnets(
+            let cap = if enr_matches_subnets(
                 enr,
                 record.custody_groups(),
                 self.deficit_attnets,
@@ -201,13 +223,22 @@ impl PeerManager {
             }
             silver_log::debug!(?peer_id, "redialing known peer");
             self.dialing.insert(peer_id, now);
-            emit(PeerControl::P2pDial { p2p: peer_id, enr: *enr });
+            emit(PeerControl::P2pDial { p2p: peer_id, addr });
             connected += 1;
             dialled += 1;
             if connected >= deficit_cap && dialled >= target_dialled {
                 break;
             }
         }
+    }
+
+    fn dial_target(&self, record: &PeerRecord) -> Option<(PeerId, SocketAddr)> {
+        let (peer_id, addr) = (record.peer_id?, record.dial_addr()?);
+        let barred = self.dialing.contains_key(&peer_id) ||
+            self.banned_peers.contains_key(&peer_id) ||
+            self.remote_banned_peers.contains_key(&peer_id) ||
+            self.banned_ips.contains_key(&addr.ip());
+        (!barred).then_some((peer_id, addr))
     }
 
     /// Trim over-population.
@@ -801,6 +832,126 @@ mod tests {
             })
             .collect();
         assert_eq!(banned, vec![peer_id(8)], "only the untrusted stale ENR is banned");
+    }
+
+    #[test]
+    fn stale_fork_digest_redials_only_trusted_peers() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let stale_digest = Some([1u8; 16]);
+        mgr.database.add_trusted_peer(test_enr_with(
+            7,
+            std::net::Ipv4Addr::new(10, 0, 0, 7),
+            stale_digest,
+            None,
+            None,
+        ));
+        mgr.database.add_enr(test_enr_with(
+            8,
+            std::net::Ipv4Addr::new(10, 0, 0, 8),
+            stale_digest,
+            None,
+            None,
+        ));
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+
+        let dialled: Vec<_> = cap
+            .0
+            .iter()
+            .filter_map(|e| match e {
+                PeerControl::P2pDial { p2p, .. } => Some(*p2p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dialled, vec![peer_id(7)], "only the trusted stale ENR is dialled");
+    }
+
+    fn dialled(cap: &Captured) -> Vec<(PeerId, SocketAddr)> {
+        cap.0
+            .iter()
+            .filter_map(|control| match control {
+                PeerControl::P2pDial { p2p, addr } => Some((*p2p, *addr)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Node 7 has a configured ENR its replicated address overrides; node 8
+    /// is known only by its replicated address.
+    #[test]
+    fn cluster_member_is_dialled_at_its_replicated_address() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let enr = test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0; 16]), None, None);
+        mgr.database.add_trusted_peer(enr);
+        let moved: SocketAddr = "10.0.0.70:9100".parse().unwrap();
+        let unknown: SocketAddr = "10.0.0.8:9000".parse().unwrap();
+        mgr.trust_cluster_member(peer_id(7), moved);
+        mgr.trust_cluster_member(peer_id(8), unknown);
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        let mut dialled = dialled(&cap);
+        dialled.sort_by_key(|(_, addr)| *addr);
+        assert_eq!(dialled, [(peer_id(8), unknown), (peer_id(7), moved)]);
+    }
+
+    #[test]
+    fn full_node_still_redials_trusted_peers() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_priority_peers = 2;
+        params.target_dialled_peers = 1;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        for seed in 20..24 {
+            mgr.dialing.insert(peer_id(seed), now);
+        }
+        let stranger =
+            test_enr_with(9, std::net::Ipv4Addr::new(10, 0, 0, 9), Some([0; 16]), None, None);
+        mgr.database.add_enr(stranger);
+        let addr: SocketAddr = "10.0.0.7:9000".parse().unwrap();
+        mgr.trust_cluster_member(peer_id(7), addr);
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dialled(&cap), [(peer_id(7), addr)]);
+    }
+
+    #[test]
+    fn removed_cluster_member_is_not_dialled() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        mgr.trust_cluster_member(peer_id(8), "10.0.0.8:9000".parse().unwrap());
+        mgr.untrust_cluster_member(&peer_id(8));
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert!(dialled(&cap).is_empty());
+        assert!(!mgr.database.by_peer_id(&peer_id(8)).unwrap().is_trusted);
+    }
+
+    /// A key evicted while it was an ordinary peer can come back as a member.
+    #[test]
+    fn banned_peer_is_dialled_once_it_becomes_a_cluster_member() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        mgr.banned_peers.insert(peer_id(8), now);
+        mgr.remote_banned_peers.insert(peer_id(8), now);
+        let addr: SocketAddr = "10.0.0.8:9000".parse().unwrap();
+        mgr.trust_cluster_member(peer_id(8), addr);
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dialled(&cap), [(peer_id(8), addr)]);
+    }
+
+    #[test]
+    fn removed_cluster_member_keeps_its_configured_trust() {
+        let (mut mgr, _) = fixture(vec![], ScoreParams::default());
+        let enr = test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0; 16]), None, None);
+        mgr.database.add_trusted_peer(enr);
+        mgr.trust_cluster_member(peer_id(7), "10.0.0.70:9100".parse().unwrap());
+        mgr.untrust_cluster_member(&peer_id(7));
+
+        assert!(mgr.database.by_peer_id(&peer_id(7)).unwrap().is_trusted);
+        assert_eq!(mgr.database.trusted_redial_candidates(Instant::now()).count(), 1);
     }
 
     #[test]

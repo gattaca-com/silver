@@ -27,13 +27,28 @@ pub(crate) struct InboundAdmission {
     /// it. Outbound dials are bounded separately by the peer manager.
     max_connections: usize,
     trusted_ips: FxHashSet<IpAddr>,
+    cluster_member_ips: FxHashMap<u64, IpAddr>,
     handshaking: usize,
     inbound_per_ip: FxHashMap<IpAddr, u32>,
 }
 
 impl InboundAdmission {
     pub(crate) fn new(max_connections: usize, trusted_ips: FxHashSet<IpAddr>) -> Self {
-        Self { max_connections, trusted_ips, handshaking: 0, inbound_per_ip: FxHashMap::default() }
+        Self {
+            max_connections,
+            trusted_ips,
+            cluster_member_ips: FxHashMap::default(),
+            handshaking: 0,
+            inbound_per_ip: FxHashMap::default(),
+        }
+    }
+
+    pub(crate) fn set_cluster_member_ip(&mut self, node_id: u64, ip: IpAddr) {
+        self.cluster_member_ips.insert(node_id, ip);
+    }
+
+    pub(crate) fn remove_cluster_member(&mut self, node_id: u64) {
+        self.cluster_member_ips.remove(&node_id);
     }
 
     /// Slots that unvalidated Initials could exhaust go only to a source that
@@ -45,7 +60,8 @@ impl InboundAdmission {
         validated: bool,
         population: usize,
     ) -> Admission {
-        let trusted = self.trusted_ips.contains(&remote.ip());
+        let trusted = self.trusted_ips.contains(&remote.ip()) ||
+            self.cluster_member_ips.values().any(|ip| *ip == remote.ip());
         if trusted {
             silver_log::info!(peer_addr=?remote, validated, "inbound connection from trusted peer");
         }
@@ -119,6 +135,15 @@ mod tests {
         let admission = admission(4);
         assert_eq!(admission.decide(addr(TRUSTED), false, 4), Admission::Retry);
         assert_eq!(admission.decide(addr(TRUSTED), true, 4), Admission::Accept);
+        assert_eq!(admission.decide(addr(OTHER), true, 4), Admission::Refuse);
+    }
+
+    #[test]
+    fn cluster_member_addresses_are_trusted_while_members() {
+        let mut admission = admission(4);
+        admission.set_cluster_member_ip(8, OTHER.into());
+        assert_eq!(admission.decide(addr(OTHER), true, 4), Admission::Accept);
+        admission.remove_cluster_member(8);
         assert_eq!(admission.decide(addr(OTHER), true, 4), Admission::Refuse);
     }
 

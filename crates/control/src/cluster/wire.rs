@@ -1,6 +1,7 @@
 use buffa::Message as _;
 use raft::eraftpb::{
-    ConfState, Entry, EntryType, Message, MessageType, Snapshot, SnapshotMetadata,
+    ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfChangeV2, ConfState, Entry,
+    EntryType, Message, MessageType, Snapshot, SnapshotMetadata,
 };
 use silver_common::{Error, MAX_CLUSTER_MESSAGE_BYTES, TCacheProducer, TCacheRead, TProducer};
 
@@ -30,11 +31,27 @@ pub(crate) fn decode_message(bytes: &[u8]) -> Result<Message, DecodeError> {
     from_wire_message(wire::Message::decode_from_slice(bytes)?)
 }
 
+/// An empty `data` decodes to the empty change that leaves a joint config.
+pub(super) fn decode_membership_change(data: &[u8]) -> Result<ConfChangeV2, DecodeError> {
+    let wire = wire::ConfChangeV2::decode_from_slice(data)?;
+    let mut decoded = ConfChangeV2::default();
+    decoded.set_transition(conf_change_transition(wire.transition.to_i32())?);
+    for change in wire.changes {
+        let mut single = ConfChangeSingle::default();
+        single.set_change_type(conf_change_type(change.change_type.to_i32())?);
+        single.set_node_id(change.node_id);
+        decoded.mut_changes().push(single);
+    }
+    decoded.set_context(wire.context.into());
+    Ok(decoded)
+}
+
 #[derive(Debug)]
 pub(crate) enum DecodeError {
     Buffa(buffa::DecodeError),
     UnknownMessageType(i32),
     UnknownEntryType(i32),
+    UnknownMembershipChange(i32),
 }
 
 impl std::fmt::Display for DecodeError {
@@ -47,6 +64,9 @@ impl std::fmt::Display for DecodeError {
             Self::UnknownEntryType(value) => {
                 write!(formatter, "unknown Raft entry type {value}")
             }
+            Self::UnknownMembershipChange(value) => {
+                write!(formatter, "unknown Raft membership change enum value {value}")
+            }
         }
     }
 }
@@ -55,7 +75,9 @@ impl std::error::Error for DecodeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Buffa(error) => Some(error),
-            Self::UnknownMessageType(_) | Self::UnknownEntryType(_) => None,
+            Self::UnknownMessageType(_) |
+            Self::UnknownEntryType(_) |
+            Self::UnknownMembershipChange(_) => None,
         }
     }
 }
@@ -244,6 +266,24 @@ fn entry_type(value: i32) -> Result<EntryType, DecodeError> {
         1 => Ok(EntryType::EntryConfChange),
         2 => Ok(EntryType::EntryConfChangeV2),
         other => Err(DecodeError::UnknownEntryType(other)),
+    }
+}
+
+fn conf_change_transition(value: i32) -> Result<ConfChangeTransition, DecodeError> {
+    match value {
+        0 => Ok(ConfChangeTransition::Auto),
+        1 => Ok(ConfChangeTransition::Implicit),
+        2 => Ok(ConfChangeTransition::Explicit),
+        other => Err(DecodeError::UnknownMembershipChange(other)),
+    }
+}
+
+fn conf_change_type(value: i32) -> Result<ConfChangeType, DecodeError> {
+    match value {
+        0 => Ok(ConfChangeType::AddNode),
+        1 => Ok(ConfChangeType::RemoveNode),
+        2 => Ok(ConfChangeType::AddLearnerNode),
+        other => Err(DecodeError::UnknownMembershipChange(other)),
     }
 }
 

@@ -4,6 +4,7 @@ use flux_disk::{DiskEvent, DiskIo, FileToken, OpenOptions, OperationId};
 use raft::eraftpb::{Entry, HardState, Snapshot};
 
 use super::{
+    super::raft_storage::validate_snapshot,
     failed,
     journal::{LogState, Record, StorageIdentity},
 };
@@ -34,7 +35,7 @@ impl Replacement {
         hard_state: &HardState,
         ready_number: Option<u64>,
     ) -> io::Result<Self> {
-        identity.validate_snapshot(snapshot)?;
+        validate_snapshot(snapshot)?;
         let log = LogState::from_snapshot(snapshot, hard_state)?.next(entries, Some(hard_state))?;
         let record = Record::checkpoint(snapshot, entries, hard_state)?;
         let mut staging = path.as_os_str().to_os_string();

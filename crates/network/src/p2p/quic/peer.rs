@@ -1383,10 +1383,10 @@ mod tests {
     use mio::{Poll, Token};
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
     use silver_common::{
-        CacheFrameError, CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GossipMsgOut,
-        Keypair, MAX_GOSSIP_FRAME_SIZE, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound,
-        TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer,
-        TReadMode, test_util::follow_producer_floor,
+        CacheFrameError, CacheSegment, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GossipMsgOut, Keypair,
+        MAX_GOSSIP_FRAME_SIZE, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCache,
+        TCacheId, TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode,
+        test_util::follow_producer_floor,
     };
 
     use super::*;
@@ -2013,12 +2013,12 @@ mod tests {
         let mut pair = PeerPair::new();
         let client_key = Keypair::from_secret(&[2; 32]).unwrap();
         let server_key = Keypair::from_secret(&[1; 32]).unwrap();
-        let mut client_nodes =
-            ClusterNodes::new(HashMap::from([(2, Enr::empty(server_key.secret_key()).unwrap())]));
+        let mut client_nodes = ClusterNodes::default();
+        client_nodes.set_member(2, server_key.peer_id());
         client_nodes.connected(pair.client_peer.id());
         client_h.context.cluster_nodes = Some(client_nodes);
-        let mut server_nodes =
-            ClusterNodes::new(HashMap::from([(1, Enr::empty(client_key.secret_key()).unwrap())]));
+        let mut server_nodes = ClusterNodes::default();
+        server_nodes.set_member(1, client_key.peer_id());
         server_nodes.connected(pair.server_peer.id());
         server_h.context.cluster_nodes = Some(server_nodes);
 
@@ -2100,10 +2100,8 @@ mod tests {
             let now = Instant::now();
             let server_keypair = Keypair::from_secret(&[1; 32]).unwrap();
             let client_keypair = Keypair::from_secret(&[2; 32]).unwrap();
-            let mut nodes = ClusterNodes::new(HashMap::from([(
-                7,
-                Enr::empty(server_keypair.secret_key()).unwrap(),
-            )]));
+            let mut nodes = ClusterNodes::default();
+            nodes.set_member(7, server_keypair.peer_id());
             nodes.connected(pair.client_peer.id());
             let handle = pair.client_peer.handle;
             client_h.context.cluster_nodes = Some(nodes);
@@ -2145,6 +2143,32 @@ mod tests {
             assert_eq!(p2p.peers[&handle].id().peer_id, non_member);
             assert_eq!(client_h.context.raft_id(handle.0), None);
         }
+    }
+
+    /// A member added while its connection is open is a cluster link at once,
+    /// not only after it reconnects.
+    #[test]
+    fn member_set_on_an_open_connection_maps_it() {
+        let client_h = PeerHarness::new();
+        let pair = PeerPair::new();
+        let handle = pair.client_peer.handle;
+        let server = Keypair::from_secret(&[1; 32]).unwrap().peer_id();
+        let mut context = client_h.context;
+        context.cluster_nodes = Some(ClusterNodes::default());
+
+        let PeerPair { client_ep, client_peer, .. } = pair;
+        let client_keypair = Keypair::from_secret(&[2; 32]).unwrap();
+        let mut p2p =
+            P2p::new(client_keypair, client_ep, 16, FxHashSet::default(), InboundLimits::default());
+        p2p.peers.insert(handle, client_peer);
+        assert_eq!(context.raft_id(handle.0), None);
+
+        p2p.ban_peer(server, Instant::now());
+        p2p.set_cluster_member(&mut context, 7, server, "127.0.0.1:9000".parse().unwrap());
+        assert_eq!(context.raft_id(handle.0), Some(7));
+        assert!(!p2p.banned.contains(&server), "a member's key is never refused");
+        p2p.remove_cluster_member(&mut context, 7);
+        assert_eq!(context.raft_id(handle.0), None);
     }
 
     /// Both sides enable meshsub 1.3: the stream negotiates 1.3 and the

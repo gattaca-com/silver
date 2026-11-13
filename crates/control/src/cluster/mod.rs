@@ -1,3 +1,4 @@
+mod address_announcement;
 mod admission;
 mod command;
 #[path = "generated/protobuf.eraftpb.rs"]
@@ -6,12 +7,15 @@ mod command;
 mod generated;
 mod lock_store;
 mod member_message_check;
+mod membership;
+mod membership_operation;
 mod metrics;
 mod node;
 mod peers;
 mod pending;
 mod persistence;
 mod raft_storage;
+mod replicated_state;
 mod snapshot_transfers;
 #[cfg(target_os = "linux")]
 mod storage;
@@ -24,6 +28,9 @@ pub use command::{AttestationKey, AttestationLockCommand, BlockKey, BlockLockCom
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
 pub use member_message_check::MemberMessageError;
+pub use membership::Member;
+#[cfg(test)]
+pub(crate) use membership::test_address;
 pub use metrics::ClusterCounters;
 pub(crate) use metrics::{DutyTimers, LoopGap};
 pub use node::{

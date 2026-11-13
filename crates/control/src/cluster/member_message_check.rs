@@ -3,12 +3,13 @@ use raft::{
     RaftLog,
     eraftpb::{Message, MessageType},
 };
+use silver_common::MAX_CLUSTER_VOTERS;
 
 use super::{
     command::{DecodedEntry, EntryError},
     metrics::ClusterCounters,
-    raft_storage::{RaftStorage, RestoredSnapshot},
-    voters::{MAX_VOTERS, Voters},
+    raft_storage::RaftStorage,
+    replicated_state::ReplicatedState,
 };
 
 /// A member can reach the next slot before this node's own Status does.
@@ -21,6 +22,7 @@ const CLOCK_SLACK_SLOTS: u64 = 1;
 pub enum MemberMessageError {
     EmptyProposal,
     Entry(EntryError),
+    ForwardedMembershipChange,
     ProposalOrigin { origin: u64, from: u64 },
     ForwardedMinimumSlot,
     ProposalAheadOfClock { slot: u64, wall_slot: u64 },
@@ -33,8 +35,10 @@ pub enum MemberMessageError {
 /// A member that appended an entry ahead of this node's clock. Until this
 /// node's clock reaches that entry, its leadership messages go unanswered. It
 /// loses its quorum, and its longer log cannot win it the next election.
+///
+/// A joint config replacing one of 7 voters has 8 distinct voters.
 #[derive(Default)]
-pub(super) struct LeaderBoycott(ArrayVec<BoycottedLeader, MAX_VOTERS>);
+pub(super) struct LeaderBoycott(ArrayVec<BoycottedLeader, { MAX_CLUSTER_VOTERS + 1 }>);
 
 #[derive(Debug, Clone, Copy)]
 struct BoycottedLeader {
@@ -43,6 +47,18 @@ struct BoycottedLeader {
 }
 
 impl LeaderBoycott {
+    pub(super) fn retain(&mut self, is_member: impl Fn(u64) -> bool) {
+        let leaders = self.0.as_mut_slice();
+        let mut kept = 0;
+        for i in 0..leaders.len() {
+            if is_member(leaders[i].id) {
+                leaders.swap(kept, i);
+                kept += 1;
+            }
+        }
+        self.0.truncate(kept);
+    }
+
     pub(super) fn covers(&self, message: &Message, wall_slot: u64) -> bool {
         is_leadership(message.get_msg_type()) &&
             self.0.iter().any(|leader| {
@@ -56,7 +72,11 @@ impl LeaderBoycott {
             Some(leader) => leader.slot = leader.slot.max(slot),
             None => {
                 let overflow = self.0.try_push(BoycottedLeader { id, slot });
-                debug_assert!(overflow.is_none(), "messages come from at most {MAX_VOTERS} voters");
+                debug_assert!(
+                    overflow.is_none(),
+                    "leaders are among at most {} voters",
+                    MAX_CLUSTER_VOTERS + 1
+                );
             }
         }
         ClusterCounters::LeadersBoycotted.inc();
@@ -93,7 +113,6 @@ fn is_ahead_of_clock(slot: u64, wall_slot: u64) -> bool {
 
 pub(super) struct MemberMessageCheck<'a> {
     pub log: &'a RaftLog<RaftStorage>,
-    pub voters: &'a Voters,
     pub wall_slot: u64,
 }
 
@@ -115,26 +134,30 @@ impl MemberMessageCheck<'_> {
         if snapshot.get_metadata().index < self.log.committed {
             return Ok(());
         }
-        RestoredSnapshot::decode(snapshot, self.voters)
+        ReplicatedState::decode_snapshot(snapshot)
             .map(|_| ())
             .map_err(|_| MemberMessageError::Snapshot)
     }
 
     /// Only followers forward proposals, each carrying its own context. The
-    /// leader proposes the minimum slot itself and never forwards it.
+    /// leader proposes the minimum slot and membership changes itself, and
+    /// never forwards them.
     fn check_proposal(&self, message: &Message) -> Result<(), MemberMessageError> {
         if message.entries.is_empty() {
             return Err(MemberMessageError::EmptyProposal);
         }
         for entry in &message.entries {
-            if entry.data.is_empty() {
-                return Err(MemberMessageError::EmptyProposal);
-            }
             let decoded = DecodedEntry::decode(entry).map_err(MemberMessageError::Entry)?;
             let origin = match &decoded {
-                DecodedEntry::Lock(_, id) | DecodedEntry::BlockLock(_, id) => id.origin_node_id,
+                DecodedEntry::Lock(_, id) |
+                DecodedEntry::BlockLock(_, id) |
+                DecodedEntry::AnnounceAddress(_, id) => id.origin_node_id,
+                DecodedEntry::Empty => return Err(MemberMessageError::EmptyProposal),
                 DecodedEntry::AdvanceMinimumSlot(_) => {
                     return Err(MemberMessageError::ForwardedMinimumSlot);
+                }
+                DecodedEntry::MembershipChange { .. } => {
+                    return Err(MemberMessageError::ForwardedMembershipChange);
                 }
             };
             if origin != message.from {
@@ -160,9 +183,6 @@ impl MemberMessageCheck<'_> {
             let expected = message.index.saturating_add(offset);
             if entry.index != expected {
                 return Err(MemberMessageError::EntryIndexGap { expected, actual: entry.index });
-            }
-            if entry.data.is_empty() {
-                continue;
             }
             let slot = DecodedEntry::decode(entry)
                 .map_err(MemberMessageError::Entry)?
