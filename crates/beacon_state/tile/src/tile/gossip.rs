@@ -1548,7 +1548,6 @@ impl BeaconStateTile {
             return;
         };
 
-        let read = parked.read.clone();
         let feedback = match parked.kind {
             ParkedKind::FromDisk => {
                 return self.apply_disk_envelope(parked.read, |event| producers.produce(event));
@@ -1556,12 +1555,13 @@ impl BeaconStateTile {
             // Its block's state checks the signer again: the block can change
             // the builder registry the parking check read.
             ParkedKind::Signed { .. } => {
+                let read = parked.read.clone();
                 self.handle_execution_payload_envelope(read, ssz, BlockSource::Gossip, producers)
             }
             ParkedKind::Verified => {
                 let Some(idx) = self.fork_choice.find_node_idx(&block_root) else { return };
                 let state_id = self.fork_choice.node(idx).state_id;
-                let source = BlockSource::Gossip;
+                let (read, source) = (parked.read.clone(), BlockSource::Gossip);
                 self.submit_verified_envelope(read, ssz, block_root, state_id, source, producers)
             }
         };

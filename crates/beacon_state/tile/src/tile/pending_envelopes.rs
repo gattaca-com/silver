@@ -73,11 +73,12 @@ impl PendingEnvelopes {
     }
 
     pub(super) fn park(&mut self, block_root: B256, parked: ParkedEnvelope) {
-        if let ParkedKind::Signed { slot, builder_index } = parked.kind &&
-            !self.admits_signed(&block_root, slot, builder_index)
-        {
-            return;
-        }
+        debug_assert!(match parked.kind {
+            ParkedKind::Signed { slot, builder_index } => {
+                self.admits_signed(&block_root, slot, builder_index)
+            }
+            ParkedKind::Verified | ParkedKind::FromDisk => true,
+        });
         let has_room = self.parked.len() < self.cap || self.parked.contains_key(&block_root);
         if !has_room {
             silver_log::warn!(
