@@ -125,7 +125,7 @@ impl<T> FileWriter<T> {
                 // SAFETY: forwarded from this function's contract.
                 let queued = unsafe { self.disk.write_at_from(file, 0, source, len) };
                 if !queued {
-                    write.stage = Stage::Done(Ok(()));
+                    write.stage = Stage::Done(Err(Error::other("create with no bytes")));
                 }
             }),
             WriteOp::Append { path, bytes } => self.open(&path, false).map(|file| {

@@ -35,10 +35,13 @@ impl Finalized {
         self.coverage.changed()
     }
 
-    /// The coverage as it is now, which then counts as persisted.
-    pub(super) fn encode_coverage(&mut self) -> &[u8] {
-        self.coverage.encode_for_persist(&mut self.scratch);
-        &self.scratch
+    pub(super) fn encode_coverage(&mut self) -> (&[u8], u64) {
+        let version = self.coverage.encode_for_persist(&mut self.scratch);
+        (&self.scratch, version)
+    }
+
+    pub(super) fn coverage_persisted(&mut self, version: u64) {
+        self.coverage.persisted(version);
     }
 
     pub(super) fn coverage(&self) -> &Coverage {

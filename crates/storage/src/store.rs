@@ -226,7 +226,7 @@ impl PendingWrite {
 #[allow(clippy::large_enum_variant)]
 enum WriteTag {
     Queued(PendingWrite),
-    Coverage,
+    Coverage { version: u64 },
 }
 
 /// The coverage is mid-change while writes that land are queued, so nothing

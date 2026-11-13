@@ -27,12 +27,15 @@ enum Stage {
     LinkingPubkeys,
     LinkingSsz,
     SyncingDirectories,
+    /// Dropping the ring would block on the ops still in flight, so it
+    /// drains first.
+    Failing,
 }
 
 pub(super) enum CheckpointProgress {
     Pending,
     Committed(u64),
-    Failed,
+    Failed(u64),
 }
 
 /// Streams one finalized state into two unnamed files, then names them
@@ -118,9 +121,19 @@ impl CheckpointWriter {
             _ => {}
         });
 
-        if let Some(error) = self.failure.take() {
+        if let Some(error) = self.failure.take() &&
+            self.stage != Stage::Failing
+        {
             silver_log::error!(?error, slot = self.cursor.slot(), stage = ?self.stage, "checkpoint persist failed");
-            return CheckpointProgress::Failed;
+            self.disk.close(self.ssz);
+            self.disk.close(self.pubkeys);
+            self.stage = Stage::Failing;
+        }
+        if self.stage == Stage::Failing {
+            if !self.disk.is_idle() {
+                return CheckpointProgress::Pending;
+            }
+            return CheckpointProgress::Failed(self.cursor.slot());
         }
         if self.awaiting > 0 {
             return CheckpointProgress::Pending;
@@ -131,6 +144,7 @@ impl CheckpointWriter {
             Stage::LinkingPubkeys => self.link(self.ssz, "ssz", Stage::LinkingSsz),
             Stage::LinkingSsz => self.sync_directories(),
             Stage::SyncingDirectories => return CheckpointProgress::Committed(self.cursor.slot()),
+            Stage::Failing => unreachable!("returned above"),
         };
         if let Err(error) = result {
             self.failure = Some(error);
@@ -297,7 +311,15 @@ impl Store {
         let Some(writer) = self.checkpoint.as_mut() else { return };
         match writer.step() {
             CheckpointProgress::Pending => {}
-            CheckpointProgress::Failed => self.checkpoint = None,
+            CheckpointProgress::Failed(slot) => {
+                self.checkpoint = None;
+                let slot_dir = self.finalized_checkpoints_dir().join(slot.to_string());
+                if let Err(error) = std::fs::remove_dir_all(&slot_dir) &&
+                    error.kind() != ErrorKind::NotFound
+                {
+                    silver_log::warn!(?error, ?slot_dir, "failed checkpoint dir not removed");
+                }
+            }
             CheckpointProgress::Committed(slot) => {
                 self.checkpoint = None;
                 self.last_persisted_finalized_slot = self.last_persisted_finalized_slot.max(slot);

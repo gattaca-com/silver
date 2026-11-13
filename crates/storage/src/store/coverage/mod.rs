@@ -115,10 +115,16 @@ impl Coverage {
         self.persisted != self.version
     }
 
-    pub(super) fn encode_for_persist(&mut self, out: &mut Vec<u8>) {
+    /// Returns the version the bytes describe, for [`Self::persisted`] once
+    /// they are down.
+    pub(super) fn encode_for_persist(&self, out: &mut Vec<u8>) -> u64 {
         out.clear();
         codec::encode(self, out);
-        self.persisted = self.version;
+        self.version
+    }
+
+    pub(super) fn persisted(&mut self, version: u64) {
+        self.persisted = self.persisted.max(version);
     }
 
     /// The root the next backfilled block must have to link below what we
@@ -589,7 +595,9 @@ mod tests {
         let mut coverage = Coverage::new(CUSTODY);
         land(&mut coverage, &mut blocks, &[992], [0; 32], 1000, NOTHING);
         assert!(coverage.changed());
-        coverage.encode_for_persist(&mut Vec::new());
+        let version = coverage.encode_for_persist(&mut Vec::new());
+        assert!(coverage.changed(), "not down yet");
+        coverage.persisted(version);
         assert!(!coverage.changed(), "nothing changed since");
         coverage.set_missing(992, Missing { columns: 0b1, envelope: false });
         assert!(coverage.changed(), "a change is due");

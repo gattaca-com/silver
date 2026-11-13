@@ -58,7 +58,9 @@ impl Store {
                     self.landing_in_flight -= usize::from(pending.lands());
                     self.write_landed(pending, result, emit)
                 }
-                WriteTag::Coverage => result,
+                WriteTag::Coverage { version } => {
+                    result.map(|()| self.finalized.coverage_persisted(version))
+                }
             });
         }
         self.completed_writes = completed;
@@ -150,9 +152,10 @@ impl Store {
     /// data already down.
     fn persist_coverage(&mut self) {
         let (path, staged) = coverage::codec::files(&self.store_dir);
-        let bytes = self.finalized.encode_coverage();
+        let (bytes, version) = self.finalized.encode_coverage();
+        let op = WriteOp::Replace { path, staged, bytes };
         // SAFETY: a replace copies its bytes before `start` returns.
-        unsafe { self.writer.start(WriteOp::Replace { path, staged, bytes }, WriteTag::Coverage) };
+        unsafe { self.writer.start(op, WriteTag::Coverage { version }) };
     }
 
     fn create<'a>(&mut self, path: PathBuf, ssz: &TRead) -> Result<WriteOp<'a>, Error> {
@@ -343,6 +346,12 @@ impl Store {
                 continue;
             };
             let path = self.unit_path(&unit);
+            // A file still being written may be empty or partial.
+            if self.writer.busy_with(&path) {
+                query.units.push_front(unit);
+                self.query_queue.push_back(query);
+                continue;
+            }
             self.reader.start(&path, (query, unit));
         }
     }
