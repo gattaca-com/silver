@@ -1,4 +1,13 @@
-use std::{collections::VecDeque, fs::File, io::Read, path::PathBuf, sync::Arc, time::Instant};
+#[cfg(feature = "thread_park")]
+use std::os::fd::AsRawFd;
+use std::{
+    collections::VecDeque,
+    fs::File,
+    io::Read,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
@@ -17,6 +26,35 @@ use crate::{
 };
 
 const MAX_REPLAY_BLOCKS_PER_LOOP: usize = 16;
+
+/// Bounds a wait that nothing signals, such as tcache room for a read.
+#[cfg_attr(not(feature = "thread_park"), allow(dead_code))]
+pub(crate) const IDLE_WAIT: Duration = Duration::from_millis(10);
+
+/// Readable after any spine produce, so the tile can block on it beside the
+/// disk rings instead of parking, which no completion could end.
+#[cfg(feature = "thread_park")]
+struct SpineWake {
+    poll: mio::Poll,
+    events: mio::Events,
+}
+
+#[cfg(feature = "thread_park")]
+impl SpineWake {
+    /// The waker goes to the spine, which wakes it on every produce.
+    fn new() -> (Self, mio::Waker) {
+        let poll = mio::Poll::new().expect("storage spine poll");
+        let waker = mio::Waker::new(poll.registry(), mio::Token(0)).expect("storage spine waker");
+        (Self { poll, events: mio::Events::with_capacity(1) }, waker)
+    }
+
+    /// Blocks until the spine, a disk ring or `IDLE_WAIT` wakes it.
+    fn wait(&mut self, store: &mut Store) {
+        store.wait(Some(self.poll.as_raw_fd()), IDLE_WAIT);
+        // Takes the wake, so the next wait blocks again.
+        let _ = self.poll.poll(&mut self.events, Some(Duration::ZERO));
+    }
+}
 
 enum ReplayStep {
     Block { path: PathBuf, columns_on_disk: bool },
@@ -88,6 +126,8 @@ pub struct StorageTile {
     /// finalized ahead (in which case we skip it and sync from them).
     syncing_strategy: Option<SyncingStrategy>,
     peers_loaded: bool,
+    #[cfg(feature = "thread_park")]
+    spine_wake: Option<SpineWake>,
 
     // Last: the store's acquired reads point into them. Persisted reads are
     // long-lived, so they track their own tails.
@@ -135,6 +175,8 @@ impl StorageTile {
             replay_done: !replay_from_disk,
             syncing_strategy: None,
             peers_loaded: false,
+            #[cfg(feature = "thread_park")]
+            spine_wake: None,
             reader: TCacheReader::new(tcaches),
             persist_reader: TCacheReader::new(tcaches),
         }
@@ -354,8 +396,16 @@ impl Tile<SilverSpine> for StorageTile {
         adapter.subscribe_broadcast::<SyncUpdate>();
     }
 
-    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+    fn try_init(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         self.open_tcaches().expect("tcache wiring");
+        #[cfg(feature = "thread_park")]
+        {
+            let (spine_wake, waker) = SpineWake::new();
+            adapter.register_waker(waker);
+            self.spine_wake = Some(spine_wake);
+        }
+        #[cfg(not(feature = "thread_park"))]
+        let _ = adapter;
         true
     }
 
@@ -506,23 +556,31 @@ impl Tile<SilverSpine> for StorageTile {
             Some(gvr) => spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &gvr),
             None => [0u8; 4],
         };
-        if let Err(e) =
+        let io =
             self.store.file_io(fork_digest_at, &mut self.delivery_producer, &mut |io| match io {
                 IoEvent::P2pSend(p2p_send) => adapter.produce(p2p_send),
                 IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
                 IoEvent::Need(need) => adapter.produce(need),
                 IoEvent::ApiResponse(response) => adapter.produce(response),
-            })
-        {
+            });
+        // A failed write still finished, so it counts as progress.
+        let progressed = io.unwrap_or_else(|e| {
             silver_log::error!(
                 ?e,
                 store_dir = self.store.store_dir(),
                 "storage store file i/o failed"
             );
+            true
+        });
+        #[cfg(feature = "thread_park")]
+        if !progressed &&
+            !adapter.did_work() &&
+            let Some(spine_wake) = &mut self.spine_wake
+        {
+            spine_wake.wait(&mut self.store);
         }
-        if self.store.has_pending_io() {
-            adapter.mark_work();
-        }
+        #[cfg(not(feature = "thread_park"))]
+        let _ = progressed;
     }
 }
 
@@ -557,6 +615,29 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// A spine produce ends the wait at once, and the wait takes the wake,
+    /// so the next one blocks again.
+    #[cfg(feature = "thread_park")]
+    #[test]
+    fn spine_signal_ends_the_disk_wait() {
+        let dir = TempDir::new().unwrap();
+        let spec = Arc::new(SpecConfig::mainnet());
+        let mut store = Store::load(dir.path().to_str().unwrap().to_owned(), spec, 0).unwrap();
+        let (mut spine_wake, waker) = SpineWake::new();
+        flux::park::SIGNAL.register_waker(waker);
+
+        flux::park::SIGNAL.signal();
+        let started = std::time::Instant::now();
+        spine_wake.wait(&mut store);
+        assert!(started.elapsed() < IDLE_WAIT / 2, "woke on the signal");
+
+        let mut poll_fd =
+            libc::pollfd { fd: spine_wake.poll.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: `poll_fd` outlives the call.
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+        assert_eq!(ready, 0, "the wake was taken");
+    }
 
     /// Leftovers below a newer checkpoint anchor are not replayed; the anchor
     /// block's own envelope still is.

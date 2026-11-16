@@ -33,7 +33,7 @@ struct Read<T> {
 pub(super) struct FileReader<T> {
     // Drops first: its drop waits for the kernel to finish writing into the
     // reservations `reads` still holds.
-    disk: DiskIo,
+    pub(super) disk: DiskIo,
     reads: Vec<Read<T>>,
 }
 
@@ -118,16 +118,17 @@ impl State {
             (Self::Sizing, DiskEvent::Failed { error, .. }) => {
                 Self::Done(ReadOutcome::Failed(error))
             }
-            (
-                Self::Reading(mut reservation, expected),
-                DiskEvent::ReadInto { len, error: None, .. },
-            ) if len == expected => {
+            (Self::Reading(mut reservation, expected), DiskEvent::ReadInto { len, .. })
+                if len == expected =>
+            {
                 reservation.increment_offset(len);
                 Self::Done(ReadOutcome::Sent(reservation.read()))
             }
-            (Self::Reading(_, expected), DiskEvent::ReadInto { len, error, .. }) => {
-                let error = error
-                    .unwrap_or_else(|| Error::other(format!("read {len} of {expected} bytes")));
+            (Self::Reading(_, expected), DiskEvent::ReadInto { len, .. }) => {
+                let error = Error::other(format!("read {len} of {expected} bytes"));
+                Self::Done(ReadOutcome::Failed(error))
+            }
+            (Self::Reading(..), DiskEvent::Failed { error, .. }) => {
                 Self::Done(ReadOutcome::Failed(error))
             }
             (state, _) => state,

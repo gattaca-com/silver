@@ -957,11 +957,15 @@ fn drain_publishing(store: &mut super::Store) -> (Result<(), std::io::Error>, Ve
     let (mut outcome, mut published) = (Ok(()), Vec::new());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        outcome = outcome.and(store.file_io(|_| [0u8; 4], &mut producer, &mut |io| {
-            if let IoEvent::Need(SyncNeed::BackfillPrefill(prefill)) = io {
-                published.push(prefill)
-            }
-        }));
+        outcome = outcome.and(
+            store
+                .file_io(|_| [0u8; 4], &mut producer, &mut |io| {
+                    if let IoEvent::Need(SyncNeed::BackfillPrefill(prefill)) = io {
+                        published.push(prefill)
+                    }
+                })
+                .map(drop),
+        );
         if settled(store) {
             return (outcome, published);
         }
@@ -1835,4 +1839,25 @@ fn backfill_below_retention_is_dropped() {
     }
     assert!(!slot_dir(&store_path, super::Payload::Column, 0).exists(), "the group stays gone");
     assert!(column_path(&store_path, group, 0).exists());
+}
+
+/// The wait hands queued ops to the kernel and wakes on their completion,
+/// well before its timeout.
+#[test]
+fn disk_wait_wakes_on_completion() {
+    use silver_common::TCache;
+
+    // Declared first so it outlives the reads `store` holds, panics included.
+    let mut staged = stage("disk_wait", &[0xA7; 100], 1);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+    store.add_block([0xAA; 32], staged.consumer.acquire(staged.reads[0]), 42, [0xCC; 32]);
+
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert_eq!(store.writer.in_flight(), 1, "queued, not yet submitted");
+    let started = Instant::now();
+    store.wait(None, Duration::from_millis(900));
+    assert!(started.elapsed() < Duration::from_millis(500), "woke on the completion");
+    drain(&mut store).unwrap();
 }

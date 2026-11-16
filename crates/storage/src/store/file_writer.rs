@@ -94,7 +94,7 @@ unsafe impl<T: Send> Send for Write<T> {}
 pub(super) struct FileWriter<T> {
     // Drops first: its drop waits for the kernel to finish reading the
     // memory the writes point into.
-    disk: DiskIo,
+    pub(super) disk: DiskIo,
     directory: DirectoryTokens,
     writes: Vec<Write<T>>,
     // Append lengths a poll reaped; their writes are queued after it.
@@ -168,7 +168,7 @@ impl<T> FileWriter<T> {
                 // SAFETY: forwarded from this function's contract.
                 let started = unsafe { self.create(&staged, bytes, &mut write) }.and_then(|()| {
                     let file = write.file.expect("created above");
-                    queued(self.disk.rename_path(file, staged, &path))
+                    queued(self.disk.rename(file, &path))
                 });
                 write.key = path;
                 started.map(|id| write.finishing_op = Some(id))
@@ -225,7 +225,7 @@ impl<T> FileWriter<T> {
         self.disk.poll_with(|event| {
             let (file, operation, error) = match event {
                 DiskEvent::FileLen { file, len } => return lengths.push((file, len)),
-                DiskEvent::WrittenFrom { file, error, .. } => (Some(file), None, error),
+                DiskEvent::Written { file, .. } => (Some(file), None, None),
                 DiskEvent::Renamed { operation_id, .. } |
                 DiskEvent::Unlinked { operation_id, .. } => (None, Some(operation_id), None),
                 DiskEvent::Failed { file, operation_id, error, .. } => {

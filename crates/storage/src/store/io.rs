@@ -7,9 +7,10 @@
 use std::{
     fs::File,
     io::{Error, ErrorKind, Read, Write},
+    os::fd::{AsRawFd, RawFd},
     path::{Path, PathBuf},
     ptr,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use flux_profiler::timed;
@@ -41,23 +42,25 @@ const MAX_ITERATIONS_PER_LOOP: usize = 64;
 impl Store {
     /// Returns the first failure, after which the write is dropped.
     #[timed]
-    fn drain_pending_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
+    fn drain_pending_writes<F>(&mut self, emit: &mut F) -> (Result<(), Error>, bool)
     where
         F: FnMut(IoEvent),
     {
         let writes = self.write_queue.len() + self.writer.in_flight();
         StorageCounters::WriteQueueLength.set(writes as u64);
-        let finished = self.apply_finished_writes(emit);
-        finished.and(self.start_queued_writes(emit))
+        let (finished, applied) = self.apply_finished_writes(emit);
+        let (started, any_started) = self.start_queued_writes(emit);
+        (finished.and(started), applied || any_started)
     }
 
-    fn apply_finished_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
+    fn apply_finished_writes<F>(&mut self, emit: &mut F) -> (Result<(), Error>, bool)
     where
         F: FnMut(IoEvent),
     {
-        let mut outcome = Ok(());
+        let (mut outcome, mut applied) = (Ok(()), false);
         self.writer.step();
         while let Some((tag, result)) = self.writer.next_finished() {
+            applied = true;
             outcome = outcome.and(match tag {
                 WriteTag::Queued(pending) => self.write_landed(pending, result, emit),
                 WriteTag::Coverage { version, bytes } => {
@@ -66,13 +69,13 @@ impl Store {
                 }
             });
         }
-        outcome
+        (outcome, applied)
     }
 
     /// Starts queued writes in order. A write on a file that still has one in
     /// flight keeps its place, and so do later writes on that file; the rest
     /// pass it.
-    fn start_queued_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
+    fn start_queued_writes<F>(&mut self, emit: &mut F) -> (Result<(), Error>, bool)
     where
         F: FnMut(IoEvent),
     {
@@ -101,7 +104,7 @@ impl Store {
                 }
             }
         }
-        outcome
+        (outcome, started > 0)
     }
 
     /// Hands the write's I/O to the writer, or applies it at once when it has
@@ -359,13 +362,14 @@ impl Store {
         fork_digest_at: impl Fn(u64) -> [u8; 4],
         producer: &mut TProducer,
         emit: &mut F,
-    ) where
+    ) -> bool
+    where
         F: FnMut(IoEvent),
     {
         let reads = self.query_queue.len() + self.reader.in_flight();
         StorageCounters::ReadQueueLength.set(reads as u64);
-        self.deliver_finished_reads(fork_digest_at, producer, emit);
-        self.start_reads(emit);
+        let delivered = self.deliver_finished_reads(fork_digest_at, producer, emit);
+        self.start_reads(emit) || delivered
     }
 
     fn deliver_finished_reads<F>(
@@ -373,42 +377,48 @@ impl Store {
         fork_digest_at: impl Fn(u64) -> [u8; 4],
         producer: &mut TProducer,
         emit: &mut F,
-    ) where
+    ) -> bool
+    where
         F: FnMut(IoEvent),
     {
-        let query_queue = &mut self.query_queue;
-        self.reader.step(producer, |(mut query, unit), outcome| match outcome {
-            ReadOutcome::Sent(read) => {
-                // Context fork-digest for the served object's own slot's fork
-                // (a request can span a fork boundary).
-                if query.deliver(&unit, read, fork_digest_at(unit.slot()), emit) {
-                    query_queue.push_back(query);
+        let (query_queue, mut delivered) = (&mut self.query_queue, false);
+        self.reader.step(producer, |(mut query, unit), outcome| {
+            delivered = true;
+            match outcome {
+                ReadOutcome::Sent(read) => {
+                    // Context fork-digest for the served object's own slot's fork
+                    // (a request can span a fork boundary).
+                    if query.deliver(&unit, read, fork_digest_at(unit.slot()), emit) {
+                        query_queue.push_back(query);
+                    }
+                }
+                // Skipped slots and EMPTY payloads leave holes in any envelope range.
+                ReadOutcome::Missing if unit.is_envelope() => query_queue.push_back(query),
+                ReadOutcome::Missing => query.finish(true, emit),
+                ReadOutcome::Failed(error) => {
+                    silver_log::warn!(?error, ?unit, "serving a stored file failed");
+                    query.finish(true, emit);
                 }
             }
-            // Skipped slots and EMPTY payloads leave holes in any envelope range.
-            ReadOutcome::Missing if unit.is_envelope() => query_queue.push_back(query),
-            ReadOutcome::Missing => query.finish(true, emit),
-            ReadOutcome::Failed(error) => {
-                silver_log::warn!(?error, ?unit, "serving a stored file failed");
-                query.finish(true, emit);
-            }
         });
+        delivered
     }
 
     /// Round-robin, one unit in flight per query: a query's chunks go out in
     /// order, and a large range cannot block other peers' queries.
     /// `MAX_ITERATIONS_PER_LOOP` bounds drained-request churn.
-    fn start_reads<F>(&mut self, emit: &mut F)
+    fn start_reads<F>(&mut self, emit: &mut F) -> bool
     where
         F: FnMut(IoEvent),
     {
-        let mut iterations = 0;
+        let (mut iterations, mut started) = (0, false);
         while iterations < MAX_ITERATIONS_PER_LOOP && self.reader.in_flight() < MAX_READS_IN_FLIGHT
         {
             iterations += 1;
             let Some(mut query) = self.query_queue.pop_front() else { break };
             let Some(unit) = query.units.pop_front() else {
                 query.finish(false, emit);
+                started = true;
                 continue;
             };
             // A file still being written may be empty or partial, and one
@@ -421,11 +431,41 @@ impl Store {
                 continue;
             }
             self.reader.start(&path, (query, unit));
+            started = true;
         }
+        started
     }
 
-    /// Work queued or on the disk: completions arrive only by polling, so the
-    /// tile must not park meanwhile.
+    /// Blocks until a completion waits on any ring, `wake` turns readable, or
+    /// `timeout` passes.
+    #[cfg_attr(not(feature = "thread_park"), allow(dead_code))]
+    pub(crate) fn wait(&mut self, wake: Option<RawFd>, timeout: Duration) {
+        let disks = [
+            Some(&mut self.writer.disk),
+            Some(&mut self.reader.disk),
+            Some(&mut self.remover.disk),
+            self.checkpoint.as_mut().map(|checkpoint| &mut checkpoint.disk),
+        ];
+        // Queued ops reach the kernel only on submit. A negative descriptor
+        // is ignored.
+        let rings = disks.map(|disk| {
+            disk.map_or(-1, |disk| {
+                disk.submit();
+                disk.as_raw_fd()
+            })
+        });
+        let readable = |fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut fds = [rings[0], rings[1], rings[2], rings[3], wake.unwrap_or(-1)].map(readable);
+        let timeout = libc::timespec {
+            tv_sec: timeout.as_secs() as libc::time_t,
+            tv_nsec: timeout.subsec_nanos() as libc::c_long,
+        };
+        // SAFETY: `fds` and `timeout` outlive the call. An interrupted wait
+        // only returns early.
+        unsafe { libc::ppoll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, &timeout, ptr::null()) };
+    }
+
+    #[cfg(test)]
     pub(crate) fn has_pending_io(&self) -> bool {
         !self.write_queue.is_empty() ||
             self.writer.in_flight() > 0 ||
@@ -440,19 +480,21 @@ impl Store {
         fork_digest_at: impl Fn(u64) -> [u8; 4],
         producer: &mut TProducer,
         emit: &mut F,
-    ) -> Result<(), Error>
+    ) -> Result<bool, Error>
     where
         F: FnMut(IoEvent),
     {
-        let writes = if !self.write_queue.is_empty() || self.writer.in_flight() > 0 {
-            self.drain_pending_writes(emit)
-        } else {
-            Ok(())
-        };
+        let (writes, mut progressed) =
+            if !self.write_queue.is_empty() || self.writer.in_flight() > 0 {
+                self.drain_pending_writes(emit)
+            } else {
+                (Ok(()), false)
+            };
         if !self.query_queue.is_empty() || self.reader.in_flight() > 0 {
-            self.serve_pending_reads(&fork_digest_at, producer, emit);
+            progressed |= self.serve_pending_reads(&fork_digest_at, producer, emit);
         }
 
+        let queued = self.write_queue.len();
         self.history.link_buffered_blocks(
             self.head,
             &self.finalized,
@@ -471,12 +513,12 @@ impl Store {
             );
         }
 
+        progressed |= self.write_queue.len() != queued;
+
         self.persist_coverage();
-
-        self.step_checkpoint();
-        self.remover.step();
-
-        writes
+        progressed |= self.step_checkpoint();
+        progressed |= self.remover.step();
+        writes.map(|()| progressed)
     }
 
     /// The first call of a run lists the payload's groups. Floors only rise,

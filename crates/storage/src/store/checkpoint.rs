@@ -35,7 +35,10 @@ enum Stage {
 }
 
 pub(super) enum CheckpointProgress {
-    Pending,
+    /// Encoded a chunk or started a commit stage.
+    Working,
+    /// Only completions can move it on.
+    Waiting,
     Committed(u64),
     Failed(u64),
 }
@@ -45,7 +48,7 @@ pub(super) enum CheckpointProgress {
 /// syncs both directories. Unnamed files vanish on a crash or a restart, so
 /// no partial file is ever reachable under a checkpoint name.
 pub(super) struct CheckpointWriter {
-    disk: DiskIo,
+    pub(super) disk: DiskIo,
     reader: BeaconStateReader,
     cursor: CheckpointCursor,
     path: PathBuf,
@@ -108,12 +111,13 @@ impl CheckpointWriter {
         }
         if self.stage == Stage::Failing {
             if !self.disk.is_idle() {
-                return CheckpointProgress::Pending;
+                return CheckpointProgress::Waiting;
             }
             return CheckpointProgress::Failed(self.cursor.slot());
         }
-        if self.awaiting > 0 {
-            return CheckpointProgress::Pending;
+        let no_buffer = self.stage == Stage::Streaming && self.buffers.is_empty();
+        if self.awaiting > 0 || no_buffer {
+            return CheckpointProgress::Waiting;
         }
         let result = match self.stage {
             Stage::Streaming => self.stream(),
@@ -126,7 +130,7 @@ impl CheckpointWriter {
         if let Err(error) = result {
             self.failure = Some(error);
         }
-        CheckpointProgress::Pending
+        CheckpointProgress::Working
     }
 
     fn reap(&mut self) {
@@ -162,7 +166,7 @@ impl CheckpointWriter {
     }
 
     fn stream(&mut self) -> Result<(), Error> {
-        let Some(mut buf) = self.buffers.pop() else { return Ok(()) };
+        let mut buf = self.buffers.pop().expect("step streams only with a free buffer");
         let file = match self.reader.checkpoint_chunk(&mut self.cursor, &mut buf) {
             Ok(CheckpointChunk::Ssz) => self.ssz,
             Ok(CheckpointChunk::Pubkeys) => self.pubkeys,
@@ -334,10 +338,12 @@ impl Store {
         }
     }
 
-    pub(super) fn step_checkpoint(&mut self) {
-        let Some(writer) = self.checkpoint.as_mut() else { return };
+    /// Whether the checkpoint moved on.
+    pub(super) fn step_checkpoint(&mut self) -> bool {
+        let Some(writer) = self.checkpoint.as_mut() else { return false };
         match writer.step() {
-            CheckpointProgress::Pending => {}
+            CheckpointProgress::Working => {}
+            CheckpointProgress::Waiting => return false,
             CheckpointProgress::Failed(slot) => {
                 self.checkpoint = None;
                 let slot_dir = self.finalized_checkpoints_dir().join(slot.to_string());
@@ -359,6 +365,7 @@ impl Store {
                 }
             }
         }
+        true
     }
 }
 

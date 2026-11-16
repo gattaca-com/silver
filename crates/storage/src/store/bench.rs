@@ -25,6 +25,7 @@ use silver_common::{
 use tempfile::TempDir;
 
 use super::{COLUMN_SLOTS_RETAINED, Payload, PendingWrite, SLOTS_PER_DIR, Store, column_path};
+use crate::tile::IDLE_WAIT;
 
 const COLUMNS: u64 = 128;
 const CELL_BYTES: usize = 2048;
@@ -71,8 +72,11 @@ impl Sample {
 
     fn file_io(&mut self, store: &mut Store, producer: &mut TProducer) {
         let t = Instant::now();
-        store.file_io(|_| [0u8; 4], producer, &mut |_| {}).unwrap();
+        let progressed = store.file_io(|_| [0u8; 4], producer, &mut |_| {}).unwrap();
         self.calls.push(t.elapsed());
+        if !progressed && store.has_pending_io() {
+            store.wait(None, IDLE_WAIT);
+        }
     }
 
     fn report(mut self, name: &str, objects: u64, bytes: u64) {

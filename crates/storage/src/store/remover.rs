@@ -18,7 +18,7 @@ const MAX_LISTED_PER_TURN: usize = 32;
 /// directory is listed at a time, and its `remove_dir` waits for every unlink
 /// in flight.
 pub(super) struct DirectoryRemover {
-    disk: DiskIo,
+    pub(super) disk: DiskIo,
     directory: DirectoryTokens,
     directories: VecDeque<PathBuf>,
     listing: Option<(PathBuf, ReadDir)>,
@@ -41,9 +41,9 @@ impl DirectoryRemover {
         self.directories.push_back(directory);
     }
 
-    pub(super) fn step(&mut self) {
+    pub(super) fn step(&mut self) -> bool {
         self.reap();
-        self.queue_removals();
+        self.queue_removals()
     }
 
     fn reap(&mut self) {
@@ -63,13 +63,13 @@ impl DirectoryRemover {
         });
     }
 
-    fn queue_removals(&mut self) {
-        for _ in 0..MAX_LISTED_PER_TURN {
+    fn queue_removals(&mut self) -> bool {
+        for turn in 0..MAX_LISTED_PER_TURN {
             if self.queued == MAX_QUEUED {
-                return;
+                return turn > 0;
             }
             let Some((directory, listing)) = self.listing.as_mut() else {
-                let Some(directory) = self.directories.pop_front() else { return };
+                let Some(directory) = self.directories.pop_front() else { return turn > 0 };
                 match std::fs::read_dir(&directory) {
                     Ok(listing) => self.listing = Some((directory, listing)),
                     Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -84,7 +84,7 @@ impl DirectoryRemover {
                     self.listing = None;
                     continue;
                 }
-                None if self.queued > 0 => return,
+                None if self.queued > 0 => return turn > 0,
                 None => {
                     let (directory, _) = self.listing.take().expect("listing present");
                     self.disk.remove_dir(self.directory.next(), directory)
@@ -94,8 +94,10 @@ impl DirectoryRemover {
                 self.queued += 1;
             }
         }
+        true
     }
 
+    #[cfg(test)]
     pub(super) fn is_idle(&self) -> bool {
         self.directories.is_empty() && self.listing.is_none() && self.queued == 0
     }
