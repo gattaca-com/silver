@@ -45,7 +45,8 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
-        StorageCounters::WriteQueueLength.set(self.write_queue.len() as u64);
+        let writes = self.write_queue.len() + self.writer.in_flight();
+        StorageCounters::WriteQueueLength.set(writes as u64);
         let finished = self.apply_finished_writes(emit);
         finished.and(self.start_queued_writes(emit))
     }
@@ -109,18 +110,30 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
+        if self.below_retention(&pending) {
+            silver_log::debug!(?pending, "backfilled below retention; dropped");
+            self.write_queue.landed(&pending);
+            return Start::Done(Ok(()));
+        }
         let op = match self.write_op(&pending) {
             None => return Start::Done(self.apply_without_io(pending, emit)),
             Some(Err(error)) => return Start::Done(self.write_landed(pending, Err(error), emit)),
             Some(Ok(op)) => op,
         };
-        if self.writer.busy_with(op.key()) {
+        if self.writer.conflicts_with(&op) {
             return Start::Busy(pending);
         }
         // SAFETY: the op's bytes are a `TRead` or records that `pending`
         // holds, which the writer keeps until the write completes.
         unsafe { self.writer.start(op, WriteTag::Queued(pending)) };
         Start::Done(Ok(()))
+    }
+
+    /// Its group is gone or being removed: writing would recreate it.
+    fn below_retention(&self, pending: &PendingWrite) -> bool {
+        pending.backfilled().is_some_and(|(payload, slot)| {
+            self.history_floors[payload as usize].is_some_and(|floor| slot < floor)
+        })
     }
 
     /// `None` for a write with no I/O on the writer.
@@ -349,7 +362,8 @@ impl Store {
     ) where
         F: FnMut(IoEvent),
     {
-        StorageCounters::ReadQueueLength.set(self.query_queue.len() as u64);
+        let reads = self.query_queue.len() + self.reader.in_flight();
+        StorageCounters::ReadQueueLength.set(reads as u64);
         self.deliver_finished_reads(fork_digest_at, producer, emit);
         self.start_reads(emit);
     }
@@ -397,9 +411,11 @@ impl Store {
                 query.finish(false, emit);
                 continue;
             };
+            // A file still being written may be empty or partial, and one
+            // still being promoted is not in place yet.
+            let promoting = unit.is_finalized() && self.write_queue.promoting(unit.slot());
             let path = self.unit_path(&unit);
-            // A file still being written may be empty or partial.
-            if self.writer.busy_with(&path) {
+            if promoting || self.writer.busy_with(&path) {
                 query.units.push_front(unit);
                 self.query_queue.push_back(query);
                 continue;

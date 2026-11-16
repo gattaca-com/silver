@@ -52,9 +52,12 @@ impl<T> FileReader<T> {
 
     pub(super) fn start(&mut self, path: &Path, tag: T) {
         let read = match self.disk.open(path, OpenOptions::new().read(true)) {
-            Ok(file) => {
-                self.disk.file_len(file);
+            Ok(file) if self.disk.file_len(file) => {
                 Read { file: Some(file), tag, state: State::Sizing }
+            }
+            Ok(file) => {
+                let error = Error::other("file closed before its length was read");
+                Read { file: Some(file), tag, state: State::Done(ReadOutcome::Failed(error)) }
             }
             Err(error) => Read { file: None, tag, state: State::Done(ReadOutcome::Failed(error)) },
         };

@@ -38,6 +38,10 @@ impl Finalized {
         &self.coverage
     }
 
+    pub(super) fn skipped(&self, slot: u64) -> bool {
+        !self.blocks.holds(slot) && self.coverage.covers(slot)
+    }
+
     pub(super) fn custody(&self) -> u128 {
         self.coverage.custody()
     }

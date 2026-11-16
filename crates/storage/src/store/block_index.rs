@@ -1,14 +1,15 @@
 #[cfg(test)]
 use std::io::Write;
 use std::{
-    io::{Error, ErrorKind, Read},
+    fs::OpenOptions,
+    io::{Error, ErrorKind},
     path::{Path, PathBuf},
 };
 
 use fxhash::FxHashMap;
 use silver_common::merkle::B256;
 
-use crate::store::io::open_file_read;
+use super::SLOTS_PER_DIR;
 #[cfg(test)]
 use crate::store::io::open_file_write;
 
@@ -46,15 +47,30 @@ pub(super) fn append(dir: &Path, record: Record) -> Result<(), Error> {
     open_file_write(file(dir), true)?.write_all(&record.encode())
 }
 
+/// Records up to the first torn one, or one outside `dir`'s slot group. The
+/// file is cut there, so later appends stay aligned.
 pub(super) fn load_dir(dir: &Path, sink: &mut impl FnMut(Record)) -> Result<(), Error> {
-    let mut file = match open_file_read(dir.join(FILE_NAME)) {
-        Ok(file) => file,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
+    let Some(group) = dir.file_name().and_then(|name| name.to_str()?.parse::<u64>().ok()) else {
+        return Ok(());
     };
-    let mut bytes = [0u8; RECORD_LEN];
-    while file.read_exact(&mut bytes).is_ok() {
-        sink(Record::decode(&bytes));
+    let path = file(dir);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut valid = 0;
+    for chunk in bytes.chunks_exact(RECORD_LEN) {
+        let record = Record::decode(chunk.try_into().expect("chunks of RECORD_LEN"));
+        if !(group..group + SLOTS_PER_DIR).contains(&record.slot) {
+            break;
+        }
+        sink(record);
+        valid += RECORD_LEN;
+    }
+    if valid < bytes.len() {
+        silver_log::warn!(?path, valid, len = bytes.len(), "block index cut at a bad record");
+        OpenOptions::new().write(true).open(&path)?.set_len(valid as u64)?;
     }
     Ok(())
 }
@@ -234,7 +250,9 @@ mod tests {
 
     #[test]
     fn records_round_trip_through_the_file() {
-        let dir = scratch("round_trip");
+        let root = scratch("round_trip");
+        let dir = root.join("0");
+        std::fs::create_dir(&dir).unwrap();
         assert!(load(&dir).is_empty());
         let written =
             [Record { block_root: [1; 32], slot: 40 }, Record { block_root: [2; 32], slot: 44 }];
@@ -243,7 +261,42 @@ mod tests {
         }
 
         assert_eq!(load(&dir), written);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A crash mid-append leaves a partial record; the next append after a
+    /// reload must still be readable.
+    #[test]
+    fn torn_tail_is_cut_before_the_next_append() {
+        let root = scratch("torn_tail");
+        let dir = root.join("128");
+        std::fs::create_dir(&dir).unwrap();
+        let first = Record { block_root: [1; 32], slot: 130 };
+        append(&dir, first).unwrap();
+        open_file_write(file(&dir), true).unwrap().write_all(&[0xFF; RECORD_LEN / 2]).unwrap();
+
+        assert_eq!(load(&dir), [first]);
+        let second = Record { block_root: [2; 32], slot: 131 };
+        append(&dir, second).unwrap();
+        assert_eq!(load(&dir), [first, second]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A record whose slot lies outside its group is corrupt: loading stops
+    /// there instead of sizing the held map by it.
+    #[test]
+    fn record_outside_its_group_ends_the_file() {
+        let root = scratch("outside_group");
+        let dir = root.join("128");
+        std::fs::create_dir(&dir).unwrap();
+        let kept = Record { block_root: [1; 32], slot: 200 };
+        append(&dir, kept).unwrap();
+        append(&dir, Record { block_root: [2; 32], slot: 1 << 62 }).unwrap();
+        append(&dir, Record { block_root: [3; 32], slot: 201 }).unwrap();
+
+        assert_eq!(load(&dir), [kept]);
+        assert_eq!(std::fs::metadata(file(&dir)).unwrap().len(), RECORD_LEN as u64);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -207,8 +207,9 @@ impl CheckpointWriter {
     }
 
     fn sync_and_link_pubkeys(&mut self) -> Result<(), Error> {
+        let path = self.named("pubkeys");
         let synced = self.disk.sync_all(self.pubkeys);
-        let linked = self.disk.link(self.pubkeys, self.named("pubkeys"))?;
+        let linked = self.disk.link(self.pubkeys, path).unwrap_or(None);
         self.wait_for(&[synced, linked], Stage::SyncingAndLinkingPubkeys)
     }
 
@@ -228,11 +229,13 @@ impl CheckpointWriter {
         self.wait_for(&queued, Stage::SyncingDirectories)
     }
 
+    /// Counts what was queued even when an op was not, so its completions
+    /// never outnumber `awaiting`.
     fn wait_for(&mut self, queued: &[Option<OperationId>], next: Stage) -> Result<(), Error> {
-        if queued.iter().any(Option::is_none) {
-            return Err(Error::other("checkpoint file closed"));
+        self.awaiting = queued.iter().flatten().count();
+        if self.awaiting < queued.len() {
+            return Err(Error::other("checkpoint op not queued"));
         }
-        self.awaiting = queued.len();
         self.stage = next;
         Ok(())
     }

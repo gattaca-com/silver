@@ -41,8 +41,8 @@ pub(super) enum WriteOp {
         path: PathBuf,
         bytes: *const [u8],
     },
-    /// Written to `staged`, which is then renamed over `path` even if the
-    /// write failed.
+    /// Written to `staged`, which is then renamed over `path`. Once `staged`
+    /// opens, the rename follows even a failed write.
     Replace {
         path: PathBuf,
         staged: PathBuf,
@@ -59,7 +59,7 @@ pub(super) enum WriteOp {
 
 impl WriteOp {
     /// The file the op changes; ops on one file run one at a time.
-    pub(super) fn key(&self) -> &Path {
+    fn key(&self) -> &Path {
         match self {
             Self::Create { path, .. } |
             Self::Append { path, .. } |
@@ -72,6 +72,8 @@ impl WriteOp {
 
 struct Write<T> {
     key: PathBuf,
+    /// A rename changes its destination as well.
+    renamed_to: Option<PathBuf>,
     file: Option<FileToken>,
     /// Finishes the write when set; otherwise its data write does.
     finishing_op: Option<OperationId>,
@@ -86,9 +88,9 @@ struct Write<T> {
 unsafe impl<T: Send> Send for Write<T> {}
 
 /// Creates, appends, replaces, renames and unlinks files without blocking.
-/// Ops on different files overlap; [`Self::busy_with`] lets the caller keep
-/// ops on one file in order. Writes finish in completion order and hand the
-/// caller's tag back.
+/// Ops on different files overlap; [`Self::conflicts_with`] lets the caller
+/// keep ops on one file in order. [`Self::next_finished`] hands each finished
+/// write's tag back, in no particular order.
 pub(super) struct FileWriter<T> {
     // Drops first: its drop waits for the kernel to finish reading the
     // memory the writes point into.
@@ -115,9 +117,21 @@ impl<T> FileWriter<T> {
     }
 
     pub(super) fn busy_with(&self, path: &Path) -> bool {
-        // Keys are built one way, so bytes compare exactly and skip the
+        // Paths are built one way, so bytes compare exactly and skip the
         // per-component parse `Path` equality does.
-        self.writes.iter().any(|write| write.key.as_os_str() == path.as_os_str())
+        let path = path.as_os_str();
+        self.writes.iter().any(|write| {
+            write.key.as_os_str() == path ||
+                write.renamed_to.as_ref().is_some_and(|to| to.as_os_str() == path)
+        })
+    }
+
+    pub(super) fn conflicts_with(&self, op: &WriteOp) -> bool {
+        let renamed_to = match op {
+            WriteOp::Rename { to, .. } => Some(to),
+            _ => None,
+        };
+        self.busy_with(op.key()) || renamed_to.is_some_and(|to| self.busy_with(to))
     }
 
     /// # Safety
@@ -127,6 +141,7 @@ impl<T> FileWriter<T> {
     pub(super) unsafe fn start(&mut self, op: WriteOp, tag: T) {
         let mut write = Write {
             key: PathBuf::new(),
+            renamed_to: None,
             file: None,
             finishing_op: None,
             append: None,
@@ -142,8 +157,8 @@ impl<T> FileWriter<T> {
                 started
             }
             WriteOp::Append { path, bytes } => {
-                let started = self.open(&path, false, &mut write).map(|file| {
-                    self.disk.file_len(file);
+                let started = self.open(&path, false, &mut write).and_then(|file| {
+                    self.disk.file_len(file).then_some(()).ok_or_else(file_closed)
                 });
                 write.append = Some(bytes);
                 write.key = path;
@@ -159,8 +174,9 @@ impl<T> FileWriter<T> {
                 started.map(|id| write.finishing_op = Some(id))
             }
             WriteOp::Rename { from, to } => {
-                let started = queued(self.disk.rename_path(self.directory.next(), &from, to));
+                let started = queued(self.disk.rename_path(self.directory.next(), &from, &to));
                 write.key = from;
+                write.renamed_to = Some(to);
                 started.map(|id| write.finishing_op = Some(id))
             }
             WriteOp::Unlink { path } => {
@@ -274,5 +290,9 @@ unsafe fn write_at(
 }
 
 fn queued(id: Result<Option<OperationId>, Error>) -> Result<OperationId, Error> {
-    id?.ok_or_else(|| Error::other("file closed"))
+    id?.ok_or_else(file_closed)
+}
+
+fn file_closed() -> Error {
+    Error::other("file closed")
 }

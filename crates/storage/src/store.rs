@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{VecDeque, hash_map::Entry},
     io::Error,
     path::{Path, PathBuf},
     sync::Arc,
@@ -8,7 +8,7 @@ use std::{
 
 use flux_disk::{DiskConfig, DiskIo};
 use flux_profiler::timed;
-use fxhash::FxHashSet;
+use fxhash::{FxHashMap, FxHashSet};
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PayloadResolution, PeerEvent,
@@ -209,6 +209,27 @@ impl PendingWrite {
         matches!(self, PendingWrite::TruncateHistory { .. })
     }
 
+    /// The slot whose finalized file this write moves into place.
+    fn promoted_slot(&self) -> Option<u64> {
+        match self {
+            PendingWrite::PromoteBlock { block } => Some(block.facts.slot),
+            PendingWrite::PromoteColumn { slot, .. } |
+            PendingWrite::PromoteEnvelope { slot, .. } => Some(*slot),
+            _ => None,
+        }
+    }
+
+    /// Finalized history from peers, which can arrive after its slot fell
+    /// below retention.
+    fn backfilled(&self) -> Option<(Payload, u64)> {
+        match self {
+            PendingWrite::Column { slot, .. } => Some((Payload::Column, *slot)),
+            PendingWrite::BackfillEnvelope { slot, .. } => Some((Payload::Envelope, *slot)),
+            PendingWrite::BackfillBlock { block, .. } => Some((Payload::Block, block.facts.slot)),
+            _ => None,
+        }
+    }
+
     fn lands(&self) -> bool {
         match self {
             PendingWrite::Column { .. } |
@@ -236,16 +257,23 @@ enum WriteTag {
 
 /// The coverage is mid-change while writes that land are queued or in
 /// flight, so nothing is published or linked from it until `landing` is
-/// zero. A write counts from its push until it lands.
+/// zero. A write counts from its push until it lands. Index appends do not
+/// land: nothing waits for them.
 #[derive(Default)]
 struct WriteQueue {
     queue: VecDeque<PendingWrite>,
     landing: usize,
+    // Per slot, promotions pushed and not yet landed: its finalized files
+    // are not all in place.
+    promoting: FxHashMap<u64, u32>,
 }
 
 impl WriteQueue {
     fn push_back(&mut self, write: PendingWrite) {
         self.landing += usize::from(write.lands());
+        if let Some(slot) = write.promoted_slot() {
+            *self.promoting.entry(slot).or_default() += 1;
+        }
         self.queue.push_back(write);
     }
 
@@ -270,6 +298,18 @@ impl WriteQueue {
 
     fn landed(&mut self, write: &PendingWrite) {
         self.landing -= usize::from(write.lands());
+        if let Some(slot) = write.promoted_slot() &&
+            let Entry::Occupied(mut pending) = self.promoting.entry(slot)
+        {
+            *pending.get_mut() -= 1;
+            if *pending.get() == 0 {
+                pending.remove();
+            }
+        }
+    }
+
+    fn promoting(&self, slot: u64) -> bool {
+        self.promoting.contains_key(&slot)
     }
 
     fn landing(&self) -> usize {
@@ -311,6 +351,13 @@ impl QueryUnit {
 
     fn is_envelope(&self) -> bool {
         matches!(self, QueryUnit::Envelope { .. } | QueryUnit::UnfinalizedEnvelope { .. })
+    }
+
+    fn is_finalized(&self) -> bool {
+        matches!(
+            self,
+            QueryUnit::Block { .. } | QueryUnit::Column { .. } | QueryUnit::Envelope { .. }
+        )
     }
 }
 
@@ -446,7 +493,10 @@ impl PendingQuery {
 }
 
 fn disk_ring() -> Result<DiskIo, Error> {
-    let unavailable = |e: Error| Error::new(e.kind(), format!("io_uring unavailable: {e}"));
+    let unavailable = |e: Error| {
+        let needs = "needs Linux 5.15+ and a seccomp profile that allows io_uring";
+        Error::new(e.kind(), format!("io_uring unavailable ({needs}): {e}"))
+    };
     let mut disk = DiskIo::new(DiskConfig::default()).map_err(unavailable)?;
     disk.limit_io_workers(IO_WORKERS, 0).map_err(unavailable)?;
     Ok(disk)
@@ -1064,7 +1114,14 @@ impl Store {
         let canonical =
             self.unfinalized.canonical_chain_in_range(self.head.root, self.head.slot, start, end);
         for slot in start..end {
-            push(slot, canonical.get(&slot).copied());
+            match canonical.get(&slot) {
+                Some(&roots) => push(slot, Some(roots)),
+                None if slot <= self.head.finalized_slot && !self.finalized.skipped(slot) => {
+                    push(slot, None)
+                }
+                // Skipped, or above the head.
+                None => {}
+            }
         }
     }
 

@@ -92,6 +92,7 @@ fn decode(bytes: &[u8], custody: u128) -> Option<Coverage> {
         custody,
         chain: Chain::from_ascending(spans),
         missing,
+        landed_early: BTreeMap::new(),
         examined_below,
         version: 0,
         persisted: 0,

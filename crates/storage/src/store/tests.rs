@@ -1638,3 +1638,201 @@ fn truncation_waits_for_earlier_writes() {
     assert!(!slot_dir(&store_path, super::Payload::Column, 0).exists(), "the group went whole");
     assert!(column_path(&store_path, group, 2).exists());
 }
+
+fn blocks_by_range(start: u64, count: u64) -> silver_common::RpcRequest {
+    let mut range = [0u8; 24];
+    range[0..8].copy_from_slice(&start.to_le_bytes());
+    range[8..16].copy_from_slice(&count.to_le_bytes());
+    range[16..24].copy_from_slice(&1u64.to_le_bytes());
+    silver_common::RpcRequest::BlocksByRange(range)
+}
+
+fn columns_by_range(start: u64, count: u64, columns: &[u64]) -> silver_common::RpcRequest {
+    let mut ssz = [0u8; silver_common::ssz_view::DC_BY_RANGE_REQ_MAX];
+    ssz[0..8].copy_from_slice(&start.to_le_bytes());
+    ssz[8..16].copy_from_slice(&count.to_le_bytes());
+    ssz[16..20].copy_from_slice(&20u32.to_le_bytes());
+    for (i, column) in columns.iter().enumerate() {
+        ssz[20 + i * 8..28 + i * 8].copy_from_slice(&column.to_le_bytes());
+    }
+    silver_common::RpcRequest::DataColumnsByRange { ssz, len: 20 + columns.len() * 8 }
+}
+
+fn request(
+    store: &mut super::Store,
+    consumer: &mut TCacheReader,
+    peer: usize,
+    protocol: silver_common::StreamProtocol,
+    request: silver_common::RpcRequest,
+) {
+    let stream_id = silver_common::P2pStreamId::new(peer, 1, protocol, false);
+    store.rpc_request(consumer, silver_common::RpcRequestInbound { stream_id, request });
+}
+
+/// Per kind, the responses sent: blocks, columns, completes, errors.
+fn tally(sent: &[silver_common::P2pSend]) -> [usize; 4] {
+    use silver_common::{P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound};
+    let mut kinds = [0; 4];
+    for send in sent {
+        let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound { response, .. })) = send else {
+            continue;
+        };
+        match response {
+            RpcResponse::BeaconBlock { .. } => kinds[0] += 1,
+            RpcResponse::DataColumnSidecar { .. } => kinds[1] += 1,
+            RpcResponse::Complete => kinds[2] += 1,
+            RpcResponse::Error { .. } => kinds[3] += 1,
+            _ => {}
+        }
+    }
+    kinds
+}
+
+/// Requests for a block that just finalized wait for its promotion instead
+/// of reading a finalized path the rename has not reached, queued or not.
+#[test]
+fn just_finalized_data_is_served_once_promoted() {
+    use silver_common::{StreamProtocol, TCache, TCacheProducer};
+
+    let (slot, parent) = (42, [0x31; 32]);
+    let block = blob_block(slot, parent);
+    let root = block_root_fulu(&block);
+    // Declared first so they outlive the reads `store` holds, panics included.
+    let mut staged = stage("just_finalized", &block, 1);
+    let mut columns = stage("just_finalized_columns", &[0x5a; 64], 128);
+    let mut requests = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let mut consumer =
+        TCacheReader::single(requests.cache_ref(), "just_finalized_req", TReadMode::Sliding)
+            .unwrap();
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu_custodying(dir.path().to_str().unwrap().to_owned(), u128::MAX);
+
+    store.sync_update(SyncUpdate::Following);
+    store.add_block(root, staged.consumer.acquire(staged.reads[0]), slot, parent);
+    for column in 0..128 {
+        let read = columns.consumer.acquire(columns.reads[column]);
+        store.add_data_column(root, column as u64, read, slot, false);
+    }
+    drain(&mut store).unwrap();
+    store.update_head(slot, root, PayloadResolution::Full, slot, root);
+
+    let mut by_root = requests.reserve(32, true).unwrap();
+    by_root.write_all(&root).unwrap();
+    by_root.flush().unwrap();
+    let by_root = silver_common::RpcRequest::BlockByRoot(by_root.read());
+    let range = blocks_by_range(slot, 1);
+    request(&mut store, &mut consumer, 1, StreamProtocol::BeaconBlocksByRange, range);
+    request(&mut store, &mut consumer, 2, StreamProtocol::BeaconBlocksByRoot, by_root);
+    // Column 127 is promoted last, so it is still queued after the first turn.
+    let range = columns_by_range(slot, 1, &[0, 127]);
+    request(&mut store, &mut consumer, 3, StreamProtocol::DataColumnSidecarsByRange, range);
+
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert!(!store.write_queue.is_empty(), "promotions still queued");
+    assert_eq!(store.reader.in_flight(), 0, "reads wait for the promotion");
+
+    let sent = serve_peers(&mut store, |_| [0u8; 4], &mut producer);
+    assert_eq!(tally(&sent), [2, 2, 3, 0], "both blocks, both columns, no error: {sent:?}");
+}
+
+/// Promotions land in any order: columns down before their block still
+/// count once the block lands.
+#[test]
+fn promoted_columns_count_whatever_lands_first() {
+    let (slot, parent) = (42, [0x31; 32]);
+    let block = blob_block(slot, parent);
+    let root = block_root_fulu(&block);
+    // Declared first so they outlive the reads `store` holds, panics included.
+    let mut staged = stage("columns_any_order", &block, 1);
+    let mut columns = stage("columns_any_order_columns", &[0x5a; 64], 128);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu_custodying(dir.path().to_str().unwrap().to_owned(), u128::MAX);
+
+    store.sync_update(SyncUpdate::Following);
+    store.add_block(root, staged.consumer.acquire(staged.reads[0]), slot, parent);
+    for column in 0..128 {
+        let read = columns.consumer.acquire(columns.reads[column]);
+        store.add_data_column(root, column as u64, read, slot, false);
+    }
+    drain(&mut store).unwrap();
+    store.update_head(slot, root, PayloadResolution::Full, slot, root);
+    drain(&mut store).unwrap();
+
+    assert!(store.finalized.holds(slot));
+    assert_eq!(store.finalized.coverage().columns_missing(slot), 0, "every column landed");
+}
+
+/// Skipped slots, finalized or not, leave a range short instead of failing it.
+#[test]
+fn range_over_skipped_slots_completes() {
+    use silver_common::{StreamProtocol, TCache, TCacheProducer};
+
+    let block_40 = bare_block(40, [0x31; 32]);
+    let root_40 = block_root_fulu(&block_40);
+    let block_42 = bare_block(42, root_40);
+    let root_42 = block_root_fulu(&block_42);
+    let block_44 = bare_block(44, root_42);
+    let root_44 = block_root_fulu(&block_44);
+    // Declared first so they outlive the reads `store` holds, panics included.
+    let mut staged = [
+        stage("skipped_40", &block_40, 1),
+        stage("skipped_42", &block_42, 1),
+        stage("skipped_44", &block_44, 1),
+    ];
+    let requests = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let mut consumer =
+        TCacheReader::single(requests.cache_ref(), "skipped_req", TReadMode::Sliding).unwrap();
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+
+    store.sync_update(SyncUpdate::Following);
+    let blocks = [(40, root_40, [0x31; 32]), (42, root_42, root_40), (44, root_44, root_42)];
+    for ((slot, root, parent), staged) in blocks.into_iter().zip(&mut staged) {
+        store.add_block(root, staged.consumer.acquire(staged.reads[0]), slot, parent);
+    }
+    store.update_head(44, root_44, PayloadResolution::Full, 42, root_42);
+    drain(&mut store).unwrap();
+    assert!(store.finalized.skipped(41), "41 lies inside the linked history");
+
+    request(
+        &mut store,
+        &mut consumer,
+        1,
+        StreamProtocol::BeaconBlocksByRange,
+        blocks_by_range(40, 6),
+    );
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    let sent = serve_peers(&mut store, |_| [0u8; 4], &mut producer);
+    assert_eq!(tally(&sent), [3, 0, 1, 0], "40, 42 and 44, then Complete: {sent:?}");
+}
+
+/// History from peers that arrives after its group fell below retention is
+/// dropped, not written into a group being removed.
+#[test]
+fn backfill_below_retention_is_dropped() {
+    // Declared first so it outlives the reads `store` holds, panics included.
+    let mut staged = stage("below_retention", &[0x5a; 64], 1);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    following(&mut store, 1 << 20, [1; 32]);
+    let group = super::SLOTS_PER_DIR;
+    place_column(&store_path, 0, 0);
+    place_column(&store_path, group, 0);
+
+    store.write_queue.push_back(super::PendingWrite::TruncateHistory {
+        payload: super::Payload::Column,
+        finalized_slot: super::COLUMN_SLOTS_RETAINED + group,
+    });
+    store.add_data_column([2; 32], 1, staged.consumer.acquire(staged.reads[0]), 1, false);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    drain(&mut store).unwrap();
+    while !store.remover.is_idle() {
+        assert!(Instant::now() < deadline, "truncation did not finish");
+        drain(&mut store).unwrap();
+    }
+    assert!(!slot_dir(&store_path, super::Payload::Column, 0).exists(), "the group stays gone");
+    assert!(column_path(&store_path, group, 0).exists());
+}

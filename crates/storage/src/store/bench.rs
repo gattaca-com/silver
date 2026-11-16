@@ -272,7 +272,9 @@ fn storage_bench_backfill_columns() {
     let column = vec![0x5au8; column_sidecar_len(blobs)];
     let mut stager = Stager::new("bench_backfill");
     let mut sample = Sample::start();
-    for slot in (1 << 19)..(1 << 19) + slots {
+    // Inside column retention, below finality.
+    let first = (1 << 20) - COLUMN_SLOTS_RETAINED / 2;
+    for slot in first..first + slots {
         for index in 0..COLUMNS {
             store.add_data_column(
                 [2; 32],
