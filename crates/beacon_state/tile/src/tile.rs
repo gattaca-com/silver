@@ -1211,14 +1211,9 @@ impl BeaconStateTile {
         true
     }
 
-    /// The block root of an envelope that passes gossip validation and
-    /// `process_execution_payload`'s withdrawals check.
     fn ef_processable_envelope(&self, ssz: &[u8]) -> Option<B256> {
         match self.validate_execution_payload_envelope(ssz) {
-            gossip::EnvelopeCheck::Ready { block_root, state_id } => {
-                let rv = self.state.read_view(state_id);
-                stf::envelope_withdrawals_match_expected(&rv, ssz).then_some(block_root)
-            }
+            gossip::EnvelopeCheck::Ready { block_root, .. } => Some(block_root),
             gossip::EnvelopeCheck::AwaitBlock(_) |
             gossip::EnvelopeCheck::Ignore |
             gossip::EnvelopeCheck::Reject => None,
@@ -1339,11 +1334,7 @@ impl BeaconStateTile {
     /// The gossip envelope path minus the EL round-trip and the spine.
     pub fn ef_gossip_execution_payload(&mut self, ssz: &[u8]) -> Feedback {
         match self.validate_execution_payload_envelope(ssz) {
-            gossip::EnvelopeCheck::Ready { block_root, state_id } => {
-                let rv = self.state.read_view(state_id);
-                if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
-                    return Feedback::Accept;
-                }
+            gossip::EnvelopeCheck::Ready { block_root, .. } => {
                 if self.fork_choice.is_payload_verified(&block_root) {
                     return Feedback::AlreadySeen;
                 }

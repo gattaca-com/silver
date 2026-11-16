@@ -1,8 +1,11 @@
-use std::fmt::{self, Display};
+use std::{
+    cell::Cell,
+    fmt::{self, Display},
+};
 
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, BLSPubkey, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid,
+    B256, BidBuilderError, Builder, BuilderRegistry, Epoch, ExecutionPayloadBid,
     MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
     SYNC_SUBCOMMITTEE_SIZE, ShufflingId, Slot, StateId, StateReadView, SyncSubcommittee,
     bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
@@ -852,11 +855,26 @@ impl BeaconStateTile {
         if bid.execution_payment != 0 {
             return Feedback::reject("bid has execution payment");
         }
-        if let Err(feedback) = self.check_bid_on_parent(&bid, signature, |_| true) {
+        let count = self.payload_bids_pool.count(&bid);
+        let proposing = self.proposes_at(&bid);
+        let over_limit = Cell::new(false);
+        // Our own proposal still weighs a higher bid past the limit, else a
+        // builder could show us only its low bids.
+        let within_limit = |builder: &Builder| {
+            over_limit.set(count >= builder.bid_limit());
+            !over_limit.get() || proposing
+        };
+        if let Err(feedback) = self.check_bid_on_parent(&bid, signature, within_limit) {
             return feedback;
         }
         self.payload_bids_pool.add(bid, *signature);
-        Feedback::Accept
+        if over_limit.get() { Feedback::Ignore } else { Feedback::Accept }
+    }
+
+    fn proposes_at(&self, bid: &ExecutionPayloadBid) -> bool {
+        self.fork_choice
+            .shuffling_dependent_root(&bid.parent_block_root, bid.slot / SLOTS_PER_EPOCH)
+            .is_some_and(|root| self.seen_proposer_preferences.is_local(bid.slot, &root))
     }
 
     /// What a bid must pass however it arrived: its parent, its builder's
@@ -865,7 +883,7 @@ impl BeaconStateTile {
         &mut self,
         bid: &ExecutionPayloadBid,
         signature: &[u8; 96],
-        accepts_builder: impl Fn(&BLSPubkey) -> bool,
+        accepts_builder: impl Fn(&Builder) -> bool,
     ) -> Result<(), Feedback> {
         if bid.block_hash == bid.parent_block_hash {
             return Err(Feedback::reject("bid block hash equals parent"));
@@ -927,7 +945,7 @@ impl BeaconStateTile {
                 return Err(Feedback::Ignore);
             }
         }
-        if !accepts_builder(&builder.pubkey) {
+        if !accepts_builder(builder) {
             return Err(Feedback::Ignore);
         }
 
@@ -1424,13 +1442,6 @@ impl BeaconStateTile {
         let rv = self.state.read_view(state_id);
         let slot = rv.slot.slot_number();
         self.envelope_arrivals.record(block_root, slot, self.ticker.millis_since_genesis());
-        if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
-            silver_log::error!(
-                block = hex32(&block_root),
-                "envelope withdrawals are not the expected ones"
-            );
-            return Feedback::Accept;
-        }
         let slot_state = rv.slot;
 
         let verified = self.fork_choice.is_payload_verified(&block_root);

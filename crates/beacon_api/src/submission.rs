@@ -143,7 +143,6 @@ pub(crate) enum Integration {
     #[default]
     Integrated,
     BroadcastOnly,
-    AwaitingEnvelopeCheck,
     /// A published block, whose root comes with its verdict.
     AwaitingImport {
         block_root: Option<B256>,

@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, ExecutionPayloadBid, Slot};
 
 /// The branch a bid extends: a parent beacon block and, through its full or
@@ -33,27 +33,29 @@ struct BidPoolEntry {
     signature: [u8; 96],
 }
 
-/// Highest-payout verified bid per branch, and the builders already heard
-/// from on each branch.
+/// Highest-payout verified bid per branch, and how many bids each builder
+/// has had verified on each branch.
 #[derive(Default)]
 pub(super) struct BidPool {
     slot: Slot,
     best: FxHashMap<BidBranch, BidPoolEntry>,
-    seen: FxHashSet<(BidBranch, u64)>,
+    counts: FxHashMap<(BidBranch, u64), u64>,
 }
 
 impl BidPool {
-    /// The builder's first bid on its branch, and above the branch's best.
     pub fn is_candidate(&self, bid: &ExecutionPayloadBid) -> bool {
-        let branch = BidBranch::from(bid);
-        !self.seen.contains(&(branch, bid.builder_index)) &&
-            self.best.get(&branch).is_none_or(|best| payout(bid) > payout(&best.bid))
+        self.best.get(&BidBranch::from(bid)).is_none_or(|best| payout(bid) > payout(&best.bid))
+    }
+
+    /// Verified bids from `bid`'s builder on `bid`'s branch.
+    pub fn count(&self, bid: &ExecutionPayloadBid) -> u64 {
+        self.counts.get(&(BidBranch::from(bid), bid.builder_index)).copied().unwrap_or(0)
     }
 
     /// `bid` passed validation and its signature verified.
     pub fn add(&mut self, bid: ExecutionPayloadBid, signature: [u8; 96]) {
         let branch = BidBranch::from(&bid);
-        self.seen.insert((branch, bid.builder_index));
+        *self.counts.entry((branch, bid.builder_index)).or_default() += 1;
         match self.best.entry(branch) {
             Entry::Occupied(mut best) => {
                 if payout(&bid) > payout(&best.get().bid) {
@@ -76,7 +78,7 @@ impl BidPool {
         if slot > self.slot {
             self.slot = slot;
             self.best.retain(|branch, _| branch.slot >= slot);
-            self.seen.retain(|(branch, _)| branch.slot >= slot);
+            self.counts.retain(|(branch, _), _| branch.slot >= slot);
         }
     }
 }
@@ -101,15 +103,15 @@ mod tests {
     }
 
     #[test]
-    fn a_builder_is_heard_once_per_branch() {
+    fn builder_is_counted_per_branch() {
         let mut pool = BidPool::default();
         pool.add(bid(5, 1, 1, 7, 10), [0; 96]);
-        assert!(!pool.is_candidate(&bid(5, 1, 1, 7, 20)), "same builder, same branch");
-        assert!(
-            pool.is_candidate(&bid(5, 1, 2, 7, 20)),
-            "same builder, the parent's other payload"
-        );
-        assert!(pool.is_candidate(&bid(5, 2, 1, 7, 20)), "same builder, another parent");
+        assert!(pool.is_candidate(&bid(5, 1, 1, 7, 20)), "a builder may raise its own bid");
+        pool.add(bid(5, 1, 1, 7, 20), [0; 96]);
+        assert_eq!(pool.count(&bid(5, 1, 1, 7, 0)), 2);
+        assert_eq!(pool.count(&bid(5, 1, 2, 7, 0)), 0, "the parent's other payload");
+        assert_eq!(pool.count(&bid(5, 2, 1, 7, 0)), 0, "another parent");
+        assert_eq!(pool.count(&bid(5, 1, 1, 8, 0)), 0, "another builder");
     }
 
     #[test]
@@ -139,13 +141,14 @@ mod tests {
     }
 
     #[test]
-    fn a_new_slot_keeps_next_slot_bids() {
+    fn new_slot_keeps_next_slot_bids() {
         let mut pool = BidPool::default();
         pool.add(bid(5, 1, 1, 7, 10), [0; 96]);
         pool.add(bid(6, 1, 1, 7, 10), [0; 96]);
         pool.on_slot(6);
         assert!(pool.best(&branch(5, 1, 1)).is_none());
-        assert!(!pool.is_candidate(&bid(6, 1, 1, 7, 20)), "slot 6's seen set survives");
+        assert_eq!(pool.count(&bid(6, 1, 1, 7, 0)), 1, "slot 6's counts survive");
+        assert_eq!(pool.count(&bid(5, 1, 1, 7, 0)), 0);
         assert!(pool.best(&branch(6, 1, 1)).is_some());
     }
 }

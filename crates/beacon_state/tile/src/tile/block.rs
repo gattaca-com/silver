@@ -368,12 +368,7 @@ impl BeaconStateTile {
         };
 
         match self.validate_execution_payload_envelope(data) {
-            EnvelopeCheck::Ready { block_root, state_id } => {
-                let rv = self.state.read_view(state_id);
-                if !stf::envelope_withdrawals_match_expected(&rv, data) {
-                    silver_log::warn!("replayed on-disk envelope has unexpected withdrawals");
-                    return;
-                }
+            EnvelopeCheck::Ready { block_root, .. } => {
                 self.mark_envelope_verified(block_root, data);
                 self.recompute_head(emit);
             }

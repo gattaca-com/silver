@@ -1,5 +1,6 @@
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot};
+use silver_common::ticker::slot_component_ms;
 
 const PAYLOAD_DUE_BPS: u64 = 5000;
 
@@ -21,7 +22,8 @@ impl EnvelopeArrivals {
     /// `PAYLOAD_DUE_BPS` into the block's slot.
     pub fn timely(&self, block_root: &B256, slot_ms: u64) -> bool {
         self.0.get(block_root).is_some_and(|arrival| {
-            arrival.ms_since_genesis <= arrival.slot * slot_ms + slot_ms * PAYLOAD_DUE_BPS / 10_000
+            arrival.ms_since_genesis <=
+                arrival.slot * slot_ms + slot_component_ms(slot_ms, PAYLOAD_DUE_BPS)
         })
     }
 

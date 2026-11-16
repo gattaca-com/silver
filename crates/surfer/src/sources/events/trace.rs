@@ -1,6 +1,6 @@
 use silver_common::{
     BlockSource, Nanos,
-    ticker::{BASIS_POINTS, PAYLOAD_ATTESTATION_DUE_BPS, attestation_due_bps},
+    ticker::{PAYLOAD_ATTESTATION_DUE_BPS, attestation_due_bps, slot_component_ms},
 };
 use silver_stages::{SlotClock, Stage, StageEvent};
 
@@ -21,6 +21,11 @@ impl Interval {
     pub fn duration(self) -> Nanos {
         self.end.saturating_sub(self.start)
     }
+}
+
+fn slot_component(clock: &SlotClock, basis_points: u64) -> Nanos {
+    let slot_ms = clock.slot_duration().0 / 1_000_000;
+    Nanos::from_millis(slot_component_ms(slot_ms, basis_points))
 }
 
 /// Distance from a deadline: the attestation deadline at attestable, or the
@@ -176,7 +181,7 @@ impl BlockTrace {
     }
 
     pub fn attestation_deadline(&self, clock: &SlotClock) -> Nanos {
-        clock.slot_duration() * attestation_due_bps(self.gloas) / BASIS_POINTS
+        slot_component(clock, attestation_due_bps(self.gloas))
     }
 
     pub fn offset_in_slot(&self, clock: &SlotClock, ts: Nanos) -> Option<Nanos> {
@@ -189,10 +194,9 @@ impl BlockTrace {
     pub fn deadline_margin(&self, clock: &SlotClock, span: Span) -> Option<Margin> {
         let (ready, deadline) = match span {
             Span::Strip => (self.attestable_at()?, self.attestation_deadline(clock)),
-            Span::Payload => (
-                self.payload_ready_at()?,
-                clock.slot_duration() * PAYLOAD_ATTESTATION_DUE_BPS / BASIS_POINTS,
-            ),
+            Span::Payload => {
+                (self.payload_ready_at()?, slot_component(clock, PAYLOAD_ATTESTATION_DUE_BPS))
+            }
             _ => return None,
         };
         let at = self.offset_in_slot(clock, ready)?;
@@ -447,14 +451,14 @@ pub mod tests {
         let early = trace(&[(received(), 300), (Stage::Attestable, 460), (valid(), 520)]);
         assert_eq!(
             early.deadline_margin(&clock, Span::Strip),
-            Some(Margin { delta: Nanos(3_479_600_000), made_it: true }),
-            "3333 bps of 12 s"
+            Some(Margin { delta: Nanos(3_480_000_000), made_it: true }),
+            "3333 bps of 12 s, rounded to 4 s"
         );
 
         let late = trace(&[(received(), 300), (Stage::Attestable, 4_500), (valid(), 520)]);
         assert_eq!(
             late.deadline_margin(&clock, Span::Strip),
-            Some(Margin { delta: Nanos(500_400_000), made_it: false })
+            Some(Margin { delta: Nanos(500_000_000), made_it: false })
         );
 
         let pending = trace(&[(received(), 300), (Stage::Attestable, 460)]);
@@ -538,6 +542,6 @@ pub mod tests {
             Some(Margin { delta: Nanos::from_millis(8_270), made_it: true })
         );
         assert_eq!(gloas_block().deadline_margin(&clock, Span::El), None);
-        assert_eq!(trace(&[]).attestation_deadline(&clock), Nanos(3_999_600_000), "pre-Gloas");
+        assert_eq!(trace(&[]).attestation_deadline(&clock), Nanos::from_millis(4_000), "pre-Gloas");
     }
 }

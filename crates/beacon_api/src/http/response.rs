@@ -104,7 +104,6 @@ impl<'a> Response<'a> {
         self.await_published(GossipTopic::ExecutionPayload, body, validation);
         let submission = self.submission();
         submission.envelope = Some(publication);
-        submission.integration = Integration::AwaitingEnvelopeCheck;
     }
 
     pub(crate) fn await_block(

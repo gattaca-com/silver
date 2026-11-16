@@ -1259,21 +1259,6 @@ impl BeaconApi {
                 true
             }
             (
-                BeaconApiResponse::PayloadEnvelopeValidation { consensus_valid, .. },
-                Pending::Submission(pending),
-            ) => {
-                pending.integration = if consensus_valid {
-                    Integration::Integrated
-                } else {
-                    Integration::BroadcastOnly
-                };
-                let settled = pending.settled();
-                if settled {
-                    pending.respond(&mut resp);
-                }
-                settled
-            }
-            (
                 BeaconApiResponse::LocalGossipResponse { response, block_root, .. },
                 Pending::Submission(pending),
             ) => {
@@ -4647,54 +4632,38 @@ mod tests {
         assert_same_bytes(&got, &expected);
     }
     #[test]
-    fn payload_publication_waits_for_validation_and_broadcast_in_either_order() {
-        for (consensus_valid, validation_first) in
-            [(true, true), (true, false), (false, true), (false, false)]
-        {
-            let mut server = server_with(64, LONG_TIMEOUT);
-            server.api.ctx = submission::ctx();
-            server.api.ctx.spec.gloas_fork_epoch = 0;
-            let signed = empty_signed_envelope(submission::SLOT, [3; 32]);
-            let mut client = connect(tcp_addr(&server));
-            write!(
-                client,
-                "POST /eth/v1/beacon/execution_payload_envelopes HTTP/1.1\r\nHost: x\r\n\
-                Content-Type: application/octet-stream\r\nEth-Consensus-Version: gloas\r\n\
-                Eth-Blob-Data-Included: false\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                signed.len()
-            )
-            .unwrap();
-            client.write_all(&signed).unwrap();
-            let BeaconApiRequest::PublishPayloadEnvelope {
-                request_id,
-                ssz,
-                blob_data_included,
-                ..
-            } = deferred_request(&mut server)
-            else {
-                panic!("await envelope validation")
-            };
-            assert!(!blob_data_included);
-            assert_eq!(server.submissions.read_buffer(ssz).unwrap(), signed);
-            let validation =
-                BeaconApiResponse::PayloadEnvelopeValidation { request_id, consensus_valid };
-            let broadcast = BeaconApiResponse::LocalGossipResponse {
-                request_id,
-                response: Ok(()),
-                block_root: None,
-            };
-            let responses =
-                if validation_first { [validation, broadcast] } else { [broadcast, validation] };
-            server.answer(responses[0]);
-            assert!(
-                server.api.connections.values().any(|connection| connection.awaits(request_id))
-            );
-            server.answer(responses[1]);
-            let reader = std::thread::spawn(move || read_to_eof(client));
-            let response = serve(&mut server, reader, "payload publication response");
-            let status = if consensus_valid { "200 OK" } else { "202 Accepted" };
-            assert!(response.starts_with(format!("HTTP/1.1 {status}\r\n").as_bytes()));
-        }
+    fn payload_publication_answers_once_broadcast() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx = submission::ctx();
+        server.api.ctx.spec.gloas_fork_epoch = 0;
+        let signed = empty_signed_envelope(submission::SLOT, [3; 32]);
+        let mut client = connect(tcp_addr(&server));
+        write!(
+            client,
+            "POST /eth/v1/beacon/execution_payload_envelopes HTTP/1.1\r\nHost: x\r\n\
+            Content-Type: application/octet-stream\r\nEth-Consensus-Version: gloas\r\n\
+            Eth-Blob-Data-Included: false\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            signed.len()
+        )
+        .unwrap();
+        client.write_all(&signed).unwrap();
+        let BeaconApiRequest::PublishPayloadEnvelope {
+            request_id, ssz, blob_data_included, ..
+        } = deferred_request(&mut server)
+        else {
+            panic!("await envelope publication")
+        };
+        assert!(!blob_data_included);
+        assert_eq!(server.submissions.read_buffer(ssz).unwrap(), signed);
+        assert!(server.api.connections.values().any(|connection| connection.awaits(request_id)));
+        server.answer(BeaconApiResponse::LocalGossipResponse {
+            request_id,
+            response: Ok(()),
+            block_root: None,
+        });
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "payload publication response");
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
     }
 
     /// The body spans several batches, each its own chunk, and ends with the

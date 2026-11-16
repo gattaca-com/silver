@@ -27,6 +27,7 @@ pub const PTC_WINDOW_LEN: usize = (2 + MIN_SEED_LOOKAHEAD as usize) * SLOTS_PER_
 pub const BUILDER_PENDING_PAYMENTS_LEN: usize = 2 * SLOTS_PER_EPOCH as usize;
 pub const BUILDER_REGISTRY_LIMIT: usize = 1 << 40;
 const MIN_BUILDER_HEADROOM: usize = 64;
+const ETH_TO_GWEI: u64 = 1_000_000_000;
 
 pub fn builder_capacity(count: usize) -> usize {
     count + (count / 5).max(MIN_BUILDER_HEADROOM)
@@ -79,6 +80,10 @@ impl Default for Builder {
 impl Builder {
     pub fn is_active(&self, finalized_epoch: Epoch) -> bool {
         self.deposit_epoch < finalized_epoch && self.withdrawable_epoch == FAR_FUTURE_EPOCH
+    }
+
+    pub fn bid_limit(&self) -> u64 {
+        self.balance / ETH_TO_GWEI
     }
 }
 

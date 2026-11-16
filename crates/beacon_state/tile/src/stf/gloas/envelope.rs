@@ -74,6 +74,9 @@ pub fn verify_execution_payload_envelope(
     if count > MAX_WITHDRAWALS_PER_PAYLOAD {
         return Err(E::TooManyWithdrawals { count, max: MAX_WITHDRAWALS_PER_PAYLOAD });
     }
+    if !payload_withdrawals_match_expected(rv, payload) {
+        return Err(E::PayloadMismatch { field: "withdrawals" });
+    }
 
     let fork_version = rv.epoch.fork_version_at(rv.slot.current_epoch());
     verify_envelope_signature(
@@ -89,15 +92,6 @@ pub fn verify_execution_payload_envelope(
 pub fn envelope_execution_requests(signed: &[u8]) -> &[u8] {
     let envelope = SignedExecutionPayloadEnvelopeView::message(signed);
     ExecutionPayloadEnvelopeView::execution_requests(envelope)
-}
-
-/// `process_execution_payload`'s `payload.withdrawals ==
-/// state.payload_expected_withdrawals`: a gossip-valid envelope that fails it
-/// is relayed but never becomes this node's verified payload.
-pub fn envelope_withdrawals_match_expected(rv: &StateReadView, signed: &[u8]) -> bool {
-    let payload =
-        ExecutionPayloadEnvelopeView::payload(SignedExecutionPayloadEnvelopeView::message(signed));
-    payload_withdrawals_match_expected(rv, payload)
 }
 
 pub(crate) fn payload_withdrawals_match_expected(rv: &StateReadView, payload: &[u8]) -> bool {
