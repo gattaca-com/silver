@@ -392,6 +392,46 @@ pub fn spec_tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
 }
 
+/// The fixture release whose expected results predate spec changes silver
+/// already implements.
+const STALE_FIXTURES: &str = "v1.7.0-beta.4";
+
+/// Case-path prefixes under `tests/mainnet`, with the spec changes that made
+/// their expected results stale.
+const STALE_CASES: &[(&str, &str)] = &[
+    ("gloas/fork", "builder onboarding (#5736), fork-slot payload availability (#5808)"),
+    ("gloas/transition", "fork-slot payload availability (#5808)"),
+    (
+        "gloas/networking/gossip_execution_payload_bid/pyspec_tests/\
+         gossip_execution_payload_bid__ignore_duplicate_from_builder",
+        "one bid per staked ETH (#5805)",
+    ),
+    (
+        "gloas/networking/gossip_execution_payload_envelope/pyspec_tests/\
+         gossip_execution_payload_envelope__valid_max_withdrawals",
+        "expected-withdrawals gossip check (#5821)",
+    ),
+];
+
+/// The release the Makefile stamped, or `None` without fixtures.
+fn fixture_version() -> Option<String> {
+    fs::read_dir(spec_tests_dir())
+        .ok()?
+        .flatten()
+        .find_map(|entry| entry.file_name().to_str()?.strip_prefix(".version-").map(str::to_owned))
+}
+
+/// Why the case at `case_dir` is skipped, if its fixture is stale.
+pub fn stale_reason(case_dir: &Path) -> Option<&'static str> {
+    let version = fixture_version()?;
+    assert_eq!(
+        version, STALE_FIXTURES,
+        "fixtures moved past {STALE_FIXTURES}: delete STALE_CASES and STALE_FIXTURES"
+    );
+    let case = case_dir.strip_prefix(spec_tests_dir().join("tests").join("mainnet")).ok()?;
+    STALE_CASES.iter().find(|(prefix, _)| case.starts_with(prefix)).map(|(_, why)| *why)
+}
+
 /// Parse a `0x`-prefixed 32-byte hex root (fork_choice / sync vectors).
 pub fn parse_root(s: &str) -> B256 {
     let h = s.strip_prefix("0x").unwrap_or(s);

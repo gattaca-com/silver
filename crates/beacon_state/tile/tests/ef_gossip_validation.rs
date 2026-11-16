@@ -18,7 +18,7 @@ use std::{
 
 use ef_common::{
     case_file, ef_tile_with_spec, init_tracing, iter_test_cases, parse_root, snappy_decode,
-    spec_tests_dir,
+    spec_tests_dir, stale_reason,
 };
 use flux::spine::SpineAdapter;
 use serde::Deserialize;
@@ -429,6 +429,10 @@ fn run_fork(fork: &str) {
         let cases = iter_test_cases(&entry.path());
         assert!(!cases.is_empty(), "{fork}/{handler}: no cases");
         for (name, dir) in &cases {
+            if let Some(why) = stale_reason(dir) {
+                skipped_cases.push(format!("{handler}/{name}: stale fixture, {why}"));
+                continue;
+            }
             match run_case(dir, fork == "gloas") {
                 Err(why) => skipped_cases.push(format!("{handler}/{name}: {why}")),
                 Ok(mismatches) => {

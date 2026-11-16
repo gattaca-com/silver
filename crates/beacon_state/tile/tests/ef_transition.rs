@@ -6,6 +6,7 @@ mod ef_common;
 
 use ef_common::{
     compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode, spec_tests_dir,
+    stale_reason,
 };
 use silver_beacon_state_data::SpecConfig;
 
@@ -41,6 +42,10 @@ fn transition() {
     let mut pass = 0;
     let mut fail = 0;
     for (name, dir) in &cases {
+        if let Some(why) = stale_reason(dir) {
+            eprintln!("{name}: skipped, stale fixture: {why}");
+            continue;
+        }
         let post_path = dir.join("post.ssz_snappy");
         if !post_path.exists() {
             continue;

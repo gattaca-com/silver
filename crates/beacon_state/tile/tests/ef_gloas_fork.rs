@@ -2,7 +2,7 @@
 
 mod ef_common;
 
-use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
+use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir, stale_reason};
 use silver_beacon_state::stf;
 
 /// EF `fork` vectors for the Fulu → Gloas upgrade: decode the Fulu `pre`, apply
@@ -20,6 +20,10 @@ fn gloas_fork() {
     let mut pass = 0;
     let mut fail = 0;
     for (name, dir) in &cases {
+        if let Some(why) = stale_reason(dir) {
+            eprintln!("{name}: skipped, stale fixture: {why}");
+            continue;
+        }
         let pre_path = dir.join("pre.ssz_snappy");
         let post_path = dir.join("post.ssz_snappy");
         if !post_path.exists() {
