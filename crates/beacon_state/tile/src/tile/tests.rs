@@ -41,7 +41,7 @@ use super::{
     block::{ParsedBlock, StagedBlock},
     block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
-    pending_envelopes::UnverifiedEnvelope,
+    pending_envelopes::{ParkedEnvelope, ParkedKind, UnverifiedEnvelope},
     shuffling_cache::ShufflingRequest,
     *,
 };
@@ -2294,8 +2294,8 @@ fn backfill_block_response_is_not_parked() {
 }
 
 /// Storage's historical envelopes ride the same response queue. Their block
-/// is long gone from fork choice, so handling one parks it as `AwaitBlock`
-/// and spends the pending buffer on traffic that is not ours.
+/// is long gone from fork choice, so handling one spends a signature check on
+/// traffic that is not ours.
 #[test]
 fn backfill_envelope_response_is_not_parked() {
     let (mut tile, _gp, mut rp, _spine, mut adapter) = tile_with_producers(200);
@@ -2319,12 +2319,6 @@ fn backfill_envelope_response_is_not_parked() {
             "backfill {kind:?} response not parked"
         );
     }
-
-    // Control: the live origin on the same bytes *does* park, so the
-    // assertions above are about the guard and not about malformed input.
-    let ssz = rpc_envelope(&mut rp, unknown_root);
-    tile.on_rpc_inbound(response(DataKind::Envelope, Origin::Live, ssz), &mut adapter.producers);
-    assert!(tile.pending_envelopes.holds(&unknown_root), "live envelope parks");
 }
 
 /// A replayed block can wait, e.g. on its parent's payload, while its envelope
@@ -7433,13 +7427,33 @@ fn gloas_columns_available_releases_the_parked_envelope() {
     let mut forks = ThreeForks::new();
     let (_, _gp, mut rp, _spine, mut adapter) = tile_with_producers(2);
     let read = rpc_envelope(&mut rp, D_ROOT);
-    let parked = forks.tile.reader.acquire(read);
-    forks.tile.pending_envelopes.park(D_ROOT, parked, false);
+    let parked =
+        ParkedEnvelope { read: forks.tile.reader.acquire(read), kind: ParkedKind::Verified };
+    forks.tile.pending_envelopes.park(D_ROOT, parked);
 
     forks.tile.handle_data_columns_available(D_ROOT, 2, &mut adapter.producers);
 
     assert!(!forks.tile.pending_envelopes.holds(&D_ROOT));
     assert!(forks.tile.held.is_available(&D_ROOT), "availability outlives the release");
+}
+
+/// An envelope verified against its block waits only on columns, so a
+/// signed one for another root under the same signer cannot hold it out.
+#[test]
+fn verified_envelope_parks_beside_a_signed_one_from_its_signer() {
+    let mut forks = ThreeForks::new();
+    let (_, _gp, mut rp, _spine, _adapter) = tile_with_producers(2);
+    let mut park = |root, kind| {
+        let read = forks.tile.reader.acquire(rpc_envelope(&mut rp, root));
+        forks.tile.pending_envelopes.park(root, ParkedEnvelope { read, kind });
+    };
+    park(F2_ROOT, ParkedKind::Signed { slot: 2, builder_index: 7 });
+    park(D_ROOT, ParkedKind::Verified);
+
+    let envelopes = &forks.tile.pending_envelopes;
+    assert!(envelopes.holds(&F2_ROOT) && envelopes.holds(&D_ROOT));
+    assert!(!envelopes.admits_signed(&[0xAB; 32], 2, 7));
+    assert!(envelopes.admits_signed(&[0xAB; 32], 3, 7));
 }
 
 #[test]

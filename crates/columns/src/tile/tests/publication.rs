@@ -1,7 +1,7 @@
 use blst::min_pk::SecretKey;
 use silver_beacon_state_data::{
     EpochStateFinalized, ValSeed,
-    types::{EpochState, Fork},
+    types::{EpochState, Fork, PROPOSER_LOOKAHEAD_SIZE},
 };
 use silver_common::{
     GossipDomain, TCacheId, TCacheTable, block_root_fulu, block_root_gloas, body_root,
@@ -16,6 +16,7 @@ use silver_control::cell_allocator::CellAllocator;
 use super::*;
 
 mod el;
+mod held;
 mod partial;
 mod payload;
 mod proposal;
@@ -126,11 +127,23 @@ impl Rig {
         commitments: &[u8],
         head_fork_version: [u8; 4],
     ) -> (Self, Vec<u8>) {
+        Self::with_fulu_block_on(custody, slot, commitments, head_fork_version, [0; 32], 0)
+    }
+
+    fn with_fulu_block_on(
+        custody: u128,
+        slot: u64,
+        commitments: &[u8],
+        head_fork_version: [u8; 4],
+        parent: BlockRoot,
+        lookahead_proposer: u64,
+    ) -> (Self, Vec<u8>) {
         let key = SecretKey::key_gen(&[42; 32], &[]).unwrap();
         let spec = fulu_from_genesis();
         let state = BeaconState::for_test(
             EpochStateFinalized::from_state(EpochState {
                 fork: Fork { current_version: head_fork_version, ..Default::default() },
+                proposer_lookahead: [lookahead_proposer; PROPOSER_LOOKAHEAD_SIZE],
                 ..Default::default()
             }),
             &[ValSeed { pubkey: key.sk_to_pk().to_bytes(), ..Default::default() }],
@@ -139,7 +152,7 @@ impl Rig {
         let mut owner = BeaconStateOwner::new(state);
         let anchor = owner.roll_fresh();
         owner.publish_state_id(anchor);
-        let mut block = SynthBlock::fulu(slot, commitments).into_bytes();
+        let mut block = SynthBlock::fulu(slot, commitments).parent_root(parent).into_bytes();
         let root = block_root_fulu(&block);
         let fork_root =
             hash_tree_root_fork_data(spec.fork_version_at(slot / SLOTS_PER_EPOCH), &[0; 32]);

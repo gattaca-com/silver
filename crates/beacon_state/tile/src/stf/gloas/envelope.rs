@@ -3,7 +3,7 @@
 
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    BUILDER_INDEX_SELF_BUILD, SpecConfig, StateReadView,
+    BUILDER_INDEX_SELF_BUILD, SpecConfig, StateReadView, Version,
     bls::{self, DOMAIN_BEACON_BUILDER},
 };
 use silver_common::{
@@ -75,7 +75,13 @@ pub fn verify_execution_payload_envelope(
         return Err(E::TooManyWithdrawals { count, max: MAX_WITHDRAWALS_PER_PAYLOAD });
     }
 
-    verify_envelope_signature(rv, envelope, signed, builder_index)
+    let fork_version = rv.epoch.fork_version_at(rv.slot.current_epoch());
+    verify_envelope_signature(
+        rv,
+        signed,
+        fork_version,
+        Some(state.latest_block_header.proposer_index),
+    )
 }
 
 /// Only for an envelope `verify_execution_payload_envelope` accepted, which
@@ -120,25 +126,28 @@ fn withdrawal_bounds(payload: &[u8]) -> Result<(usize, usize), E> {
     Ok((wd_off, bal_off))
 }
 
+/// An envelope checked before its block is known reads `rv` from the block's
+/// parent, so the caller names the self-build proposer from its lookahead.
 #[timed]
-fn verify_envelope_signature(
+pub fn verify_envelope_signature(
     rv: &StateReadView,
-    envelope: &[u8],
     signed: &[u8],
-    builder_index: u64,
+    fork_version: Version,
+    proposer_index: Option<u64>,
 ) -> Result<(), E> {
+    let envelope = SignedExecutionPayloadEnvelopeView::message(signed);
+    let builder_index = ExecutionPayloadEnvelopeView::builder_index(envelope);
     let message_root = ExecutionPayloadEnvelopeView::hash_tree_root(envelope);
-    let fork_version = rv.epoch.fork_version_at(rv.slot.current_epoch());
     let domain =
         bls::compute_domain(DOMAIN_BEACON_BUILDER, fork_version, &rv.imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&message_root, &domain);
     let sig = SignedExecutionPayloadEnvelopeView::signature(signed);
 
     let valid = if builder_index == BUILDER_INDEX_SELF_BUILD {
-        let proposer = rv.slot.state().latest_block_header.proposer_index as usize;
-        if proposer >= rv.validators.count() {
-            return Err(E::BuilderOutOfRange { index: builder_index });
-        }
+        let proposer = proposer_index
+            .map(|index| index as usize)
+            .filter(|&index| index < rv.validators.count())
+            .ok_or(E::BuilderOutOfRange { index: builder_index })?;
         bls::verify_one(rv.validators.pubkey_decompressed(proposer), sig, &signing_root)
     } else {
         let builder = rv

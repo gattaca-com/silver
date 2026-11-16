@@ -42,7 +42,7 @@ use crate::{
         payload_attestation_pool::PayloadAttestationPool,
         payload_attributes::PayloadAttributes,
         payload_execution_requests::PayloadExecutionRequests,
-        pending_envelopes::PendingEnvelopes,
+        pending_envelopes::{BLOCK_WAIT_SLOTS, PendingEnvelopes},
         precomputed_epochs::PrecomputedEpochs,
         proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
@@ -959,6 +959,8 @@ impl BeaconStateTile {
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
                 self.expire_orphans(slot, &mut adapter.producers);
+                self.pending_envelopes
+                    .drop_signed_before((slot + 1).saturating_sub(BLOCK_WAIT_SLOTS));
                 self.block_production.prune_before(slot, &mut adapter.producers);
                 let prev_head = self.fork_choice.find_head();
                 let advanced = self.slot_tick(slot, &mut adapter.producers);

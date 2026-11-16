@@ -51,6 +51,10 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         self.buckets.iter().all(FxHashMap::is_empty)
     }
 
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.buckets.iter().flat_map(FxHashMap::values)
+    }
+
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
         for bucket in &mut self.buckets {
             bucket.retain(&mut keep);

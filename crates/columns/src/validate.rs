@@ -51,9 +51,12 @@ pub(crate) enum ColumnOutcome {
     },
     Buffer {
         block_root: BlockRoot,
+        column_index: u64,
     },
     AwaitParent {
         parent_root: BlockRoot,
+        block_root: BlockRoot,
+        column_index: u64,
     },
     /// `relay_eligible` is false when a check the gossip rules require could
     /// not be completed — the sidecar is still imported, but it must not enter
@@ -318,8 +321,10 @@ impl ColumnValidator {
             let mut state = header.read_state(&v);
             // Epoch E's proposers follow the chain to the end of E - 2, so the
             // snapshot's lookahead vouches for a sidecar only on its own
-            // branch, at most one epoch past the parent.
+            // branch, at most one epoch past the parent. An unseen parent keeps
+            // the mismatch: the snapshot's lookahead is its only stand-in.
             if state.proposer == ProposerCheck::Mismatch &&
+                parent != ParentCheck::Unseen &&
                 !snapshot_parent_slot().is_some_and(|parent_slot| {
                     slot / SLOTS_PER_EPOCH <= parent_slot / SLOTS_PER_EPOCH + 1
                 })
@@ -338,6 +343,7 @@ impl ColumnValidator {
             silver_log::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
+        let fork_version = self.spec.fork_version_at(slot / SLOTS_PER_EPOCH);
         match parent {
             ParentCheck::Seen => {}
             ParentCheck::Unseen => {
@@ -347,7 +353,22 @@ impl ColumnValidator {
                     parent_root = hex::encode(parent_root),
                     "sidecar parent_root not yet validated — ignoring (not penalized)"
                 );
-                return ColumnOutcome::AwaitParent { parent_root: *parent_root };
+                // The stand-in lookahead can only ignore, never reject.
+                if state.proposer == ProposerCheck::Mismatch {
+                    return ColumnOutcome::Skip;
+                }
+                return match header.verify_signature(&state, fork_version, tracker) {
+                    Ok(()) => ColumnOutcome::AwaitParent {
+                        parent_root: *parent_root,
+                        block_root,
+                        column_index,
+                    },
+                    Err(SignatureError::UnknownProposer) => ColumnOutcome::Skip,
+                    Err(SignatureError::InvalidSignature) => {
+                        silver_log::warn!(?stream_id, "sidecar proposer signature invalid");
+                        ColumnOutcome::Reject { block_root, slot, column: Some(column_index) }
+                    }
+                };
             }
             ParentCheck::NotExtending { parent_slot } => {
                 silver_log::warn!(
@@ -372,11 +393,7 @@ impl ColumnValidator {
             }
         };
 
-        match header.verify_signature(
-            &state,
-            self.spec.fork_version_at(slot / SLOTS_PER_EPOCH),
-            tracker,
-        ) {
+        match header.verify_signature(&state, fork_version, tracker) {
             Ok(()) => {}
             Err(SignatureError::UnknownProposer) => {
                 silver_log::warn!(?stream_id, "sidecar proposer_index out of range");
@@ -447,7 +464,7 @@ impl ColumnValidator {
             .get(&block_root)
             .filter(|_| self.validated_block_roots.contains(&block_root))
         else {
-            return ColumnOutcome::Buffer { block_root };
+            return ColumnOutcome::Buffer { block_root, column_index };
         };
         if block.slot != slot {
             silver_log::warn!(

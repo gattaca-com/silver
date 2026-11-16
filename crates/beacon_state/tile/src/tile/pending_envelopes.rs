@@ -5,9 +5,26 @@ use silver_common::{BlockSource, SyncNeed, TRead, hex32};
 
 use super::{Producers, root_map};
 
+/// Slots a signed envelope waits for its block, its own included. A block
+/// later than that has its envelope fetched by root, like any other.
+pub(super) const BLOCK_WAIT_SLOTS: Slot = 2;
+
 pub(super) struct ParkedEnvelope {
     pub(super) read: TRead,
-    pub(super) from_disk: bool,
+    pub(super) kind: ParkedKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ParkedKind {
+    /// Its block is unknown, and only its signature is checked: the signer
+    /// can still put a body the bid does not commit to under it.
+    Signed {
+        slot: Slot,
+        builder_index: u64,
+    },
+    /// Verified against its block, awaiting the block's columns.
+    Verified,
+    FromDisk,
 }
 
 /// Announced only once the EL has not rejected it: consensus checks cannot tie
@@ -47,7 +64,21 @@ impl PendingEnvelopes {
         self.awaiting_verdict.retain(|root, _| keep(root));
     }
 
-    pub(super) fn park(&mut self, block_root: B256, read: TRead, from_disk: bool) {
+    /// A signer publishes one envelope per slot, so a second root under the
+    /// same signer and slot is the signer spamming, not a payload to keep.
+    pub(super) fn admits_signed(&self, block_root: &B256, slot: Slot, builder_index: u64) -> bool {
+        let signed = ParkedKind::Signed { slot, builder_index };
+        !self.parked.contains_key(block_root) &&
+            !self.parked.values().any(|parked| parked.kind == signed)
+    }
+
+    pub(super) fn park(&mut self, block_root: B256, parked: ParkedEnvelope) {
+        debug_assert!(match parked.kind {
+            ParkedKind::Signed { slot, builder_index } => {
+                self.admits_signed(&block_root, slot, builder_index)
+            }
+            ParkedKind::Verified | ParkedKind::FromDisk => true,
+        });
         let has_room = self.parked.len() < self.cap || self.parked.contains_key(&block_root);
         if !has_room {
             silver_log::warn!(
@@ -57,7 +88,14 @@ impl PendingEnvelopes {
             );
             return;
         }
-        self.parked.insert(block_root, ParkedEnvelope { read, from_disk });
+        self.parked.insert(block_root, parked);
+    }
+
+    pub(super) fn drop_signed_before(&mut self, oldest_slot: Slot) {
+        self.parked.retain(|_, parked| match parked.kind {
+            ParkedKind::Signed { slot, .. } => slot >= oldest_slot,
+            ParkedKind::Verified | ParkedKind::FromDisk => true,
+        });
     }
 
     pub(super) fn take(&mut self, block_root: &B256) -> Option<ParkedEnvelope> {

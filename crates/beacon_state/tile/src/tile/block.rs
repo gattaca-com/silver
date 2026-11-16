@@ -12,7 +12,9 @@ use silver_common::{
 };
 
 use super::{
-    BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers, gossip::EnvelopeCheck,
+    BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
+    gossip::EnvelopeCheck,
+    pending_envelopes::{ParkedEnvelope, ParkedKind},
 };
 use crate::{
     Error,
@@ -23,7 +25,7 @@ use crate::{
 
 /// Fulu proposer selection via `proposer_lookahead`, fixed at the state's
 /// prior epoch boundary. `None` outside its current and next epoch.
-fn lookahead_proposer(rv: &StateView<'_>, block_slot: Slot) -> Option<u64> {
+pub(super) fn lookahead_proposer(rv: &StateView<'_>, block_slot: Slot) -> Option<u64> {
     let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
     let lookahead_idx = block_slot.checked_sub(state_epoch * SLOTS_PER_EPOCH)?;
     rv.epoch.proposer_at(lookahead_idx as usize)
@@ -380,7 +382,8 @@ impl BeaconStateTile {
                     block = hex32(&block_root),
                     "replayed envelope parked until its block imports"
                 );
-                self.pending_envelopes.park(block_root, acquired, true);
+                let parked = ParkedEnvelope { read: acquired, kind: ParkedKind::FromDisk };
+                self.pending_envelopes.park(block_root, parked);
             }
             EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
                 silver_log::warn!("replayed on-disk envelope rejected")
