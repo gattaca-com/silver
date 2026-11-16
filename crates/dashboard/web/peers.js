@@ -3,7 +3,18 @@ import { escape, fixed, fmtSecs, instanceTabs, shortId } from './view.js';
 const dash = '·';
 const num = (v) => (v === null || v === undefined ? dash : String(v));
 
-// [header, sort key, cell]. Rows missing a side sort as absent.
+const SCORE_HINTS = [
+  ['p1', 'Time in mesh: reward per meshed topic, growing linearly with tenure up to a cap.'],
+  ['p2', 'First deliveries: reward for being first to deliver a message. Capped and weighted per topic class; decays.\nTopic row: raw decayed count.'],
+  ['p3', 'Mesh delivery deficit: penalty, squared shortfall below the topic class delivery threshold. Starts one grace window after graft.\nTopic row: raw decayed mesh deliveries.'],
+  ['p3b', 'Mesh failure: P3 deficit carried forward after the peer left a mesh; decays.'],
+  ['p4', 'Invalid messages: penalty, squared count of invalid messages delivered; decays slowly.'],
+  ['p5', 'Application score: RPC misbehaviour penalties (timeouts, premature closes); decays toward zero.\nTopic row: share of our fanout publishes sent to this peer.'],
+  ['p6', 'IP colocation: penalty, squared count of connected peers sharing this /24 (v4) or /64 (v6) above the threshold.'],
+  ['p7', 'Behaviour penalty: protocol misbehaviour (e.g. broken IWANT promises), squared excess over a free budget; decays.'],
+];
+
+// [header, sort key, cell, header tooltip]. Rows missing a side sort as absent.
 const COLUMNS = [
   ['conn', (r) => r.p2p?.connection, (r) => (r.p2p ? `${r.p2p.connection}${r.p2p.inbound ? ' ✓' : ''}` : dash)],
   ['peer', (r) => r.id, (r) => shortId(r.id)],
@@ -13,13 +24,19 @@ const COLUMNS = [
   ['lost', (r) => r.p2p?.lostPackets, (r) => num(r.p2p?.lostPackets)],
   ['rxdg', (r) => r.p2p?.rxDatagrams, (r) => num(r.p2p?.rxDatagrams)],
   ['txdg', (r) => r.p2p?.txDatagrams, (r) => num(r.p2p?.txDatagrams)],
-  ['mesh', (r) => r.scores?.meshCount, (r) => num(r.scores?.meshCount)],
-  ...['p1', 'p2', 'p3', 'p3b', 'p4', 'p5', 'p6', 'p7'].map((name, i) => [
-    name,
-    (r) => r.scores?.p[i],
-    (r) => fixed(r.scores?.p[i]),
-  ]),
-  ['total', (r) => r.scores?.total, (r) => fixed(r.scores?.total)],
+  [
+    'mesh',
+    (r) => r.scores?.meshCount,
+    (r) => num(r.scores?.meshCount),
+    'Topic meshes this peer is in.\nTopic row: act = P3 scoring active, grace = within the post-graft grace window, — = topic not delivery-scored.',
+  ],
+  ...SCORE_HINTS.map(([name, hint], i) => [name, (r) => r.scores?.p[i], (r) => fixed(r.scores?.p[i]), hint]),
+  [
+    'total',
+    (r) => r.scores?.total,
+    (r) => fixed(r.scores?.total),
+    'Sum of P1–P7. Below the gossip threshold we ignore its IHAVE/IWANT; below publish we stop publishing to it; below graylist it is banned.',
+  ],
   ['agent', (r) => r.scores?.agent, (r) => escape(r.scores?.agent ?? dash)],
 ];
 const SCORE_FROM = COLUMNS.findIndex(([name]) => name === 'mesh');
@@ -75,10 +92,11 @@ export function render(fleet, root, now, ui) {
   const key = COLUMNS[ui.sort][1];
   rows.sort((a, b) => compare(key(a), key(b)) * (ui.desc ? -1 : 1));
 
-  const head = COLUMNS.map(([name], i) => {
+  const head = COLUMNS.map(([name, , , hint], i) => {
     const arrow = i === ui.sort ? (ui.desc ? ' ▼' : ' ▲') : '';
     const cls = i >= SCORE_FROM ? 'score' : '';
-    return `<th class="${cls}" data-sort="${i}">${name}${arrow}</th>`;
+    const title = hint ? ` title="${escape(hint)}"` : '';
+    return `<th class="${cls}" data-sort="${i}"${title}>${name}${arrow}</th>`;
   }).join('');
   const body = rows
     .map((r) => {
