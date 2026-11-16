@@ -2460,11 +2460,9 @@ fn ve_accept() {
     assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::VoluntaryExit);
 }
 
-/// Electra's no-pending-withdrawal assert is a block-processing condition,
-/// absent from gossip validation: the exit still relays.
 #[test]
-fn ve_with_pending_partial_withdrawal_accepted() {
-    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(1, BeaconState::empty_test(0));
+fn ve_with_pending_partial_withdrawal_ignored_until_drained() {
+    let mut tile = make_tile();
     seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
 
     // Roll a pending fork carrying a withdrawal for validator 0 and repoint
@@ -2496,7 +2494,20 @@ fn ve_with_pending_partial_withdrawal_accepted() {
 
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_voluntary_exit(0, 0, 0, &imm);
-    assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::VoluntaryExit);
+    assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Ignore);
+    assert_eq!(tile.exit_pool.len(), 0);
+
+    tile.last_applied.pending_idx = old;
+    for id in tile.fork_choice.live_state_ids_mut() {
+        if id.pending_idx == new {
+            id.pending_idx = old;
+        }
+    }
+    assert_eq!(
+        tile.handle_voluntary_exit(&buf),
+        Feedback::Accept,
+        "an ignored exit is not marked seen"
+    );
 }
 
 #[test]

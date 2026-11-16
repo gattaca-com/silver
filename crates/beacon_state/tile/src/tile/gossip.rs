@@ -1738,6 +1738,10 @@ impl BeaconStateTile {
             }
         }
 
+        if stf::get_pending_balance_to_withdraw(&view.pending, vi as u32) != 0 {
+            return Feedback::Ignore;
+        }
+
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi);
         let imm = view.imm;
         let domain = bls::compute_domain(
