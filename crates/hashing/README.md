@@ -168,5 +168,5 @@ targets the real use case: on mainnet, fewer than 0.15% of blocks are reorged
 out, and 99.8% of reorgs are one block deep.
 
 ```sh
-cargo bench -p silver_state_hashing_bench
+cd crates/hashing/bench && cargo bench
 ```
