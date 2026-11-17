@@ -24,6 +24,16 @@ reason about and faster to run.
 - The beacon state is **not** a monolith: it's a bag of per-tier *groups* (validators,
   balances, participation, …), each a finalized base plus per-fork state: a ring of
   deltas, or page-table snapshots for tree groups.
+- Terms (use these, not their synonyms):
+  - **Tile**: a component on its own pinned thread, implementing `loop_body`
+    against `SpineAdapter<SilverSpine>`. Not "service", "actor" or "worker".
+  - **Spine**: `SilverSpine`, the process-wide typed message fabric. Not "bus".
+  - **Spine queue**: a fixed-size lock-free ring of `Copy` messages, broadcast to
+    every consumer. Not "channel".
+  - **TCache**: the shared-memory bulk store (`TCacheId`); queue messages carry
+    handles into it instead of payloads.
+  - **Hosted crate**: a transport-free library a tile owns and drives, such as
+    `beacon_api`, `engine_api` and `pbs` in the application-boundary tile.
 - Read `docs/beacon-state-architecture.md` and `docs/delta-rebase-invariant.md` before
   touching state storage. Other refs: `docs/perf-regression-test.md`,
   `docs/telemetry-counters.md` (investigating node errors).

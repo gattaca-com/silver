@@ -159,8 +159,10 @@ These `[chain_config]` keys replace the network's own values:
 Release images are available as GitHub packages:
 
 ```bash
-docker pull ghcr.io/gattaca-com/silver:v0.1.0-alpha.17
+docker pull ghcr.io/gattaca-com/silver:latest
 ```
+
+`latest` follows the newest release. Pin a release tag, such as `v0.1.0-alpha.17`, to stay on one version.
 
 Images contain the same Linux amd64 `silver` and `silver_surfer` binaries attached to the corresponding release.
 Each release links to its image tag and digest. Set `LOG_STDOUT=1` and `RUST_LOG` to configure container logs.
@@ -175,8 +177,10 @@ For Kubernetes, install the [Helm chart](charts/silver/README.md):
 
 ```bash
 helm upgrade --install silver oci://ghcr.io/gattaca-com/charts/silver \
-  --version 0.1.0-alpha.17 --values silver-values.yaml
+  --devel --values silver-values.yaml
 ```
+
+Releases are pre-releases, so Helm needs `--devel` to pick the newest one. Use `--version` to pin one instead.
 
 The chart guide explains the required execution endpoint, JWT Secret, storage, and UDP networking.
 Maintainers can find package setup and release instructions in [publishing](docs/publishing.md).

@@ -1,0 +1,18 @@
+[Unit]
+Description=silver telemetry
+Wants=silver.service
+After=silver.service
+# silver's ExecStartPre deletes the shared memory this reads.
+PartOf=silver.service
+
+[Service]
+User=silver
+WorkingDirectory=/var/lib/silver
+Environment=LOG_PATH=/var/lib/silver/logs RUST_LOG=info
+ExecStart=/var/lib/silver/silver_telemetry --dir /var/lib/silver/profiler-traces \
+    --retain 20GB --period 15m --filter-short-frames 1us --config /var/lib/silver/config.toml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

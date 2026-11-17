@@ -1,0 +1,22 @@
+[Unit]
+Description=silver consensus client
+Wants=network-online.target ethrex.service
+After=network-online.target ethrex.service
+
+[Service]
+User=silver
+WorkingDirectory=/var/lib/silver
+Environment=LOG_PATH=/var/lib/silver/logs RUST_LOG=info RUST_BACKTRACE=1
+# Stale shared memory from a previous run fills /dev/shm: SIGBUS, exit 135, no log line.
+ExecStartPre=/bin/rm -rf %h/.local/share/silver/shmem
+ExecStartPre=/usr/bin/find /dev/shm -maxdepth 1 -name shmem_* -user silver -delete
+ExecStart=/var/lib/silver/silver --config /var/lib/silver/config.toml
+StandardOutput=append:/var/lib/silver/logs/stdout.log
+StandardError=append:/var/lib/silver/logs/stdout.log
+LimitNOFILE=1048576
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

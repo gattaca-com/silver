@@ -4,7 +4,7 @@ Silver publishes two packages through GitHub Actions:
 
 | Package | Registry reference | Version source |
 | --- | --- | --- |
-| Linux amd64 image | `ghcr.io/gattaca-com/silver` | Silver release tag, such as `v0.1.0-alpha.6` |
+| Linux amd64 image | `ghcr.io/gattaca-com/silver` | Silver release tag, such as `v0.1.0-alpha.6`, and `latest` for the newest release |
 | Helm chart | `oci://ghcr.io/gattaca-com/charts/silver` | Silver release tag without the `v`, such as `0.1.0-alpha.6` |
 
 ## Maintainer setup
@@ -30,7 +30,8 @@ and [package access settings](https://docs.github.com/en/packages/learn-github-p
 ## Silver releases
 
 The existing release workflow runs on pushes to `main` when the workspace version has no tag.
-It builds and checksums `silver` and `silver_surfer`, then packages both binaries into the image.
+It builds and checksums `silver`, `silver_surfer` and `silver_telemetry`, then packages the first two into the image.
+A new release also moves the image's `latest` tag; bootstrapping an existing release does not.
 It tests Silver's `--version` and `--help`, Surfer's executable permission, and byte equality with both release binaries before publishing.
 Surfer is an interactive TUI without `--version` or `--help` flags.
 The GitHub release keeps its binaries, checksums, and attestations, plus the image tag, digest, and package link.

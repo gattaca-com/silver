@@ -25,9 +25,11 @@ Install the chart package from GHCR:
 
 ```bash
 helm upgrade --install silver oci://ghcr.io/gattaca-com/charts/silver \
-  --version 0.1.0-alpha.17 --values silver-values.yaml
+  --devel --values silver-values.yaml
 ```
 
+`--devel` installs the newest chart; Silver releases are still pre-releases, which Helm skips by default.
+Pass `--version`, such as `0.1.0-alpha.17`, to pin one.
 Each Silver release publishes a chart with the same version, without the `v` prefix.
 An empty `image.tag` uses that release's image.
 Set `image.tag` to select another published Silver release without releasing a new chart.
