@@ -387,7 +387,7 @@ impl DataColumnsTile {
         let context = CommitmentContext {
             block_root,
             slot,
-            format: ForkName::Gloas,
+            format: domain.format(),
             blob_count: commitments.len() / BYTES_PER_KZG_COMMITMENT,
         };
         let data = ContextData::Gloas { commitments };

@@ -82,6 +82,9 @@ pub(crate) fn post_sync_committee_subscriptions(
     resp: &mut Response<'_>,
 ) {
     let wall_epoch = ctx.node_status.wall_slot / SLOTS_PER_EPOCH;
+    if ctx.spec.is_pq_at(wall_epoch) {
+        return resp.error(400, "sync committees are removed from PQ");
+    }
     let period_start = wall_epoch - wall_epoch % EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
     let valid_until = wall_epoch + 1..=period_start + 2 * EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
 

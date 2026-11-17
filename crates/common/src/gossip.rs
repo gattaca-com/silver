@@ -136,8 +136,23 @@ impl GossipTopic {
         )
     }
 
+    pub const fn is_removed_in_pq(self) -> bool {
+        matches!(
+            self,
+            Self::SyncCommitteeContributionAndProof |
+                Self::SyncCommittee(_) |
+                Self::LightClientFinalityUpdate |
+                Self::LightClientOptimisticUpdate |
+                Self::BlsToExecutionChange
+        )
+    }
+
     pub const fn supports_format(self, format: ForkName) -> bool {
-        !self.is_gloas_only() || matches!(format, ForkName::Gloas)
+        match format {
+            ForkName::Pq => !self.is_removed_in_pq(),
+            ForkName::Gloas => true,
+            _ => !self.is_gloas_only(),
+        }
     }
 }
 
@@ -444,6 +459,24 @@ mod tests {
             let s: String = t.into();
             assert_eq!(GossipTopic::try_from(s.as_str()).unwrap(), t);
         }
+    }
+
+    #[test]
+    fn pq_drops_sync_committee_light_client_and_bls_change_topics() {
+        for topic in [
+            GossipTopic::SyncCommitteeContributionAndProof,
+            GossipTopic::SyncCommittee(0),
+            GossipTopic::LightClientFinalityUpdate,
+            GossipTopic::LightClientOptimisticUpdate,
+            GossipTopic::BlsToExecutionChange,
+        ] {
+            assert!(topic.supports_format(ForkName::Gloas), "{topic}");
+            assert!(!topic.supports_format(ForkName::Pq), "{topic}");
+        }
+        for topic in [GossipTopic::BeaconBlock, GossipTopic::ExecutionPayloadBid] {
+            assert!(topic.supports_format(ForkName::Pq), "{topic}");
+        }
+        assert!(!GossipTopic::ExecutionPayloadBid.supports_format(ForkName::Fulu));
     }
 
     #[test]

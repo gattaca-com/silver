@@ -422,6 +422,8 @@ pub enum BlsToExecutionChangeError {
     PubkeyHashMismatch { from_pubkey: BLSPubkey, expected: B256, got: B256 },
     #[error("from_pubkey failed to decompress: 0x{}", pubkey_hex(from_pubkey))]
     BadPubkey { from_pubkey: BLSPubkey },
+    #[error("bls_to_execution_changes are disabled from PQ")]
+    DisabledInPq,
 }
 
 #[derive(Debug, Error)]

@@ -644,6 +644,9 @@ impl BeaconStateTile {
         if subnet >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
             return Err(Feedback::reject("sync message subnet out of range"));
         }
+        if self.spec.is_pq_at_slot(slot) {
+            return Err(Feedback::reject("sync message after PQ"));
+        }
         if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
             return Err(self.slot_window_miss(slot));
         }
@@ -723,6 +726,9 @@ impl BeaconStateTile {
 
         if subcommittee >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
             return Feedback::reject("contribution subcommittee out of range");
+        }
+        if self.spec.is_pq_at_slot(slot) {
+            return Feedback::reject("contribution after PQ");
         }
         if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
             return self.slot_window_miss(slot);
@@ -1088,10 +1094,9 @@ impl BeaconStateTile {
             return Feedback::reject("proposer preferences wrong proposer");
         }
 
-        // `compute_fork_version(proposal_epoch)`: Gloas is the last scheduled fork.
         let domain = bls::compute_domain(
             bls::DOMAIN_PROPOSER_PREFERENCES,
-            view.imm.gloas_fork_version,
+            self.spec.fork_version_at(proposal_epoch),
             &view.imm.genesis_validators_root,
         );
         let signing_root = bls::compute_signing_root(&Prefs::hash_tree_root(prefs), &domain);
@@ -1856,6 +1861,9 @@ impl BeaconStateTile {
             return Feedback::reject("bls change size");
         }
         let buf: &[u8; SIGNED_BLS_CHANGE_SIZE] = data[..SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
+        if self.spec.is_pq_at_slot(self.ticker.current_slot()) {
+            return Feedback::reject("bls change after PQ");
+        }
 
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);

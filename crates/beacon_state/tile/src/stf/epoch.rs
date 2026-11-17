@@ -67,7 +67,8 @@ pub fn process_epoch(
     // from the inherited entry (fresh off the base when no ancestor rotated).
     let next_epoch = current_epoch + 1;
     let rotates_summary = next_epoch.is_multiple_of(HISTORICAL_SUMMARY_PERIOD);
-    let rotates_sync_committee = next_epoch.is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD);
+    let rotates_sync_committee =
+        !cfg.is_pq_at(current_epoch) && next_epoch.is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD);
     let needs_longtail = rotates_sync_committee || rotates_summary;
     let mut longtail_w = needs_longtail.then(|| longtail.roll_inheriting(*longtail_idx));
 

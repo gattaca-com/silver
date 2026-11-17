@@ -1025,7 +1025,11 @@ impl PeerManager {
         let mut deficit_columns = 0u128;
         let mut deficits = 0u64;
         for topic in &our_topics {
-            for digest in self.active_topic_digests(*topic).into_iter().flatten() {
+            let digests = self.active_topic_digests(*topic);
+            if digests == [None, None] {
+                continue;
+            }
+            for digest in digests.into_iter().flatten() {
                 self.prune_negative_mesh_peers(*topic, digest, now, emit);
                 self.ensure_mesh_filled(*topic, digest, now, emit);
                 self.ensure_mesh_capped(*topic, digest, now, emit);

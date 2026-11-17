@@ -91,7 +91,7 @@ impl ChainConfig {
         let fork = self.spec.fork_at(epoch);
         if fork < ForkName::Fulu {
             return Err(Error::ConfigError(format!(
-                "chain_config.spec puts epoch {epoch} in {}; silver runs Fulu and Gloas only \
+                "chain_config.spec puts epoch {epoch} in {}; silver runs Fulu onward \
                  (check FULU_FORK_EPOCH)",
                 fork.name()
             )));

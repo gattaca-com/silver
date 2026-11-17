@@ -155,7 +155,7 @@ impl CellStore {
         if context.slot > self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
-        if !matches!(context.format, ForkName::Fulu | ForkName::Gloas) ||
+        if context.format < ForkName::Fulu ||
             domain.format() != context.format ||
             self.config.spec().fork_at_slot(context.slot) != context.format ||
             context.blob_count > self.config.max_blobs() ||

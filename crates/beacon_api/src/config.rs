@@ -362,6 +362,7 @@ fn fork_version_key(fork: ForkName) -> &'static str {
         ForkName::Electra => "ELECTRA_FORK_VERSION",
         ForkName::Fulu => "FULU_FORK_VERSION",
         ForkName::Gloas => "GLOAS_FORK_VERSION",
+        ForkName::Pq => "PQ_FORK_VERSION",
     }
 }
 
@@ -375,6 +376,7 @@ fn fork_epoch_key(fork: ForkName) -> &'static str {
         ForkName::Electra => "ELECTRA_FORK_EPOCH",
         ForkName::Fulu => "FULU_FORK_EPOCH",
         ForkName::Gloas => "GLOAS_FORK_EPOCH",
+        ForkName::Pq => "PQ_FORK_EPOCH",
     }
 }
 

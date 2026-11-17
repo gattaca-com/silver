@@ -65,7 +65,7 @@ impl<'a> ContextData<'a> {
             Self::Fulu { signed_header, .. } => {
                 context.format == ForkName::Fulu && signed_header[..8] == context.slot.to_le_bytes()
             }
-            Self::Gloas { .. } => context.format == ForkName::Gloas,
+            Self::Gloas { .. } => context.format >= ForkName::Gloas,
         };
         format_matches && self.commitments().len() == context.blob_count * BYTES_PER_KZG_COMMITMENT
     }
@@ -92,7 +92,7 @@ impl<'a> ContextData<'a> {
                     commitments: &bytes[PARTIAL_HEADER_FIXED..],
                 })
             }
-            ForkName::Gloas => Some(Self::Gloas { commitments: bytes }),
+            ForkName::Gloas | ForkName::Pq => Some(Self::Gloas { commitments: bytes }),
             _ => None,
         }
     }

@@ -1,3 +1,5 @@
+use std::iter;
+
 use silver_beacon_state_data::{
     BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, Epoch, SYNC_COMMITTEE_SIZE,
     SYNC_SUBCOMMITTEE_SIZE, StateReadView,
@@ -17,6 +19,11 @@ pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     let Some(indices) = requested_indices(req, resp) else {
         return;
     };
+    if ctx.spec.is_pq_at(epoch) {
+        let execution_optimistic = ctx.node_status.execution_optimistic();
+        resp.json_body(|json| json.sync_duties(execution_optimistic, iter::empty()));
+        return;
+    }
     let Some(seats) = ctx.read_state(|view| {
         CommitteePeriod::serving(epoch, view.slot.current_epoch())
             .map(|period| Seats::read(&view, period))

@@ -135,7 +135,10 @@ struct BlsChange {
 }
 
 impl SubmittedEntry for SubmittedBlsChange {
-    fn accept(&self, _: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
+    fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
+        if ctx.spec.is_pq_at_slot(ctx.node_status.wall_slot) {
+            return Err("bls_to_execution_changes are disabled from PQ");
+        }
         Ok([GossipTopic::BlsToExecutionChange])
     }
 

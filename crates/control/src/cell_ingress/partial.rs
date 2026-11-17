@@ -143,7 +143,7 @@ impl ColumnIngress for CellIngress {
 
 impl CellIngress {
     fn admits(&mut self, peer: usize, group: ColumnGroupKey) -> bool {
-        matches!(group.domain.format(), ForkName::Fulu | ForkName::Gloas) &&
+        group.domain.format() >= ForkName::Fulu &&
             group.column < 128 &&
             self.allocator.handles_column(group.column as usize) &&
             self.partial_budget.admit_peer(peer)
@@ -227,7 +227,7 @@ impl CellIngress {
 fn parse(format: ForkName, payload: &[u8]) -> Option<PartialColumnView<'_>> {
     match format {
         ForkName::Fulu => PartialDataColumnSidecarFuluView::parse(payload),
-        ForkName::Gloas => PartialDataColumnSidecarGloasView::parse(payload),
+        ForkName::Gloas | ForkName::Pq => PartialDataColumnSidecarGloasView::parse(payload),
         _ => None,
     }
 }

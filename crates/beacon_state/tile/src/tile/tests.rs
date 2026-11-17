@@ -3916,6 +3916,43 @@ fn sync_contribution_accepted_then_superset_ignored() {
     );
 }
 
+fn tile_after_pq(wall_slot: u64) -> BeaconStateTile {
+    let spec = SpecConfig { pq_fork_epoch: 1, ..SpecConfig::mainnet() };
+    assert!(spec.is_pq_at_slot(wall_slot));
+    let (mut tile, ..) = tile_with_producers_on(wall_slot, BeaconState::empty_test(0), spec);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    tile
+}
+
+#[test]
+fn bls_change_rejected_after_pq() {
+    let mut tile = tile_after_pq(SLOTS_PER_EPOCH);
+    let imm = seed_immutable(&tile);
+    let buf = test_signing::sign_bls_to_execution_change(0, 0, &[0x42; 20], &imm);
+    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::reject("bls change after PQ"));
+}
+
+#[test]
+fn sync_message_rejected_after_pq() {
+    let mut tile = tile_after_pq(SLOTS_PER_EPOCH);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.head_block_root();
+    let msg = test_signing::sign_sync_committee_message(0, 0, SLOTS_PER_EPOCH, bbr, &imm);
+    assert!(matches!(
+        tile.prepare_sync_message(&msg, 0),
+        Err(Feedback::Reject { reason: "sync message after PQ", .. })
+    ));
+}
+
+#[test]
+fn sync_contribution_rejected_after_pq() {
+    let mut tile = tile_after_pq(SLOTS_PER_EPOCH);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.head_block_root();
+    let buf = test_signing::sign_contribution_and_proof(0, 0, SLOTS_PER_EPOCH, 0, 3, 0, bbr, &imm);
+    assert_eq!(tile.handle_sync_contribution(&buf), Feedback::reject("contribution after PQ"));
+}
+
 #[test]
 fn sync_contribution_dedup_is_per_subcommittee() {
     let imm = Immutable::default();

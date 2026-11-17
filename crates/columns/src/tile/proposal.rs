@@ -280,9 +280,9 @@ impl DataColumnsTile {
         let commitments = self.reader.acquire(proposal.commitments);
         let commitments = commitments.buffer().map_err(|_| LocalGossipFailure::Internal)?.0;
         let blob_count = commitments.len() / 48;
-        let context = CommitmentContext { block_root, slot, format: ForkName::Gloas, blob_count };
-        let data = ContextData::Gloas { commitments };
         let domain = self.validator.domain_at(slot).ok_or(LocalGossipFailure::Unverifiable)?;
+        let context = CommitmentContext { block_root, slot, format: domain.format(), blob_count };
+        let data = ContextData::Gloas { commitments };
         let sidecars =
             self.proposed.write_sidecars(context, data, blobs, proofs, &mut self.kzg_scratch)?;
         self.proposed.hold(HeldBlock { block_root, slot, domain, blob_count, sidecars });

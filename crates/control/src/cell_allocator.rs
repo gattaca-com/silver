@@ -110,7 +110,7 @@ impl CellAllocator {
         }
         if request.columns != self.config.columns() ||
             request.domain.format() != context.format ||
-            !matches!(context.format, ForkName::Fulu | ForkName::Gloas) ||
+            context.format < ForkName::Fulu ||
             self.config.spec().fork_at_slot(context.slot) != context.format ||
             context.blob_count > self.config.max_blobs() ||
             context.blob_count >

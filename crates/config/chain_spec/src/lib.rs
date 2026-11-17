@@ -35,7 +35,7 @@ pub struct BlobParameters {
 
 /// Every fork silver's config can name, in activation order. The set is
 /// closed and minted upstream, so it is an enum rather than a table
-/// (ADR-0003); forks past Gloas are added here as the spec schedules them.
+/// (ADR-0003); forks past PQ are added here as the spec schedules them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, TypeHash)]
 pub enum ForkName {
     Phase0,
@@ -46,12 +46,13 @@ pub enum ForkName {
     Electra,
     Fulu,
     Gloas,
+    Pq,
 }
 
 impl ForkName {
     /// Activation order: every cascade over the fork table walks it from the
     /// end, and the beacon-API fork schedule is served in this order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Phase0,
         Self::Altair,
         Self::Bellatrix,
@@ -60,6 +61,7 @@ impl ForkName {
         Self::Electra,
         Self::Fulu,
         Self::Gloas,
+        Self::Pq,
     ];
 
     /// Lowercase spec spelling, as the wire wants it in
@@ -75,6 +77,7 @@ impl ForkName {
             Self::Electra => "electra",
             Self::Fulu => "fulu",
             Self::Gloas => "gloas",
+            Self::Pq => "pq",
         }
     }
 }
@@ -160,6 +163,10 @@ pub struct SpecConfig {
     /// Gloas activation epoch.
     #[serde(default = "unscheduled")]
     pub gloas_fork_epoch: u64,
+    #[serde(default = "default_fork_version::<0xe0000000>", with = "hex_0x")]
+    pub pq_fork_version: [u8; 4],
+    #[serde(default = "unscheduled")]
+    pub pq_fork_epoch: u64,
     /// Per-epoch override on `max_blobs_per_block` (EIP-7892). Sorted by
     /// `epoch`; the active entry is the highest-epoch entry whose epoch
     /// <= the queried epoch. Empty ⇒ always fall back to the Electra
@@ -398,7 +405,9 @@ impl SpecConfig {
     }
 
     pub fn fork_at(&self, epoch: u64) -> ForkName {
-        if epoch >= self.gloas_fork_epoch {
+        if epoch >= self.pq_fork_epoch {
+            ForkName::Pq
+        } else if epoch >= self.gloas_fork_epoch {
             ForkName::Gloas
         } else if epoch >= self.fulu_fork_epoch {
             ForkName::Fulu
@@ -432,6 +441,7 @@ impl SpecConfig {
             ForkName::Electra => self.electra_fork_version,
             ForkName::Fulu => self.fulu_fork_version,
             ForkName::Gloas => self.gloas_fork_version,
+            ForkName::Pq => self.pq_fork_version,
         }
     }
 
@@ -446,6 +456,7 @@ impl SpecConfig {
             ForkName::Electra => self.electra_fork_epoch,
             ForkName::Fulu => self.fulu_fork_epoch,
             ForkName::Gloas => self.gloas_fork_epoch,
+            ForkName::Pq => self.pq_fork_epoch,
         }
     }
 
@@ -458,6 +469,16 @@ impl SpecConfig {
     #[inline]
     pub fn is_gloas_at_slot(&self, slot: u64) -> bool {
         self.is_gloas_at(slot / SLOTS_PER_EPOCH)
+    }
+
+    #[inline]
+    pub fn is_pq_at(&self, epoch: u64) -> bool {
+        epoch >= self.pq_fork_epoch
+    }
+
+    #[inline]
+    pub fn is_pq_at_slot(&self, slot: u64) -> bool {
+        self.is_pq_at(slot / SLOTS_PER_EPOCH)
     }
 
     #[inline]
@@ -581,6 +602,8 @@ impl SpecConfig {
             fulu_fork_epoch: 50688,
             gloas_fork_version: default_fork_version::<0x80000910>(),
             gloas_fork_epoch: unscheduled(),
+            pq_fork_version: default_fork_version::<0xe0000000>(),
+            pq_fork_epoch: unscheduled(),
             blob_schedule: vec![
                 BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
                 BlobParameters { epoch: 54016, max_blobs_per_block: 21 },
@@ -647,6 +670,8 @@ impl SpecConfig {
             fulu_fork_epoch: 272640,
             gloas_fork_version: default_fork_version::<0x90000076>(),
             gloas_fork_epoch: 353024,
+            pq_fork_version: default_fork_version::<0xe0000000>(),
+            pq_fork_epoch: unscheduled(),
             blob_schedule: vec![
                 BlobParameters { epoch: 274176, max_blobs_per_block: 15 },
                 BlobParameters { epoch: 275712, max_blobs_per_block: 21 },
@@ -711,6 +736,8 @@ impl SpecConfig {
             fulu_fork_epoch: 411392,
             gloas_fork_version: default_fork_version::<0x07000000>(),
             gloas_fork_epoch: unscheduled(),
+            pq_fork_version: default_fork_version::<0xe0000000>(),
+            pq_fork_epoch: unscheduled(),
             blob_schedule: default_blob_schedule(),
             max_blobs_per_block_electra: 9,
             blob_sidecar_subnet_count: 6,
@@ -772,6 +799,8 @@ mod tests {
         assert_eq!(spec.electra_fork_epoch, 364032);
         assert_eq!(spec.fulu_fork_epoch, 411392);
         assert_eq!(spec.gloas_fork_epoch, u64::MAX);
+        assert_eq!(spec.pq_fork_version, [0xe0, 0x00, 0x00, 0x00]);
+        assert_eq!(spec.pq_fork_epoch, u64::MAX);
         assert_eq!(spec.deposit_chain_id, 1);
         assert_eq!(spec.deposit_network_id, 1);
         assert_eq!(spec.network_name(), "mainnet");
@@ -912,7 +941,6 @@ mod tests {
             (spec.fulu_fork_epoch - 1, spec.electra_fork_version),
             (spec.fulu_fork_epoch, spec.fulu_fork_version),
             (spec.gloas_fork_epoch - 1, spec.fulu_fork_version),
-            (spec.gloas_fork_epoch, spec.gloas_fork_version),
         ] {
             assert_eq!(spec.fork_version_at(epoch), version, "epoch {epoch}");
         }
@@ -930,6 +958,7 @@ mod tests {
             spec.electra_fork_version,
             spec.fulu_fork_version,
             spec.gloas_fork_version,
+            spec.pq_fork_version,
         ]);
         assert_eq!(ForkName::ALL.map(|fork| spec.fork_epoch(fork)), [
             0,
@@ -939,6 +968,7 @@ mod tests {
             spec.deneb_fork_epoch,
             spec.electra_fork_epoch,
             spec.fulu_fork_epoch,
+            u64::MAX,
             u64::MAX,
         ]);
         assert!(ForkName::ALL.is_sorted(), "ALL is in activation order");
@@ -977,6 +1007,30 @@ mod tests {
         assert_eq!(spec.fork_at_slot(first_gloas_slot), ForkName::Gloas);
     }
 
+    #[test]
+    fn fork_at_switches_to_pq_on_its_activation_epoch() {
+        let spec = SpecConfig {
+            gloas_fork_epoch: 500_000,
+            pq_fork_epoch: 600_000,
+            ..SpecConfig::mainnet()
+        };
+        assert_eq!(spec.fork_at(599_999), ForkName::Gloas);
+        assert_eq!(spec.fork_at(600_000), ForkName::Pq);
+        assert_eq!(spec.fork_version_at(600_000), [0xe0, 0x00, 0x00, 0x00]);
+        assert_eq!(spec.next_fork(599_999), (spec.pq_fork_version, 600_000));
+        assert_eq!(spec.next_fork(600_000), (spec.pq_fork_version, u64::MAX));
+    }
+
+    /// EIP-7892's blob mix carries on past Gloas.
+    #[test]
+    fn pq_fork_digest_keeps_the_blob_mix() {
+        let spec = SpecConfig { gloas_fork_epoch: 10, pq_fork_epoch: 20, ..SpecConfig::mainnet() };
+        let bare: [u8; 4] =
+            hash_tree_root_fork_data(spec.pq_fork_version, &MAINNET_GVR)[..4].try_into().unwrap();
+        assert_ne!(spec.fork_digest_at(20, &MAINNET_GVR), bare);
+        assert_ne!(spec.fork_digest_at(19, &MAINNET_GVR), spec.fork_digest_at(20, &MAINNET_GVR));
+    }
+
     /// These strings go on the wire in `Eth-Consensus-Version` and in the
     /// `version` field of every versioned beacon-API body.
     #[test]
@@ -991,9 +1045,10 @@ mod tests {
                 ForkName::Electra,
                 ForkName::Fulu,
                 ForkName::Gloas,
+                ForkName::Pq,
             ]
             .map(ForkName::name),
-            ["phase0", "altair", "bellatrix", "capella", "deneb", "electra", "fulu", "gloas"]
+            ["phase0", "altair", "bellatrix", "capella", "deneb", "electra", "fulu", "gloas", "pq"]
         );
     }
 

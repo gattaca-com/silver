@@ -924,6 +924,7 @@ impl BeaconStateTile {
         let pre_state = self.state.read_view(parent);
         self.slashing_pool.select(&pre_state, &mut packed.slashings);
         let gloas = self.spec.is_gloas_at_slot(proposal.slot);
+        let pq = self.spec.is_pq_at_slot(proposal.slot);
         let epoch = proposal.slot / SLOTS_PER_EPOCH;
         match self.shuffling_cache.for_block(&pre_state, epoch) {
             Some(shuffling) => {
@@ -947,16 +948,22 @@ impl BeaconStateTile {
                 packed.attestations.clear();
             }
         }
-        self.sync_contribution_pool.write_sync_aggregate(
-            proposal.slot - 1,
-            proposal.parent_root,
-            &mut packed.sync_aggregate,
-        );
+        if pq {
+            packed.sync_aggregate = EMPTY_SYNC_AGGREGATE;
+        } else {
+            self.sync_contribution_pool.write_sync_aggregate(
+                proposal.slot - 1,
+                proposal.parent_root,
+                &mut packed.sync_aggregate,
+            );
+        }
         packed.voluntary_exits.clear();
         let slashed = packed.slashings.offenders();
         self.exit_pool.select(&self.spec, &pre_state, slashed, &mut packed.voluntary_exits);
         packed.bls_to_execution_changes.clear();
-        self.bls_change_pool.select(&pre_state, &mut packed.bls_to_execution_changes);
+        if !pq {
+            self.bls_change_pool.select(&pre_state, &mut packed.bls_to_execution_changes);
+        }
         packed.payload_attestations.clear();
         if gloas {
             self.payload_attestation_pool.select(

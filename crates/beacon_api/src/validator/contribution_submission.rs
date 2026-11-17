@@ -50,7 +50,10 @@ struct SyncCommitteeContribution {
 }
 
 impl SubmittedEntry for SignedSyncCommitteeContribution {
-    fn accept(&self, _ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
+    fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
+        if ctx.spec.is_pq_at_slot(self.message.contribution.slot) {
+            return Err("sync committees are removed from PQ");
+        }
         if self.message.contribution.subcommittee_index >= SYNC_COMMITTEE_SUBNETS as u64 {
             return Err("subcommittee_index is past the sync subcommittee count");
         }

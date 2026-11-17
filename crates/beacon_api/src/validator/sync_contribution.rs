@@ -13,7 +13,7 @@ use crate::{
 
 pub(crate) fn sync_committee_contribution(
     req: &Request<'_>,
-    _ctx: &ApiCtx,
+    ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
     let (Some(slot), Some(subcommittee_index), Some(beacon_block_root)) = (
@@ -29,6 +29,10 @@ pub(crate) fn sync_committee_contribution(
     };
     if subcommittee_index >= SYNC_COMMITTEE_SUBNETS as u64 {
         resp.error(400, "subcommittee_index is past the sync subcommittee count");
+        return;
+    }
+    if ctx.spec.is_pq_at_slot(slot) {
+        resp.error(400, "sync committees are removed from PQ");
         return;
     }
 

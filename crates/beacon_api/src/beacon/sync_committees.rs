@@ -33,6 +33,9 @@ struct SubmittedSyncCommitteeMessage {
 
 impl SubmittedEntry for SubmittedSyncCommitteeMessage {
     fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
+        if ctx.spec.is_pq_at_slot(self.slot) {
+            return Err("sync committees are removed from PQ");
+        }
         let subnets = ctx.read_state(|view| {
             usize::try_from(self.validator_index).map_or(0, |validator| {
                 view.longtail.sync_committees().subnets_of(

@@ -393,7 +393,7 @@ impl CellHandler {
             },
             CellStoreEvent::Validate(request) => {
                 let root = request.pending.key.block_root;
-                let first_for_root = request.domain.format() == ForkName::Gloas &&
+                let first_for_root = request.domain.format() >= ForkName::Gloas &&
                     self.store.context(&root).is_none() &&
                     !self.pending.has_root(&root);
                 if self.pending.admit(request, now) {

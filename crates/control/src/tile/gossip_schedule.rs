@@ -29,8 +29,8 @@ pub(super) struct DomainUpdate {
 
 impl GossipSchedule {
     fn gloas_topics(current: GossipDomain, other: Option<GossipDomain>) -> Vec<GossipTopic> {
-        if current.format() != ForkName::Gloas &&
-            other.is_none_or(|domain| domain.format() != ForkName::Gloas)
+        if current.format() < ForkName::Gloas &&
+            other.is_none_or(|domain| domain.format() < ForkName::Gloas)
         {
             return Vec::new();
         }

@@ -18,7 +18,7 @@ use silver_common::{
 };
 
 use crate::{
-    error::{BlockError, Error, Result},
+    error::{BlockError, BlsToExecutionChangeError, Error, Result},
     merkle,
     ssz_hash::{self, BlockFork},
     stf::{
@@ -496,6 +496,7 @@ fn apply_block_body(
     let longtail = longtail.view_opt(*longtail_idx);
     let is_gloas = input.fork.is_gloas();
     let block_slot = input.header.slot;
+    let is_pq = cfg.is_pq_at_slot(block_slot);
     let proposer_index = input.proposer_index();
 
     match input.fork {
@@ -548,6 +549,9 @@ fn apply_block_body(
         process_voluntary_exits(&mut *view, cfg, section)?;
     }
     if let Some(section) = offsets.bls_changes() {
+        if is_pq {
+            return Err(BlsToExecutionChangeError::DisabledInPq.into());
+        }
         process_bls_to_execution_changes(&mut view.validators, section)?;
     }
 
@@ -559,8 +563,10 @@ fn apply_block_body(
         process_execution_requests(&mut *view, cfg, offsets.execution_requests());
     }
 
-    proposer_reward +=
-        process_sync_aggregate(&mut *view, longtail, offsets.sync_aggregate(), proposer_index)?;
+    if !is_pq {
+        proposer_reward +=
+            process_sync_aggregate(&mut *view, longtail, offsets.sync_aggregate(), proposer_index)?;
+    }
 
     out.proposer_reward = proposer_reward;
     Ok(())
@@ -576,6 +582,7 @@ fn collect_sigs_block_body(
     input: &BlockInput<'_>,
 ) -> Result<()> {
     let block_slot = input.header.slot;
+    let is_pq = cfg.is_pq_at_slot(block_slot);
     let proposer_index = input.proposer_index();
     let shuffling = input.shuffling;
     let imm = rv.imm;
@@ -612,7 +619,9 @@ fn collect_sigs_block_body(
     if let Some(section) = offsets.voluntary_exits() {
         collect_sigs_voluntary_exits(imm, &validators, section, sig_batch);
     }
-    if let Some(section) = offsets.bls_changes() {
+    if let Some(section) = offsets.bls_changes() &&
+        !is_pq
+    {
         collect_sigs_bls_to_execution_changes(imm, &validators, section, sig_batch)?;
     }
 
@@ -641,13 +650,15 @@ fn collect_sigs_block_body(
         }
     }
 
-    collect_sigs_sync_aggregate(
-        rv,
-        offsets.sync_aggregate(),
-        block_slot,
-        active_scratch,
-        sig_batch,
-    );
+    if !is_pq {
+        collect_sigs_sync_aggregate(
+            rv,
+            offsets.sync_aggregate(),
+            block_slot,
+            active_scratch,
+            sig_batch,
+        );
+    }
     Ok(())
 }
 
