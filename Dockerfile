@@ -1,16 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# `blst`, `hashtree-rs` and `mimalloc` compile C (and hashtree, assembly), and
-# both `build.rs` scripts shell out to `buf`.
+# `blst`, `hashtree-rs` and `mimalloc` compile C (and hashtree, assembly).
 FROM rust:1.91-bookworm AS builder
 
-ARG BUF_VERSION=1.67.0
 RUN apt-get update && \
     apt-get install -y --no-install-recommends clang && \
-    rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL -o /usr/local/bin/buf \
-      "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && \
-    chmod +x /usr/local/bin/buf
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /silver
 COPY . .

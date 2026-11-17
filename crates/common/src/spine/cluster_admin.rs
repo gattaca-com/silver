@@ -162,7 +162,7 @@ impl fmt::Display for MembershipError {
 
 impl Error for MembershipError {}
 
-/// Produced by `silver cluster`, consumed by Control.
+/// Produced by the `silver` membership subcommands, consumed by Control.
 #[derive(Debug, Clone, Copy, TypeHash)]
 #[repr(C)]
 pub struct ClusterAdminRequest {

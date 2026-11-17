@@ -101,20 +101,21 @@ lower half plots the selected tile's load over time.
 | Column | Meaning |
 |---|---|
 | `util avg %`, `util peak %` | Share of time the tile was busy |
-| `busy avg`, `busy max` | Average and worst busy time per sample, in nanoseconds |
+| `busy avg (ns)`, `busy max (ns)` | Average and worst busy time per sample, in nanoseconds |
 
 ## Other tabs
 
 - **Counters**: raw node counters with history; `Enter` plots one.
 - **TCaches**: fill level and throughput of each shared-memory buffer.
 - **Timings**: latency and processing time per timer (p50, p99, max).
+- **Cluster**: Raft anti-slashing cluster state, and one row per peer voter.
 - **Flamegraph**: a live CPU profile of the node; `p` pauses it, `c` clears it.
 
 ## For developers
 
 ### Timing functions and methods
 
-The `#[timed]` attribute macro (from `silver_common`) can be used to create timers for functions and methods.
+The `#[timed]` attribute macro (from `flux_profiler`) can be used to create timers for functions and methods.
 
 ### Counters
 
@@ -132,18 +133,15 @@ silver_common::declare_counters! {
 }
 ```
 
-The `lookup` function `schema.rs` file in `silver_surfer` crate must all be updated:
+Then add the counter group to `counter_names` in `crates/stages/src/counters.rs`, so surfer can label its slots:
 ```
-/// Map from file suffix (the `{name}` in `counters-{name}`) to the
-/// variant name array. Add lines here as silver crates declare counter
-/// enums via `silver_common::declare_counters!`.
-pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
-    match file_name {
-        "storage" => Some(silver_storage::StorageCounters::NAMES),
-        "network" => Some(silver_network::NetworkCounters::NAMES),
+pub fn counter_names(group: &str) -> Option<&'static [&'static str]> {
+    match group {
+        "storage" => Some(StorageCounters::NAMES),
+        "network" => Some(NetworkCounters::NAMES),
         _ => None,
     }
 }
 ```
 
-Use the `dec()` method of counters with caution - this will overflow if called on a counter with a zero value. For gauge like use of counters `set()` may be a better option.
+Use the `dec()` method of counters with caution - it wraps if called on a counter with a zero value. For gauge like use of counters `set()` may be a better option.

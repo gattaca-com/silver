@@ -1,16 +1,16 @@
 # Kurtosis ethereum-package args for a local Fulu/PeerDAS devnet to test
 # silver peer-connection behaviour against real, log-readable CL clients.
 #
-#   kurtosis run github.com/ethpandaops/ethereum-package --args-file kurtosis/net.yaml
+#   kurtosis/setup.sh
 #
 # silver runs as a BARE HOST PROCESS and joins this enclave over the Docker
-# bridge (see kurtosis/README wiring steps). Containers, not VMs.
+# bridge (see kurtosis/README.md). Containers, not VMs.
 #
 # Constraints baked in for silver compatibility:
 #   - preset: mainnet  -> matches silver's default SpecConfig (minimal would
 #     break slot/epoch assumptions).
 #   - all forks at genesis through Fulu -> PeerDAS (data columns) active from
-#     slot 0, matching the Fulu-only fork scope.
+#     slot 0.
 #   - lighthouse-heavy participant set: silver is QUIC-only and dials a peer
 #     ONLY if its ENR advertises a quic socket. Lighthouse enables QUIC by
 #     default. Verify any other client actually advertises `quic` in its ENR,

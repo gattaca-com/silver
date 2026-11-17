@@ -19,12 +19,14 @@ reason about and faster to run.
 ## Project shape
 
 - Binary is `crates/bin`; everything else is a `silver_*` library crate.
-- Most crates are organised as **tiles** — independent components that communicate over channels.
+- Most crates are organised as **tiles** — independent components that communicate over the spine
+  (shared-memory queues, with bulk payloads in tcaches).
 - The beacon state is **not** a monolith: it's a bag of per-tier *groups* (validators,
-  balances, participation, …), each a finalized base + a ring of per-fork deltas.
+  balances, participation, …), each a finalized base plus per-fork state: a ring of
+  deltas, or page-table snapshots for tree groups.
 - Read `docs/beacon-state-architecture.md` and `docs/delta-rebase-invariant.md` before
   touching state storage. Other refs: `docs/perf-regression-test.md`,
-  `docs/p2p-ladder-diagrams.md`, `docs/telemetry-counters.md` (investigating node errors).
+  `docs/telemetry-counters.md` (investigating node errors).
 
 ## Build / test / lint
 

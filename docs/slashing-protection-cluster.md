@@ -1,125 +1,103 @@
 # Slashing-protection cluster
 
-Nodes in a cluster agree through Raft on one signed attestation per validator
-and epoch, and one block per proposer and slot, before anything is published.
-This page covers the rules an operator has to follow today.
+Cluster nodes agree through Raft on one attestation per validator and epoch,
+and one block per proposer and slot, before anything is published.
 
 ## Availability
 
-Every lock needs a majority of the voters, so the cluster fails closed.
+- Every lock needs a majority of voters; without one, every local duty is
+  refused. A refused duty is a missed duty, never a slashing.
+- Use 3, 5 or 7 voters (7 is the maximum). An even count adds votes per commit
+  without tolerating more failures.
+- A new leader is elected within 2 to 4 s. Meanwhile duties get `LockPending`
+  and are published if they commit later.
 
-| Nodes | Tolerated failures | Without a majority |
-|---|---|---|
-| 3 | 1 | Every local attestation and block is refused until a majority returns. |
-| 5 | 2 | As above. |
-| 7 | 3 | As above. |
+Without a `cluster` config, a node locks in memory only. A restart forgets the
+locks, so the startup floor refuses every slot up to the moment it synced.
+Older conflicting votes are then caught only by the validator client.
 
-- A refused duty is a missed duty, never a slashing.
-- After the leader fails, an election starts within 2 to 4 s (a randomised 20
-  to 40 ticks of 100 ms). Duties submitted meanwhile are answered
-  `LockPending` and published if they commit later.
-- The `Role`, `LeaderId` and per-peer stats counters show which node leads and
-  which peers it hears from.
+## Bootstrap and the journal
 
-## Standalone mode
-
-Without a `cluster` config, a node locks its own attestations and blocks in
-memory only.
-
-- A restart forgets every lock. The startup floor then refuses every slot up
-  to the moment the node synced, so it cannot re-sign a slot it signed before.
-- Older conflicting or surrounding votes are only caught by the validator
-  client's own slashing-protection database.
-- Turning clustering off on a node that has a cluster journal logs a warning:
-  the node no longer checks the cluster's lock history.
-
-## Membership is static
-
-- The `cluster.nodes` map in the config is the full voter set. Every node must
-  list the same ids.
-- A cluster has at most 7 nodes. Use an odd count: 4 nodes tolerate one
-  failure, like 3, but need more votes for every commit.
-- Each node's journal (`data_storage_dir/attestation-cluster.wal`) records its
-  own id and the voter set it started with. A node whose config gives another
-  id refuses to start, and names both ids.
-- On restart, the voter set comes from the journal, not from the config.
-- There is no live way to add, remove or replace a node yet.
-
-## Bootstrap exactly once
-
-- Start every node of a new cluster with `bootstrap = true`, then set it to
-  `false` for every later start.
-- `bootstrap = true` refuses an existing journal, and `bootstrap = false`
+- The journal is `data_storage_dir/attestation-cluster.wal`. It records the
+  node's id; a config with another id refuses to start.
+- Start every node of a new cluster with `bootstrap = true`, then `false`
+  forever after. `bootstrap = true` refuses an existing journal; `false`
   refuses a missing one.
-- Never bootstrap a single node over a lost journal. A node without its
-  journal has forgotten its Raft term and vote. It can vote twice in one term,
-  which can elect two leaders and select conflicting signed messages.
+- Never bootstrap one node over a lost journal. It forgot its term and vote,
+  so it can vote twice and elect two leaders.
+- `cluster.nodes` is only the initial voter set. Afterwards membership and
+  addresses live in the journal. A node that moves updates only its own ENR.
 
-## Replacing a node
+## Changing members
 
-Until live membership changes exist, a node whose journal is lost can only
-return through a planned reset of the whole cluster:
+Run these on the leader's host, as the node's user. A follower names the
+leader. A change prints `proposed`; check it applied with `silver members`.
 
-1. Stop every node.
-2. Delete every node's journal.
-3. Start every node with `bootstrap = true`.
+| Command | Effect |
+|---|---|
+| `silver members` | Members, roles, next free id, and (on the leader) progress. |
+| `silver add <node_id> <enr>` | Adds a learner: it gets every lock but does not vote. |
+| `silver promote <node_id>` | Makes a caught-up learner a voter. |
+| `silver replace <old> <new>` | Swaps voter `old` for caught-up learner `new` in one joint change. |
+| `silver remove <node_id>` | Removes a voter or learner. |
+| `silver transfer-leader <node_id>` | Hands leadership to another voter. |
 
-This discards the cluster's lock history. Slashing safety then rests on the
-validator clients' own slashing-protection databases, and on each node's
-startup floor, which refuses every slot up to the moment it synced.
+The leader refuses:
 
-A cluster of three keeps serving on two nodes, so the reset can wait for a
-planned window. Each further loss before it is an outage.
+- a second change before the first applied;
+- `add` with any id but the next free one (ids are never reused), an ENR
+  without a QUIC address, or a key already in use;
+- `add` once the locks no longer fit one snapshot (about 150k validators);
+- `promote`/`replace` until every member has caught up, except one `replace`
+  removes;
+- removing itself: `transfer-leader` first.
 
-## When a lock is not agreed in time
+A removed node refuses every duty, also after restart (`Removed` = 1). Reuse
+its host only with a new id and journal.
 
-A local attestation or block waits up to 500 ms for the cluster to agree on
-its lock. Past that, the API answers `the slashing protection cluster has not
-agreed on it yet; it is published if it agrees later`.
+**Add a node:** find the next id with `silver members`. Configure the node
+with `join = true` and a `nodes` map of itself plus the current members. Run
+`silver add <id> <enr>`, then start the node; it refuses duties until it
+restores the snapshot. Set `join = false` afterwards, and `silver promote <id>`
+once it has caught up.
 
-- If the lock still commits, the node publishes the message anyway, up to two
-  slots after its slot. `ProposalsCommittedLate` counts every lock that
-  commits after its request was answered, published or not.
-- A blinded block is the exception: the API reveals it through its original
-  request, so a late lock for one is not published.
-- Retrying the same signed message is safe. The cluster treats it as the same
-  vote or block, never as a conflict.
+**Replace a lost voter:** add the new node as above without promoting it, then
+`silver replace <old> <new>`. A cluster of three keeps signing throughout.
+
+**Lost majority:** changes need a quorum, so stop every node, delete every
+journal and bootstrap again. This drops the lock history; safety then rests on
+the validator clients and each node's startup floor.
+
+## Late locks
+
+A duty waits up to 500 ms for its lock, then the API answers `the slashing
+protection cluster has not agreed on it yet; it is published if it agrees
+later`.
+
+- A lock that still commits is published up to two slots late, except for a
+  blinded block. `ProposalsCommittedLate` counts these.
+- Retrying the same signed message is safe; it is never a conflict.
 
 ## Clock skew
 
-Each node checks the cluster's entries against its own clock, with one slot of
-slack. Only a node whose own clock is skewed ever trips this check.
+Nodes check entries against their own clock with one slot of slack, so only a
+skewed node is affected. Keep every node on NTP.
 
-- A follower whose clock runs fast proposes slots the leader refuses. Its
-  duties fail; the rest of the cluster is unaffected.
-- A leader whose clock runs fast appends locks or a floor its followers refuse.
-  They ignore it until their own clocks reach the refused entry, so it loses
-  its quorum. A new leader is elected within 2 to 4 s, and the skewed entries
-  never commit. `LeadersBoycotted` counts this on each follower.
-- While ignored, the skewed node cannot be elected again, even though its log
-  is longer. Once its clock is fixed, it can lead again after the other
-  nodes' clocks pass the slot it refused.
-- A follower whose clock runs slow refuses the correct leader, so it drops out
-  of the cluster. The rest of the cluster is unaffected while a majority
-  remains.
-- A leader whose clock runs slow refuses its followers' proposals for the
-  current slot. Duties fail until another node leads.
+- A fast follower's duties fail. A fast leader loses its quorum
+  (`LeadersBoycotted` on followers), and its entries never commit.
+- A slow follower drops out. A slow leader fails duties until another leads.
 
-Keep every node on NTP. Admission uses each node's own wall clock.
+## When Raft stops
 
-## When Raft processing stops
-
-A node stops serving duties when `Failed` is 1. `FailureKind` says why, and the
-log line `slashing protection spin failed` carries the detail.
+`Failed` = 1 means the node serves no duties. The log line `slashing
+protection spin failed` has the detail.
 
 | `FailureKind` | Cause | Action |
 |---|---|---|
-| 1 storage | Journal I/O failed. | Fix the disk, then restart. Recovery replays the journal. |
-| 2 bad entry | A committed entry this binary cannot apply. The log names its index and term. | Every restart fails on the same entry. Run a binary that can apply it, usually by finishing an upgrade. |
-| 3 snapshot | An installed or recovered snapshot is invalid. | Treat as corruption. Restore the journal, or reset the cluster as above. |
-| 4 raft | raft-rs returned an error. | Restart, and report it. |
+| 1 storage | Journal I/O failed. | Fix the disk, restart; the journal replays. |
+| 2 bad entry | Committed entry this binary cannot apply. | Run a binary that can, usually by finishing an upgrade. |
+| 3 snapshot | Invalid snapshot. | Corruption: restore the journal or reset the cluster. |
+| 4 raft | raft-rs error. | Restart and report it. |
+| 5 other | Invalid config or refused member message. | Read the log line, then restart. |
 
-A node replays its journal before it starts. A journal that is missing or
-cannot be replayed stops the start, with the cause in the error.
-
-Alert queries for these counters are in `telemetry-counters.md`.
+Alert queries are in `telemetry-counters.md`.

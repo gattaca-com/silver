@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Writes src/trusted_setup.rs: the setup points the cell verifier needs.
+"""Writes src/kzg/trusted_setup.rs: the setup points the cell verifier needs.
 
-Usage: python3 -I gen_trusted_setup.py <c-kzg>/src/trusted_setup.txt > src/kzg/trusted_setup.rs
+Usage: python3 -I gen_trusted_setup.py <c-kzg>/src/trusted_setup.txt > src/kzg/trusted_setup.rs && just fmt
 
 The file lists the G1 and G2 point counts, then the G1 Lagrange points, the G2 monomial points
 and the G1 monomial points, one hex-encoded compressed point per line.

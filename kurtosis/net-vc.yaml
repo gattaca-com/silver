@@ -1,6 +1,6 @@
-# net-participant.yaml with two silver nodes, one driven by a Lighthouse VC
-# and one by a Prysm VC, for the VC endpoint scenarios. Each silver holds
-# 128 of 640 keys, so the chain still finalizes if either one fails.
+# Fulu devnet with two silver nodes, one driven by a Lighthouse VC and one by
+# a Prysm VC, for the VC endpoint scenarios. Each silver holds 128 of 640
+# keys, so the chain still finalizes if either one fails.
 #
 #   SILVER_PACKAGE="$(kurtosis/prepare-package.sh)"
 #   kurtosis run "$SILVER_PACKAGE" \

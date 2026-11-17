@@ -27,17 +27,15 @@ target/
 *.ssz
 *.fxt*
 # e2e fixtures are committed via git-lfs (see .gitattributes and
-# crates/e2e/data/perf/README.md) — they need to escape the blanket
+# docs/perf-regression-test.md) — they need to escape the blanket
 # *.ssz ignore.
 !crates/e2e/data/**/*.ssz
-!crates/engine/testdata/*.ssz
+!crates/engine_api/testdata/*.ssz
 # kurtosis generated files
 kurtosis/.cache/
 kurtosis/silver-devnet.toml
 kurtosis/silver-gloas.toml
 kurtosis/silver-*-network/
-# ethereum consensus-spec-tests
-crates/beacon_state/consensus-spec-tests/
 kurtosis/el/
 
 crates/beacon_state/tile/tests/sync_scenarios/gloas_fork_transition/fixtures/

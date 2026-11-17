@@ -53,7 +53,7 @@
  
 --- a/static_files/silver-config/silver.toml.tmpl
 +++ b/static_files/silver-config/silver.toml.tmpl
-@@ -1,10 +1,11 @@
+@@ -1,10 +1,10 @@
  # Rendered by src/cl/silver/silver_launcher.star.
  #
 -# `fork_digest`, `next_fork_version` and `genesis_unix_secs` are absent on
@@ -65,10 +65,10 @@
 +network = "{{ .NetworkDir }}"
 +# Local devnets start from genesis without a finalized checkpoint.
 +disable_weak_subjectivity_check = true
- secret_key = "{{ .SecretKey }}"
+-secret_key = "{{ .SecretKey }}"
  external_ip_v4 = "EXTERNAL_IP"
  discovery_port = {{ .DiscoveryPort }}
-@@ -19,8 +20,6 @@
+@@ -19,8 +19,6 @@
  unsafe_no_el = {{ .UnsafeNoEl }}
  
  [chain_config]

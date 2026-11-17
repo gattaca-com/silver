@@ -70,7 +70,7 @@ Query the same host, e.g. over its HTTP interface (port 8123 by default).
    New types are those whose `first` falls inside the window.
 2. Read the code at `file:line` for the row's `version` commit.
 3. Pull the real messages from the node's log. `LOG_PATH` is in the node's
-   environment, and files are named `silver.<date>`:
+   environment (default `/tmp/logs`), and files are named `silver.<date>`:
 
    ```sh
    sed 's/\x1b\[[0-9;]*m//g' "$LOG_PATH/silver.<date>" | grep '<template words>' | grep '<HH:MM>'
@@ -201,4 +201,16 @@ WHERE component = 'cluster' AND name IN ('FloorLatched', 'CommitIndex')
 GROUP BY meta_client_name
 HAVING last_commit > now() - INTERVAL 2 MINUTE
    AND latched = 0 AND latched_changed < now() - INTERVAL 5 MINUTE
+```
+
+A node applied its own removal from the cluster in the last hour. It refuses
+every duty for good, so it should be stopped. `Removed` is never reset, so
+this watches for the change, not the value:
+
+```sql
+SELECT meta_client_name, min(slot_start_date_time) AS removed_at
+FROM counters
+WHERE component = 'cluster' AND name = 'Removed' AND delta > 0
+  AND slot_start_date_time > now() - INTERVAL 1 HOUR
+GROUP BY meta_client_name
 ```

@@ -9,8 +9,8 @@ all: $(STAMP)
 clean:
 	rm -rf *.tar.gz $(OUTPUT_DIR)
 
-# KZG vectors from ethereum/EthLib, pinned to the Lean proof's revision.
-# Changing the pin invalidates the stamp.
+# KZG vectors from ethereum/EthLib. The Lean proof pins a newer revision in
+# proof/lean/lakefile.toml. Changing the pin invalidates the stamp.
 # Match any archive root; prevent `*` from matching `/` to exclude
 # `bindings/python/tests/kzg`.
 $(STAMP):

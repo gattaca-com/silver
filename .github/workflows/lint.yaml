@@ -28,11 +28,6 @@ jobs:
           toolchain: nightly-2026-06-21
           components: clippy, rustfmt
 
-      - name: Install buf
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
-
       - name: Setup just
         uses: extractions/setup-just@v2
         with:

@@ -70,11 +70,6 @@ jobs:
         with:
           toolchain: 1.91.0
 
-      - name: Install buf
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
-
       - name: Build
         run: cargo build --profile release-prod --locked --bin silver --bin silver_surfer
 

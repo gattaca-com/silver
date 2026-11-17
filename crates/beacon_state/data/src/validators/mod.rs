@@ -28,14 +28,10 @@ pub struct ValidatorsId {
 }
 
 /// The validator registry as one coupled unit: the finalized columns + pubkey
-/// index + persistent hash tree ([`FinalizedValidators`]) plus a per-fork delta
-/// ([`ValidatorsDelta`]) ring. Logically identical to [`BalancesGroup`] —
-/// finalized columns + sparse edits + a hash overlay — so finalization uses the
-/// same reanchor-against-the-winner model. Read by both views; its finalized
-/// index/hash grow, so the checkpoint-persist snapshot read on the storage
-/// thread must be lock-guarded.
-///
-/// [`BalancesGroup`]: crate::BalancesGroup
+/// index ([`FinalizedValidators`]), a per-fork delta ([`ValidatorsDelta`])
+/// ring and a paged hash column. Read by both views; its finalized index grows,
+/// so the checkpoint-persist snapshot read on the storage thread must be
+/// lock-guarded.
 pub struct ValidatorsGroup {
     finalized: FinalizedValidators,
     deltas: Ring<Self>,
@@ -96,8 +92,8 @@ impl ValidatorsGroup {
     }
 
     /// Re-anchor a survivor against the promoted `winner` into a fresh slot,
-    /// pre-promotion (mirror of `BalancesGroup::reanchor`). Data ring only —
-    /// the paged hash column finalizes by page adoption, no rebase.
+    /// pre-promotion. Data ring only — the paged hash column finalizes by page
+    /// adoption, no rebase.
     fn reanchor(&mut self, survivor: Id<Self>, winner: Id<Self>) -> Id<Self> {
         let Self { finalized, deltas, .. } = self;
         let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
@@ -107,7 +103,7 @@ impl ValidatorsGroup {
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped), promote the winner into the finalized state, then free the
-    /// oldest. Mirrors [`BalancesGroup::finalize`](crate::BalancesGroup).
+    /// oldest.
     #[timed]
     pub fn finalize(
         &mut self,

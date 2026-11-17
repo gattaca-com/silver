@@ -1,135 +1,119 @@
 # Delta rebase invariant
 
-## Setup
+Finalization moves the base under every surviving fork.
+This note states what keeps each survivor's state unchanged across that move.
+Read `beacon-state-architecture.md` first for groups, forks and the finalize window.
 
-One large list of values (e.g. validator balances) evolves as blocks arrive. The
-chain forks: several candidate "latest states" coexist, one per branch. A full
-list per fork would be wasteful — forks mostly agree — so we keep one shared
-**base** `B` (the last agreed state) plus, per fork, a sparse **delta** `D` of the
-indices it changed. Untouched indices read through to `B`.
+## Where it applies
 
-When a fork **finalizes** it folds into the base, *becoming* the new base; forks
-not descended from it are discarded, and the rest are **survivors**. Finalization
-moves `B` out from under every survivor. This note states the invariant that keeps
-each survivor's state unchanged across that move, the operations that maintain it,
-and why they do.
+Only ring groups with sparse `Edits` need a rebase:
 
-(Each field also carries a parallel Merkle overlay used for hashing. It obeys this
-same invariant and moves in lockstep, so we reason about one delta.)
+| group | delta | rebase call |
+|---|---|---|
+| `validators` | seven `Edits` columns + `appended` | `ValidatorsDelta::rebase_and_prune_from` |
+| `builders` | one `Edits<Builder>` + `appended` | `BuildersDelta::rebase_and_prune_from` |
+
+Both delegate each column to `Edits::rebase_and_prune_from`.
+
+The other groups do not rebase:
+
+- Tree groups, including the `validators` and `builders` hash columns, finalize by page-table adoption.
+  Survivor ids stay valid unchanged.
+- Eth1 and pending drop the promoted prefix of their append logs.
+- Slot, epoch and longtail copy the whole working copy into a fresh slot.
 
 ## Model
 
-`B` is **total**: the finalized values, padded with spec-defaults out to capacity.
-Every index therefore has a base value, and appending past the finalized count is
-just a `set` on a default slot — no separate case.
+A fork's delta has a `base_count`, an `appended` tail, and sparse `Edits` keyed by absolute index.
+Indices below `base_count` read through to the base `B` unless edited.
+Indices at or above `base_count` read from `appended`, then any edit on top.
 
-`D` is a partial map; `dom(D)` is the set of indices it covers.
-
-```
-view(i) = D[i]   if i ∈ dom(D)      (an edit)
-        = B[i]   otherwise           (read through to base)
-```
-
-`S` is the fork's **true state** — what its blocks produced. `D` is **valid** when
-it reproduces `S` over `B`:
+`S` is the fork's true state, what its blocks produced.
+The delta is valid when every read returns `S`.
+For indices below `base_count`, that splits into two halves:
 
 ```
-(VAL)   view(i) = S[i]   for every i
+(a)    D[i] = S[i]   for every edited i          every edit is correct
+(INV)  dom(D) ⊇ { i < base_count : S[i] ≠ B[i] }  carry an edit wherever you differ from B
 ```
 
-Splitting VAL by case gives two halves:
+Edits stay correct on their own.
+INV is the half at risk: moving `B` can make an unedited index differ from the new base.
 
-```
-(a)   D[i] = S[i]   for i ∈ dom(D)      every edit is correct
-(b)   B[i] = S[i]   for i ∉ dom(D)      every gap already matches the base
-```
+## The re-anchor pass
 
-Half (b), stated as its contrapositive, is the **invariant**:
+Finalizing winner `W` moves the base from `B` (count `n`) to `B'` (count `n' = W.base_count + W.appended.len()`).
+Each survivor is re-anchored into a fresh slot by one sorted merge of its edits with `W`'s edits.
 
-```
-(INV)   dom(D) ⊇ { i : S[i] ≠ B[i] }     "carry an edit wherever you differ from B"
-```
+`old(i)` is the value at `i` before `W`'s edits.
+It reads `B[i]` for `i < n`, else `W`'s appended record (`winner.unedited`).
+Then `B'[i]` is `W[i]` where `W` has an edit, else `old(i)`.
 
-so
-
-```
-VAL  ⟺  (a) ∧ INV.
-```
-
-Keeping a delta valid is exactly keeping its edits correct *and* maintaining INV.
-INV is the half at risk: when finalization moves `B`, an index that matched the old
-base can differ from the new one, demanding an edit that may not be there. (INV is
-required only **at rest**, between finalizations — the sequence below breaks it
-mid-flight on purpose.)
-
-## Operations
-
-`B ⊕ W` is `B` overwritten at the winner's indices: `(B ⊕ W)[i] = W[i]` if
-`i ∈ dom(W)`, else `B[i]`.
-
-| op | effect | role |
+| survivor at `i` | winner at `i` | output edit |
 |---|---|---|
-| `set(i, v)` | `D[i] := v` — how a fork's blocks define `S` | builds a valid delta |
-| `rebase(W)` | for each `i ∈ dom(W)\dom(D)`: `D[i] := B[i]`, using the **old** `B` | re-pins gaps the move would expose |
-| `promote(W)` | `B := B ⊕ W` | advances the base for everyone else |
-| `prune` | drop every `i` with `D[i] = B[i]` (against the current base) | removes slack, keeps `D` sparse |
+| edit `s` | edit `w` | `s` if `s ≠ w` |
+| edit `s` | none, `i < n'` | `s` if `s ≠ old(i)` |
+| edit `s` | none, `i ≥ n'` | `s`, always |
+| none | edit `w` | `old(i)` if `old(i) ≠ w` (the pin) |
+| none | none | none |
 
-They run in exactly one order per finalization, and the order is the whole point:
+The survivor also drops up to `n' − n` leading records of `appended`, which `W` promoted.
+Its new `base_count` is `n'`.
 
-```
-rebase survivors (old B)  →  promote winner (B → B')  →  prune survivors (new B')
-```
+The pass reads `old(i)` from the finalized base.
+So it must run before `promote_into_base` overwrites that base.
 
-`rebase` must run first: it captures the old base value before `promote` overwrites
-it.
+## Proof sketch
 
-## Proof
+Take a survivor valid over `B`.
+Check each row reads the same value before and after:
 
-Fix a survivor `D`, valid over `B`. Let `B' = B ⊕ W`. `S` does not change.
+- **Survivor edit.**
+  Before, the read is `s`.
+  After, `s` is kept unless it equals `B'[i]`, which then reads `s` anyway.
+  Indices `≥ n'` have no new base, so their edits are always kept.
+- **Gap, winner edit (the pin).**
+  Before, the gap reads `old(i)`.
+  After, `B'[i] = w` would leak the winner's value.
+  The pin restores `old(i)`, unless it already equals `w`.
+- **Gap, no winner edit.**
+  Before, the gap reads `old(i)`; after, it reads `B'[i] = old(i)`.
 
-**rebase + promote preserve VAL.** rebase adds, for each `i ∈ dom(W)\dom(D)`, the
-edit `D[i] := B[i]`. Such an `i` was a gap, so (b) gives `B[i] = S[i]`: the new edit
-is correct. Old edits and remaining gaps are untouched, so VAL still holds over `B`
-— and now `dom(D) ⊇ dom(W)`.
+The result also satisfies INV over `B'`: every kept edit differs from `B'`, and every gap equals it.
+So the next finalization starts from a valid delta again.
 
-Now promote to `B'`. Take any gap `i ∉ dom(D)`. Since `dom(D) ⊇ dom(W)`, also
-`i ∉ dom(W)`, so `B'[i] = B[i]`; and `i` was a gap, so `B[i] = S[i]`. Hence
-`B'[i] = S[i]` — half (b) holds over `B'`. Edits are unchanged, so (a) holds.
-Therefore VAL holds over `B'`. ∎
+Two gap reads above rely on **descent**: survivors descend from `W`.
+For `n ≤ i < n'`, the survivor's gap reads its own `appended` record.
+That equals `W`'s record only because the survivor inherited `W`'s appended prefix.
+The prefix drop relies on the same fact.
+`appended` records are never mutated; changes go through `Edits` for this reason.
 
-**prune preserves VAL.** It drops `i` only when `D[i] = B'[i]`. By (a) `D[i] = S[i]`,
-so `S[i] = B'[i]`: after dropping, the gap reads `B'[i] = S[i]`, satisfying (b); and
-`i ∉ { S ≠ B' }`, so INV survives too.
+## Why winner-only indices exist
 
-**Induction.** A fork's `set`s build a valid delta. Each finalization is
-rebase → promote → prune, each step preserving VAL, so every survivor stays valid
-after any number of finalizations — provided rebase precedes prune.
-
-Descent is not needed for correctness; it only shows rebase is *usually* a no-op. A
-survivor descends from the winner, so it already carries the winner's edits:
-`dom(D) ⊇ dom(W)`, and rebase's loop is empty. rebase has work only where `prune`
-once dropped a reverted edit — the case below.
-
-## The one case rebase fires
-
-One index, base `0`, three forks each built on the previous — each arrow sets the
-index to a new value:
+A survivor rolled from `W` inherits all of `W`'s edits.
+So a winner-only index appears only after an earlier pass pruned a reverted edit:
 
 ```
-base <- a (D1) <- b (D2) <- a (D3)
+base 0 <- D1 (a) <- D2 (b) <- D3 (a)
 ```
 
-so `D3`'s true value is `a` again. When `D1` finalizes (base `→ a`), `D3`'s edit equals the
-base, so `prune` drops it — leaving `D3` a gap exactly where the next winner `D2`
-holds an edit: the `dom(W)\dom(D)` case. Now finalize `D2` (base `a → b`):
-
-| `D3`'s index | base | `D3` edit | `D3` view |
+| step | base | `D3` edit | `D3` read |
 |---|---|---|---|
-| after `D1` finalizes | `a` | — (pruned) | `a` |
-| **no rebase**, then promote `D2` | `b` | — | **`b` ✗** |
-| **rebase** (old base) | `a` | `a` | `a` |
-| then promote `D2` | `b` | `a` | **`a` ✓** |
+| finalize `D1` | `a` | pruned (`a = B'`) | `a` |
+| finalize `D2`, no pin | `b` | none | **`b`, wrong** |
+| finalize `D2`, with pin | `b` | `a` (from `old`) | `a` |
 
-Without rebase, `D3` silently flips `a → b` — a value it never set. rebase re-pins
-`a` from the old base before promote moves it, which is exactly the
-`rebase + promote` step of the proof.
+Without the pin, `D3` reads `b`, a value it never set.
+The pin captures `a` from the old base before promotion moves it.
+
+## Tests
+
+| test | pins |
+|---|---|
+| `sparse::tests::rebase_and_prune_pins_injects_overrides_and_drops_redundant` (`sparse/tests.rs:12`) | every row; idx 0 and 6 are the pin, idx 2 a skipped pin, idx 3 and 4 the prunes |
+| `sparse::tests::rebase_and_prune_keeps_survivor_appended_indices` (`sparse/tests.rs:36`) | edits at or above `new_count` are kept |
+| `validators::tests::descendant_view_survives_finalize` | a re-anchored child keeps its reads and root |
+| `builders::tests::descendant_survives_finalize`, `survivor_edit_past_base_capacity` | the same for builders, including an edit on a promoted appended index |
+
+No ring-group test runs the full two-finalization `a → b → a` sequence.
+`tree::tests::aba_finalize_keeps_reverted_value` covers it for tree groups, which need no pin.

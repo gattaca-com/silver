@@ -105,7 +105,7 @@ surfer *args='':
   cargo run --locked --release -p silver_surfer -- {{args}}
 
 # Refresh crates/e2e/data/perf from mainnet (~13 min for the default 128
-# blocks at lodestar's ~1 req / 6 s cap). Commit the result via git-lfs.
+# blocks at the ~1 req / 6 s block request spacing). Commit the result via git-lfs.
 # Pass `--continue` (and/or `--blocks N`) to resume after a network blip.
 perf-update-fixtures *args='--blocks 128':
   cargo run --locked --release -p silver_e2e --bin perf_update_fixtures -- {{args}}

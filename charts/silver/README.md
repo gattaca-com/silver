@@ -25,7 +25,7 @@ Install the chart package from GHCR:
 
 ```bash
 helm upgrade --install silver oci://ghcr.io/gattaca-com/charts/silver \
-  --version 0.1.0-alpha.6 --values silver-values.yaml
+  --version 0.1.0-alpha.17 --values silver-values.yaml
 ```
 
 Each Silver release publishes a chart with the same version, without the `v` prefix.
@@ -87,7 +87,7 @@ kubectl exec -it silver-0 -c silver -- silver_surfer /runtime silver
 Replace `silver-0` with your pod name. Surfer shares the node's runtime files and uses the same release version.
 
 The optional ServiceMonitor requires the Prometheus Operator CRDs.
-Silver `v0.1.0-alpha.6` exposes `/metrics` but returns no samples.
+Silver exposes `/metrics` but returns no samples.
 
 ## Release the chart
 

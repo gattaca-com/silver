@@ -282,13 +282,14 @@ fn hex(b: &[u8; 32]) -> String {
 #[test]
 fn tile_apply_block_ef_fixture() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../beacon_state/consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation");
+        .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation");
     let pre_path = dir.join("pre.ssz_snappy");
     let block_path = dir.join("blocks_0.ssz_snappy");
     if !pre_path.exists() || !block_path.exists() {
         eprintln!("skipping: EF fixture not present at {}", dir.display());
         return;
     }
+    let spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() };
     let pre_ssz = snap::raw::Decoder::new()
         .decompress_vec(&std::fs::read(&pre_path).unwrap())
         .expect("snappy pre");
@@ -300,11 +301,8 @@ fn tile_apply_block_ef_fixture() {
     // close enough that the pre-state stays within its weak-subjectivity period.
     let block_slot = silver_common::ssz_view::SignedBeaconBlockView::slot(&block_ssz);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let ticker = SlotTicker::new(
-        now.saturating_sub((block_slot + 1) * 12),
-        &SpecConfig::mainnet(),
-        Duration::from_secs(4),
-    );
+    let ticker =
+        SlotTicker::new(now.saturating_sub((block_slot + 1) * 12), &spec, Duration::from_secs(4));
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
     let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
     let engine_resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 24);
@@ -316,12 +314,12 @@ fn tile_apply_block_ef_fixture() {
 
     let mut tile = BeaconStateTile::new(
         ticker,
-        Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
+        Arc::new(spec.clone()),
         &silver_config::SyncingConfig::default(),
         tcaches,
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
         true,
-        CheckpointState::trusted(&pre_ssz, &SpecConfig::mainnet(), &[]),
+        CheckpointState::trusted(&pre_ssz, &spec, &[]),
         None,
         silver_config::EngineConfig::default().get_payload_timeout(),
     );
@@ -330,6 +328,6 @@ fn tile_apply_block_ef_fixture() {
     let fb = tile.try_apply_block(&block_ssz, |_| {});
     assert!(
         matches!(fb, Feedback::BlockImported(_)),
-        "EF block rejected through tile (bootstrap or apply path is buggy, independent of mainnet scale)",
+        "EF block rejected through tile (bootstrap or apply path is buggy, independent of mainnet scale): {fb:?}",
     );
 }

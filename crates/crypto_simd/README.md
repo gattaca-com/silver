@@ -118,8 +118,6 @@ Charon and Aeneas translate the x86-64 Rust implementation into Lean 4. The proo
 
 These results rely on the translation, CPU intrinsic models and specification described in the proof guide's [trust list](https://github.com/gattaca-com/silver/blob/main/crates/crypto_simd/proof/README.md#what-a-reader-must-trust). They do not prove full BLS signature verification, hash-to-G2 correctness or the aarch64 build. They cover the committed code; a modified implementation needs fresh extraction and proof builds.
 
-The Lean project (not included in crates.io package) is dedicated to the public domain under CC0.
-
 ## License
 
 The crates.io package is licensed under [MIT](https://github.com/gattaca-com/silver/blob/main/crates/crypto_simd/LICENSE). The repository additionally contains the Lean proof project, dedicated to the public domain under [CC0 1.0](https://github.com/gattaca-com/silver/blob/main/crates/crypto_simd/proof/lean/LICENSE); that project is not included in the package.

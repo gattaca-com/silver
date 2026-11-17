@@ -63,11 +63,11 @@ mod tests {
     use crate::{BeaconState, SpecConfig, types::SLOTS_PER_EPOCH};
 
     // EF fixture: a known-valid Fulu pre-state from sanity/blocks tests.
-    // Path is relative to `crates/common/`; gracefully skipped when the
+    // Path is relative to `crates/beacon_state/data/`; gracefully skipped when the
     // consensus-spec-tests checkout is missing.
     const EF_PRE_STATE: &str = concat!(
-        "../beacon_state/consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/",
-        "pyspec_tests/deposit_top_up/pre.ssz_snappy",
+        "../tile/consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/",
+        "pyspec_tests/attestation/pre.ssz_snappy",
     );
 
     #[test]
