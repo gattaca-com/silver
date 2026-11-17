@@ -1,12 +1,28 @@
 # Maintaining the shared BLS and KZG proof
 
-One extraction and one Lake project cover BLS decoding, KZG cell batch verification and cell extension. [The parent README](../README.md) states their contracts, scope and trust boundary. See [common setup](#common-reproduction-and-extraction), [BLS maintenance](#bls-decoding-maintenance) or [KZG maintenance](#kzg-maintenance). Use this directory for Lake commands and `extract.sh`; run Cargo commands from the silver repository root.
+One extraction and one Lake project cover BLS decoding, KZG cell batch verification and cell extension. [The parent README](../README.md) states their contracts, scope and consolidated trust boundary. See [common setup](#common-reproduction-and-extraction), [BLS maintenance](#bls-decoding-maintenance) or [KZG maintenance](#kzg-maintenance). Use this directory for Lake commands and `extract.sh`; run Cargo commands from the silver repository root.
 
 ## License
 
 This directory and everything under it are dedicated to the public domain under [CC0 1.0](LICENSE). That overrides the repository-wide MIT licence for this directory only. You may copy, adapt and reuse these proofs without attribution. The rest of `silver_crypto_simd`, including the Rust source used to generate the extraction, remains under the [MIT licence](../../LICENSE).
 
 Contributions to this directory are accepted under CC0 only. Do not add material under another licence, such as Apache-2.0 code from Mathlib or other Lean libraries. It cannot be relicensed.
+
+## Claims
+
+The generated x86_64 APIs cover BLS decoding, subgroup checks and KZG batch verification. Cell extension covers both the Fr FFT kernel and scalar fallback. The extender's single `compute_eq_spec` theorem includes canonicality, exact cell bytes, unchanged cells on rejection, construction and repeated calls. See the [full statements](../README.md#what-is-proved) for their premises and runtime scope.
+
+## Usage
+
+Import `LeanBlsSimd.Kzg.Extender.Statements` for cell extension and `LeanBlsSimd.Kzg.Statements` for verification. BLS consumers use the public `Refines.UncompressG1` and `Refines.UncompressG2` modules. The [consumer examples](../README.md#using-the-public-results) show how to supply CPU feature observations and apply the proved generated-component results. G1 and KZG consumers use `KzgExternals`. G2 signature consumers use `BlsExternals`. Their correctness laws are scoped separately.
+
+`controls/downstream/` is an independent package with four targets for BLS adapters, KZG verification and extension, and pairing-product headlines. It checks public-result consumption across package boundaries.
+
+## Trust
+
+The [shared trust list](../README.md#what-a-reader-must-trust) covers extraction, dependencies, intrinsic models and runtime behavior. `Kzg.pairing_correct` proves the lane `PairingCorrect` statement. Scalar pairing and non-IFMA G1 decoding have separate scoped blst laws. IFMA verifier headlines require neither. `Portable.Msm.portable_msm_correct` proves portable MSM for arbitrary scratch and aligned slices without a caller length bound. `Portable.Fp.portable_fp_correct` and `Portable.Decode.g1_decoder_correct` prove the base-field and G1 decoder contracts. `FrScalar.fr_correct` and `FrScalar.fr_bytes_correct` prove the scalar laws, including canonical decoding and arbitrary digest reduction. `Sha256.sha_correct` proves both generated SHA implementations. The extender and its constructor have no component-contract premises. Their scalar and kernel routes both use proved arithmetic and byte refinements.
+
+`RuntimeFeatures` separates SIMD, SHA and BMI2 observations. The intrinsic boundary includes AVX-512, SHA/SSE and carry operations, plus Aeneas's byte and collection semantics. `BlsExternals` contains only the G2 decoder for signatures. `KzgExternals` contains G1 decoding and scalar pairing. IFMA G1 tails and undecided lanes use the generated portable decoder. The extraction targets x86_64. Other target configurations are not separately extracted here. The project uses upstream EthLib at `98395150`, Lean and Mathlib v4.35.0, and Aeneas `nightly-2026.10.30-de16f3c`.
 
 ## Common reproduction and extraction
 
@@ -103,7 +119,7 @@ Set up the [toolchain and cache](../README.md#reproducing-the-proof-and-checks) 
 6. Run every control (command in `../README.md`). `controls/Refines*.lean` holds handwritten generated-function copies, pinned to their originals by `rfl`. If that equality fails after regeneration, copy the function from `LeanBlsSimd/Extracted/Funs.lean` again and reapply the mutation. Preserve the control. If a mutated proof now succeeds, investigate whether the mutation still tests the intended property; that result alone does not establish a lost dependency.
 7. From the silver repository root, run `SILVER_REQUIRE_IFMA=1 cargo test -p silver_crypto_simd --profile release-with-debug --test proof_vectors replay_vectors` on the IFMA host. Review the vector diff alongside the changes to the Rust, generated code, model and proofs.
 8. From this folder, `AENEAS_DIR=/path/to/aeneas ./extract.sh --check` must report no drift.
-9. Changes to `mod.rs` must preserve or update the corresponding wrapper model, refinement and public theorem. Update `../README.md` if a headline or its premises changed.
+9. Update `../README.md`: the sha256 and git blob of each changed file, and any counts that changed. Changes to `mod.rs` must preserve or update the corresponding wrapper model, refinement and public theorem.
 
 ### Mapping Rust changes to Lean
 
@@ -224,7 +240,7 @@ The constructor's panic message in `verify.rs` must remain constant to avoid pul
 
 ### Controls
 
-Run the files through the common `controls/*.lean` loop.
+The [KZG controls table](../README.md#evidence-and-controls) describes each checked boundary, including the production G1 decoder control. Run the files through the common `controls/*.lean` loop.
 
 `ExtenderMathematical.lean` checks the blob-sized transform steps; `ExtenderLayout.lean` checks copying and rejection behavior. `downstream/KzgSmoke.lean` applies extender construction and execution without component premises. Kernel controls cover raw decode/masks, multiplier scaling, permutation selection, canonical output, byte order, table/stage ordering and output frames. `InterpolationKernel.lean` checks shift factors, first-product normalization, used-column tracking and canonical-cell verdicts.
 
