@@ -1,5 +1,6 @@
 use std::{
     io::{Error, ErrorKind},
+    os::fd::{AsRawFd, RawFd},
     path::{Path, PathBuf},
 };
 
@@ -48,7 +49,7 @@ pub(super) enum CheckpointProgress {
 /// syncs both directories. Unnamed files vanish on a crash or a restart, so
 /// no partial file is ever reachable under a checkpoint name.
 pub(super) struct CheckpointWriter {
-    pub(super) disk: DiskIo,
+    disk: DiskIo,
     reader: BeaconStateReader,
     cursor: CheckpointCursor,
     path: PathBuf,
@@ -92,6 +93,11 @@ impl CheckpointWriter {
 
     fn slot_path(&self) -> PathBuf {
         self.path.join(self.cursor.slot().to_string())
+    }
+
+    pub(super) fn ring_fd(&mut self) -> RawFd {
+        self.disk.submit();
+        self.disk.as_raw_fd()
     }
 
     #[cfg(test)]

@@ -201,6 +201,11 @@ enum PendingWrite {
         dir: PathBuf,
         records: Vec<u8>,
     },
+    /// The encoded coverage at `version`.
+    Coverage {
+        version: u64,
+        bytes: Vec<u8>,
+    },
 }
 
 impl PendingWrite {
@@ -243,16 +248,10 @@ impl PendingWrite {
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::PersistPeer { .. } |
             PendingWrite::LoadPeers |
-            PendingWrite::IndexBlock { .. } => false,
+            PendingWrite::IndexBlock { .. } |
+            PendingWrite::Coverage { .. } => false,
         }
     }
-}
-
-/// A started write: a queued one, or the coverage file, which never queues.
-#[allow(clippy::large_enum_variant)]
-enum WriteTag {
-    Queued(PendingWrite),
-    Coverage { version: u64, bytes: Vec<u8> },
 }
 
 /// The coverage is mid-change while writes that land are queued or in
@@ -557,7 +556,7 @@ pub(super) struct Store {
     history_floors: [Option<u64>; ALL_PAYLOADS.len()],
 
     write_queue: WriteQueue,
-    writer: FileWriter<WriteTag>,
+    writer: FileWriter<PendingWrite>,
     coverage_bytes: Vec<u8>,
     // Group directories known to exist, so each is created once.
     known_dirs: FxHashSet<PathBuf>,

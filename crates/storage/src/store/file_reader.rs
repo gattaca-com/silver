@@ -1,5 +1,6 @@
 use std::{
     io::{Error, ErrorKind},
+    os::fd::{AsRawFd, RawFd},
     path::Path,
 };
 
@@ -33,7 +34,7 @@ struct Read<T> {
 pub(super) struct FileReader<T> {
     // Drops first: its drop waits for the kernel to finish writing into the
     // reservations `reads` still holds.
-    pub(super) disk: DiskIo,
+    disk: DiskIo,
     reads: Vec<Read<T>>,
 }
 
@@ -44,6 +45,11 @@ impl<T> FileReader<T> {
 
     pub(super) fn in_flight(&self) -> usize {
         self.reads.len()
+    }
+
+    pub(super) fn ring_fd(&mut self) -> RawFd {
+        self.disk.submit();
+        self.disk.as_raw_fd()
     }
 
     pub(super) fn tags(&self) -> impl Iterator<Item = &T> {

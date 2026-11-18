@@ -7,7 +7,7 @@
 use std::{
     fs::File,
     io::{Error, ErrorKind, Read, Write},
-    os::fd::{AsRawFd, RawFd},
+    os::fd::RawFd,
     path::{Path, PathBuf},
     ptr,
     time::{Duration, Instant},
@@ -19,7 +19,7 @@ use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{DataKind, Enr, PeerEvent, TProducer, TRead, hex32, merkle::B256};
 
 use super::{
-    Payload, PendingWrite, QueryUnit, SLOTS_PER_DIR, Store, WriteTag,
+    CheckpointWriter, Payload, PendingWrite, QueryUnit, SLOTS_PER_DIR, Store,
     backfill::BlockFacts,
     block_index, block_path, column_path,
     coverage::{self, Block},
@@ -59,15 +59,9 @@ impl Store {
     {
         let (mut outcome, mut applied) = (Ok(()), false);
         self.writer.step();
-        while let Some((tag, result)) = self.writer.next_finished() {
+        while let Some((pending, result)) = self.writer.next_finished() {
             applied = true;
-            outcome = outcome.and(match tag {
-                WriteTag::Queued(pending) => self.write_landed(pending, result, emit),
-                WriteTag::Coverage { version, bytes } => {
-                    self.coverage_bytes = bytes;
-                    result.map(|()| self.finalized.coverage_persisted(version))
-                }
-            });
+            outcome = outcome.and(self.write_landed(pending, result, emit));
         }
         (outcome, applied)
     }
@@ -126,9 +120,9 @@ impl Store {
         if self.writer.conflicts_with(&op) {
             return Start::Busy(pending);
         }
-        // SAFETY: the op's bytes are a `TRead` or records that `pending`
+        // SAFETY: the op's bytes are a `TRead` or a buffer that `pending`
         // holds, which the writer keeps until the write completes.
-        unsafe { self.writer.start(op, WriteTag::Queued(pending)) };
+        unsafe { self.writer.start(op, pending) };
         Start::Done(Ok(()))
     }
 
@@ -175,6 +169,10 @@ impl Store {
                 path: block_index::file(dir),
                 bytes: ptr::from_ref(&records[..]),
             }),
+            PendingWrite::Coverage { bytes, .. } => {
+                let (path, staged) = coverage::codec::files(&self.store_dir);
+                Ok(WriteOp::Replace { path, staged, bytes: ptr::from_ref(&bytes[..]) })
+            }
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::BackfillBlock { .. } |
             PendingWrite::PersistPeer { .. } |
@@ -185,17 +183,15 @@ impl Store {
     /// Only once nothing is queued or in flight, so the file describes data
     /// already down. A failed write still replaces the file; a torn one fails
     /// to decode and is rebuilt.
-    fn persist_coverage(&mut self) {
+    fn persist_coverage(&mut self) -> bool {
         let settled = self.write_queue.is_empty() && self.writer.in_flight() == 0;
         if !settled || !self.finalized.coverage().changed() {
-            return;
+            return false;
         }
-        let (path, staged) = coverage::codec::files(&self.store_dir);
         let mut bytes = std::mem::take(&mut self.coverage_bytes);
         let version = self.finalized.coverage().encode_for_persist(&mut bytes);
-        let op = WriteOp::Replace { path, staged, bytes: ptr::from_ref(&bytes[..]) };
-        // SAFETY: the tag holds `bytes` until the write completes.
-        unsafe { self.writer.start(op, WriteTag::Coverage { version, bytes }) };
+        self.write_queue.push_back(PendingWrite::Coverage { version, bytes });
+        true
     }
 
     fn create(&mut self, path: PathBuf, ssz: &TRead) -> Result<WriteOp, Error> {
@@ -269,6 +265,11 @@ impl Store {
                 self.finalized.envelope_landed(slot);
                 emit(IoEvent::Need(self.finalized.persisted(DataKind::Envelope, slot, None)));
             }
+            PendingWrite::Coverage { version, bytes } => {
+                self.coverage_bytes = bytes;
+                result?;
+                self.finalized.coverage_persisted(version);
+            }
             PendingWrite::IndexBlock { .. } |
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::PersistPeer { .. } |
@@ -336,7 +337,7 @@ impl Store {
 
     fn persist_peer_file(&self, enr: &Enr) -> Result<(), Error> {
         let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
-        open_file_write(peer_file, false)?.write_all(enr.to_string().as_bytes())
+        open_file_write(peer_file)?.write_all(enr.to_string().as_bytes())
     }
 
     fn load_peer_files<F>(&self, emit: &mut F) -> Result<(), Error>
@@ -424,12 +425,14 @@ impl Store {
             // A file still being written may be empty or partial, and one
             // still being promoted is not in place yet.
             let promoting = unit.is_finalized() && self.write_queue.promoting(unit.slot());
-            let path = self.unit_path(&unit);
-            if promoting || self.writer.busy_with(&path) {
+            let path = (!promoting)
+                .then(|| self.unit_path(&unit))
+                .filter(|path| !self.writer.busy_with(path));
+            let Some(path) = path else {
                 query.units.push_front(unit);
                 self.query_queue.push_back(query);
                 continue;
-            }
+            };
             self.reader.start(&path, (query, unit));
             started = true;
         }
@@ -440,22 +443,15 @@ impl Store {
     /// `timeout` passes.
     #[cfg_attr(not(feature = "thread_park"), allow(dead_code))]
     pub(crate) fn wait(&mut self, wake: Option<RawFd>, timeout: Duration) {
-        let disks = [
-            Some(&mut self.writer.disk),
-            Some(&mut self.reader.disk),
-            Some(&mut self.remover.disk),
-            self.checkpoint.as_mut().map(|checkpoint| &mut checkpoint.disk),
+        let checkpoint = self.checkpoint.as_mut().map_or(-1, CheckpointWriter::ring_fd);
+        let descriptors = [
+            self.writer.ring_fd(),
+            self.reader.ring_fd(),
+            self.remover.ring_fd(),
+            checkpoint,
+            wake.unwrap_or(-1),
         ];
-        // Queued ops reach the kernel only on submit. A negative descriptor
-        // is ignored.
-        let rings = disks.map(|disk| {
-            disk.map_or(-1, |disk| {
-                disk.submit();
-                disk.as_raw_fd()
-            })
-        });
-        let readable = |fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        let mut fds = [rings[0], rings[1], rings[2], rings[3], wake.unwrap_or(-1)].map(readable);
+        let mut fds = descriptors.map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
         let timeout = libc::timespec {
             tv_sec: timeout.as_secs() as libc::time_t,
             tv_nsec: timeout.subsec_nanos() as libc::c_long,
@@ -515,7 +511,7 @@ impl Store {
 
         progressed |= self.write_queue.len() != queued;
 
-        self.persist_coverage();
+        progressed |= self.persist_coverage();
         progressed |= self.step_checkpoint();
         progressed |= self.remover.step();
         writes.map(|()| progressed)
@@ -606,12 +602,8 @@ pub(super) fn open_file_read<P: AsRef<Path>>(path: P) -> Result<File, Error> {
     File::open(path)
 }
 
-pub(super) fn open_file_write<P: AsRef<Path>>(path: P, append: bool) -> Result<File, Error> {
-    if append {
-        File::options().append(true).create(true).open(path)
-    } else {
-        File::options().write(true).create(true).truncate(true).open(path)
-    }
+pub(super) fn open_file_write<P: AsRef<Path>>(path: P) -> Result<File, Error> {
+    File::options().write(true).create(true).truncate(true).open(path)
 }
 
 /// `<slot>_<parent_root>_<block_root>.ssz` — the unfinalized fork-tree

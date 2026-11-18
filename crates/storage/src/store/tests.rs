@@ -41,7 +41,7 @@ use crate::tile::IoEvent;
 fn concurrent_read_write() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("storage.txt").to_str().unwrap().to_owned();
-    let mut file = super::io::open_file_write(&path, false).unwrap();
+    let mut file = super::io::open_file_write(&path).unwrap();
 
     let mut handles = vec![];
     for i in 0..10 {
@@ -778,7 +778,12 @@ fn failed_write_is_neither_held_nor_reported() {
     );
 
     assert!(result.is_err(), "the write fails");
-    assert!(store.write_queue.is_empty(), "and is dropped rather than retried");
+    let retried = store
+        .write_queue
+        .queue
+        .iter()
+        .any(|write| matches!(write, super::PendingWrite::BackfillBlock { .. }));
+    assert!(!retried, "and is dropped rather than retried");
     assert!(!store.finalized.coverage().is_complete(slot), "so the coverage does not hold it");
     assert!(
         !reported.iter().any(|n| matches!(n, SyncNeed::Persisted { .. })),

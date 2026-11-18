@@ -10,8 +10,6 @@ use fxhash::FxHashMap;
 use silver_common::merkle::B256;
 
 use super::SLOTS_PER_DIR;
-#[cfg(test)]
-use crate::store::io::open_file_write;
 
 const RECORD_LEN: usize = 32 + 8;
 const FILE_NAME: &str = "block_index.bin";
@@ -44,7 +42,12 @@ pub(super) fn file(dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 pub(super) fn append(dir: &Path, record: Record) -> Result<(), Error> {
-    open_file_write(file(dir), true)?.write_all(&record.encode())
+    append_bytes(dir, &record.encode())
+}
+
+#[cfg(test)]
+fn append_bytes(dir: &Path, bytes: &[u8]) -> Result<(), Error> {
+    OpenOptions::new().append(true).create(true).open(file(dir))?.write_all(bytes)
 }
 
 /// Records up to the first torn one, or one outside `dir`'s slot group. The
@@ -273,7 +276,7 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         let first = Record { block_root: [1; 32], slot: 130 };
         append(&dir, first).unwrap();
-        open_file_write(file(&dir), true).unwrap().write_all(&[0xFF; RECORD_LEN / 2]).unwrap();
+        append_bytes(&dir, &[0xFF; RECORD_LEN / 2]).unwrap();
 
         assert_eq!(load(&dir), [first]);
         let second = Record { block_root: [2; 32], slot: 131 };

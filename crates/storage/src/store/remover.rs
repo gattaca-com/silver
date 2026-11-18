@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     fs::ReadDir,
     io::{Error, ErrorKind},
+    os::fd::{AsRawFd, RawFd},
     path::PathBuf,
 };
 
@@ -18,7 +19,7 @@ const MAX_LISTED_PER_TURN: usize = 32;
 /// directory is listed at a time, and its `remove_dir` waits for every unlink
 /// in flight.
 pub(super) struct DirectoryRemover {
-    pub(super) disk: DiskIo,
+    disk: DiskIo,
     directory: DirectoryTokens,
     directories: VecDeque<PathBuf>,
     listing: Option<(PathBuf, ReadDir)>,
@@ -39,6 +40,11 @@ impl DirectoryRemover {
 
     pub(super) fn remove(&mut self, directory: PathBuf) {
         self.directories.push_back(directory);
+    }
+
+    pub(super) fn ring_fd(&mut self) -> RawFd {
+        self.disk.submit();
+        self.disk.as_raw_fd()
     }
 
     pub(super) fn step(&mut self) -> bool {

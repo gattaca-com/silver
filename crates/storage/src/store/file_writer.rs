@@ -1,5 +1,6 @@
 use std::{
     io::Error,
+    os::fd::{AsRawFd, RawFd},
     path::{Path, PathBuf},
 };
 
@@ -94,7 +95,7 @@ unsafe impl<T: Send> Send for Write<T> {}
 pub(super) struct FileWriter<T> {
     // Drops first: its drop waits for the kernel to finish reading the
     // memory the writes point into.
-    pub(super) disk: DiskIo,
+    disk: DiskIo,
     directory: DirectoryTokens,
     writes: Vec<Write<T>>,
     // Append lengths a poll reaped; their writes are queued after it.
@@ -114,6 +115,11 @@ impl<T> FileWriter<T> {
 
     pub(super) fn in_flight(&self) -> usize {
         self.writes.len()
+    }
+
+    pub(super) fn ring_fd(&mut self) -> RawFd {
+        self.disk.submit();
+        self.disk.as_raw_fd()
     }
 
     pub(super) fn busy_with(&self, path: &Path) -> bool {
