@@ -173,6 +173,17 @@ impl Peer {
         self.wake_at
     }
 
+    /// Spins every stream reading a gossip body: one of them may hold the
+    /// ingress reservation the readers are asked to give up.
+    pub(crate) fn spin_gossip_bodies(&mut self) {
+        for stream in self.streams.values_mut() {
+            if stream.state.get_mut().reading_gossip_body() {
+                stream.needs_spin = true;
+                self.dirty = true;
+            }
+        }
+    }
+
     /// Quiesce after a full transmit+spin+transmit cycle: stay dirty while
     /// any stream has non-event work or the socket cut off transmits, and
     /// re-arm the wake deadline. `poll_timeout` must be read here, after the
@@ -1162,6 +1173,14 @@ impl Stream {
                         severity: RpcSeverity::Fatal,
                         offence: RpcOffence::InboundGossipRateLimit,
                     });
+                } else if let StreamError::GossipBodySlow = e {
+                    NetworkCounters::GossipBodySlowDisconnect.inc();
+                    on_event(NetEvent::InboundRateLimited {
+                        p2p_peer: self.p2p_id.peer(),
+                        // A slow link does this too: a ban takes repeats.
+                        severity: RpcSeverity::LowTolerance,
+                        offence: RpcOffence::GossipBodySlow,
+                    });
                 } else {
                     silver_log::error!(
                         id = ?self.p2p_id,
@@ -1188,7 +1207,9 @@ impl Stream {
                         NetworkCounters::GossipStallDisconnect.inc();
                         SpinResult::Disconnect
                     }
-                    StreamError::GossipRateLimited { .. } => SpinResult::Disconnect,
+                    StreamError::GossipRateLimited { .. } | StreamError::GossipBodySlow => {
+                        SpinResult::Disconnect
+                    }
                     _ => SpinResult::End,
                 }
             }
@@ -1585,6 +1606,7 @@ mod tests {
                     identify: None,
                     cluster_nodes: None,
                     cluster_inbound_producer: cluster_in,
+                    evict_ingress: None,
                     partial_columns: false,
                     reader,
                 },
@@ -2300,12 +2322,13 @@ mod tests {
         assert!(NetworkCounters::GossipRateLimitDisconnect.get() >= before + 2);
     }
 
-    /// A gossip stall (here: the server's inbound frame parked mid-body past
-    /// the window) closes the connection rather than just the stream.
+    /// A gossip body behind its minimum rate (here: the server's inbound
+    /// frame parked mid-body past its deadline) closes the connection rather
+    /// than just the stream, and is reported as misbehaviour.
     #[test]
     fn gossip_stall_closes_connection() {
         use crate::p2p::streams::{
-            gossip_in::{GOSSIP_BODY_STALL_TIMEOUT, GossipReadState},
+            gossip_in::{BodyProgress, GOSSIP_BODY_GRACE, GossipReadState},
             gossip_out::GossipWriteState,
         };
 
@@ -2325,7 +2348,7 @@ mod tests {
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
 
         let t0 = Instant::now();
-        let stalled_since = t0 - GOSSIP_BODY_STALL_TIMEOUT - Duration::from_secs(1);
+        let stalled_since = t0 - GOSSIP_BODY_GRACE - Duration::from_secs(1);
         let reservation = server_h.context.gossip_producer.reserve(100, false).expect("reserve");
         let stream = pair
             .server_peer
@@ -2336,9 +2359,7 @@ mod tests {
         stream.state.replace(StreamState::Gossip {
             read: GossipReadState::ReadingBody {
                 reservation,
-                remaining: 90,
-                last_read: stalled_since,
-                deadline: t0 + Duration::from_secs(60),
+                progress: BodyProgress::new(stalled_since, 100, 90),
             },
             write: GossipWriteState::Idle,
         });
@@ -2346,7 +2367,13 @@ mod tests {
 
         let PeerPair { server_ep, server_peer, .. } = &mut pair;
         let mut cb = |h, e| server_ep.handle_event(h, e);
-        let mut on_event = |_: NetEvent| {};
+        let mut reported = false;
+        let mut on_event = |event: NetEvent| {
+            reported |= matches!(event, NetEvent::InboundRateLimited {
+                offence: RpcOffence::GossipBodySlow,
+                ..
+            });
+        };
         server_peer.spin(
             t0,
             &mut cb,
@@ -2358,6 +2385,28 @@ mod tests {
 
         assert!(server_peer.connection.is_closed(), "stall must close the connection");
         assert!(server_peer.streams.is_empty(), "closing drops every stream");
+        assert!(reported, "a slow body is reported");
+    }
+
+    /// Without a local identify record an inbound identify stream is
+    /// refused, not a panic.
+    #[test]
+    fn inbound_identify_without_a_record_is_refused() {
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
+        assert!(server_h.context.identify.is_none());
+
+        pair.client_peer.open_stream(StreamProtocol::Identity).unwrap();
+        wait_for(&mut pair, &mut client_h, &mut server_h, 100, |_, _| false);
+
+        assert!(!pair.server_peer.connection.is_closed());
+        assert!(
+            pair.server_peer
+                .streams
+                .values()
+                .all(|s| s.p2p_id.protocol() != StreamProtocol::Identity)
+        );
     }
 
     #[test]
@@ -2404,7 +2453,10 @@ mod tests {
 
     #[test]
     fn superseded_inbound_gossip_stream_releases_its_reservation() {
-        use crate::p2p::streams::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
+        use crate::p2p::streams::{
+            gossip_in::{BodyProgress, GossipReadState},
+            gossip_out::GossipWriteState,
+        };
 
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
@@ -2419,9 +2471,7 @@ mod tests {
         stream.state.replace(StreamState::Gossip {
             read: GossipReadState::ReadingBody {
                 reservation,
-                remaining: 1024,
-                last_read: Instant::now() + Duration::from_secs(60),
-                deadline: Instant::now() + Duration::from_secs(60),
+                progress: BodyProgress::new(Instant::now() + Duration::from_secs(60), 1024, 1024),
             },
             write: GossipWriteState::Idle,
         });

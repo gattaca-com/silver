@@ -45,8 +45,13 @@ silver_common::declare_counters! {
         RemoteResponseTimeout,
         // Stale gossip skipped
         GossipMsgSkipped,
-        // Gossip delivery or inbound read stalled — connection closed.
+        // Outbound gossip delivery or an inbound cluster read stalled —
+        // connection closed.
         GossipStallDisconnect,
+        // Inbound gossip body behind its minimum rate — connection closed.
+        GossipBodySlowDisconnect,
+        // Inbound gossip body given up to free the ingress ring.
+        GossipBodyEvicted,
         // Zero-length gossip frames, discarded without an event.
         GossipEmptyFrameDropped,
         // Inbound gossip over its byte quota — connection closed.

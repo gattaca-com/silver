@@ -73,6 +73,7 @@ impl Node {
             identify: Some(ProtoIdentify::from((&Identify::default(), &keypair))),
             cluster_nodes: None,
             cluster_inbound_producer: TCache::producer(TCacheId::ClusterInbound, 1 << 12),
+            evict_ingress: None,
             partial_columns: false,
             reader,
         };

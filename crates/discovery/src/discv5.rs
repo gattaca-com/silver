@@ -80,6 +80,9 @@ pub struct DiscV5 {
 
     whoareyou_per_ip: FxHashMap<IpAddr, (u32, Instant)>,
     whoareyou_global: (u32, Instant),
+    /// Challenges to table nodes at their recorded address: spoofed senders
+    /// do not spend it.
+    whoareyou_known: (u32, Instant),
 
     next_request_id: u64,
     last_ping: Instant,
@@ -139,6 +142,7 @@ impl DiscV5 {
             seen_scratch: Vec::with_capacity(128),
             whoareyou_per_ip: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             whoareyou_global: (0, Instant::now()),
+            whoareyou_known: (0, Instant::now()),
             next_request_id: 0,
             last_ping: Instant::now(),
             last_lookup: Instant::now(),
@@ -243,32 +247,28 @@ impl DiscV5 {
             return;
         }
 
-        // Global first: spoofed sources must not grow the per-IP map once the
-        // global budget is spent.
         let whoareyou_window = self.config.whoareyou_window();
-        if now.duration_since(self.whoareyou_global.1) >= whoareyou_window {
-            self.whoareyou_global = (0, now);
-        }
-        if self.whoareyou_global.0 >= self.config.whoareyou_global_limit {
-            self.metrics.whoareyou_limit_hits += 1;
-            return;
-        }
-
-        let ip = rate_limit_key(src_addr.ip());
-        let entry = self.whoareyou_per_ip.entry(ip).or_insert((0, now));
-        if now.duration_since(entry.1) > whoareyou_window {
-            *entry = (0, now);
-        }
-        if entry.0 >= self.config.whoareyou_per_ip_limit {
-            self.metrics.whoareyou_limit_hits += 1;
-            return;
-        }
-
-        entry.0 += 1;
-        self.whoareyou_global.0 += 1;
-
-        let known_enr_seq =
-            self.kbuckets.get(&Key::from(src_id)).map(|n| n.value.enr_seq).unwrap_or(0);
+        let known = self.kbuckets.get(&Key::from(src_id)).map(|n| (n.value.addr, n.value.enr_seq));
+        let known_enr_seq = match known {
+            Some((addr, enr_seq)) if addr == src_addr => {
+                if now.duration_since(self.whoareyou_known.1) >= whoareyou_window {
+                    self.whoareyou_known = (0, now);
+                }
+                if self.whoareyou_known.0 >= self.config.whoareyou_known_limit {
+                    self.metrics.whoareyou_limit_hits += 1;
+                    return;
+                }
+                self.whoareyou_known.0 += 1;
+                enr_seq
+            }
+            _ if self.spend_unknown_whoareyou(src_addr, whoareyou_window, now) => {
+                known.map_or(0, |(_, enr_seq)| enr_seq)
+            }
+            _ => {
+                self.metrics.whoareyou_limit_hits += 1;
+                return;
+            }
+        };
 
         let rng_buf: [u8; 32] = rand::random();
         let id_nonce: [u8; 16] = rng_buf[..16].try_into().unwrap();
@@ -292,6 +292,37 @@ impl DiscV5 {
 
         self.challenges.insert((src_id, src_addr), PendingChallenge { data, sent_at: now });
         self.event_queue.push(DiscoveryEvent::SendMessage { to: src_addr, data: wire });
+    }
+
+    /// The global and per-IP budgets of challenges to senders not in the
+    /// table at that address. `false` if either is spent.
+    fn spend_unknown_whoareyou(
+        &mut self,
+        src_addr: SocketAddr,
+        whoareyou_window: Duration,
+        now: Instant,
+    ) -> bool {
+        // Global first: spoofed sources must not grow the per-IP map once the
+        // global budget is spent.
+        if now.duration_since(self.whoareyou_global.1) >= whoareyou_window {
+            self.whoareyou_global = (0, now);
+        }
+        if self.whoareyou_global.0 >= self.config.whoareyou_global_limit {
+            return false;
+        }
+
+        let ip = rate_limit_key(src_addr.ip());
+        let entry = self.whoareyou_per_ip.entry(ip).or_insert((0, now));
+        if now.duration_since(entry.1) > whoareyou_window {
+            *entry = (0, now);
+        }
+        if entry.0 >= self.config.whoareyou_per_ip_limit {
+            return false;
+        }
+
+        entry.0 += 1;
+        self.whoareyou_global.0 += 1;
+        true
     }
 
     fn on_ping(
@@ -506,6 +537,19 @@ impl DiscV5 {
         self.event_queue.push(DiscoveryEvent::NodeFound(enr));
     }
 
+    /// At the cap, the least recently active session goes. A linear scan,
+    /// at most once per handshake.
+    fn insert_session(&mut self, id: NodeId, session: Session) {
+        if self.sessions.len() >= self.config.max_sessions && !self.sessions.contains_key(&id) {
+            let oldest = self.sessions.iter().min_by_key(|(_, s)| s.last_active).map(|(id, _)| *id);
+            if let Some(oldest) = oldest {
+                self.sessions.remove(&oldest);
+                self.metrics.sessions_evicted += 1;
+            }
+        }
+        self.sessions.insert(id, session);
+    }
+
     /// Drop all per-peer state for a node evicted from the routing table so it
     /// does not outlive its kbuckets entry.
     fn evict_peer(&mut self, id: NodeId) {
@@ -674,7 +718,7 @@ impl DiscV5 {
         }
         .encode(&remote_id);
 
-        self.sessions.insert(remote_id, Session::new(enc_key, dec_key, src_addr, now));
+        self.insert_session(remote_id, Session::new(enc_key, dec_key, src_addr, now));
 
         self.event_queue.push(DiscoveryEvent::SendMessage { to: src_addr, data: wire });
         if let Some(enr) = self.decode_enr_for(remote_id) {
@@ -806,9 +850,9 @@ impl DiscV5 {
         let session = Session::new(recipient_key, initiator_key, src_addr, now);
 
         if message.is_empty() {
-            self.sessions.insert(src_id, session);
+            self.insert_session(src_id, session);
         } else if let Some(bytes) = decrypt_message(&session.dec, &nonce, aad, message) {
-            self.sessions.insert(src_id, session);
+            self.insert_session(src_id, session);
             self.handle_message(src_id, src_addr, &bytes, now);
         } else {
             warn!(%src_id, %src_addr, msg_len = message.len(), "handshake message decryption failed");
@@ -1282,8 +1326,9 @@ impl Discovery for DiscV5 {
                             self.handle_message(src_id, src_addr, &bytes, now);
                         }
                         (Some(_), false) => {
-                            // Decrypted OK but endpoint changed — re-handshake.
-                            self.sessions.remove(&src_id);
+                            // The endpoint changed, or the packet is a replay
+                            // from elsewhere: the session stands until a
+                            // handshake from the new address replaces it.
                             self.send_whoareyou(src_id, src_addr, nonce, now);
                         }
                         (None, _) => {
@@ -2279,6 +2324,80 @@ mod tests {
         let events = collect_sends(&mut a);
         let whoareyou_count = events.len();
         assert_eq!(whoareyou_count, limit as usize, "should cap WhoAreYou at global limit");
+    }
+
+    /// A packet that decrypts but comes from another address, as a replay
+    /// does, leaves the session in place and asks the sender to handshake.
+    #[test]
+    fn test_packet_from_new_address_keeps_session() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19171);
+        let (mut b, b_addr) = make_node(19172);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+
+        let elsewhere = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 9, 9, 9)), 40000);
+        let ping = Message::Ping { request_id: RequestId::from(7u64), enr_seq: 0 };
+        inject_message(&mut a, &mut b, elsewhere, ping, now);
+
+        let session = b.sessions.get(&a.local_id).expect("session kept");
+        assert_eq!(session.addr, a_addr);
+        let sends = collect_sends(&mut b);
+        assert_eq!(sends.len(), 1, "one WHOAREYOU, no PONG");
+        assert_eq!(sends[0].0, elsewhere);
+        assert!(b.challenges.contains_key(&(a.local_id, elsewhere)));
+    }
+
+    /// At the cap a new session replaces the least recently active one.
+    #[test]
+    fn test_session_table_is_capped() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19181);
+        a.config.max_sessions = 4;
+        let ids: Vec<NodeId> = (0..6)
+            .map(|_| NodeId::from(SecretKey::new(&mut rand::thread_rng()).public_key(SECP256K1)))
+            .collect();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40001);
+        for (at, id) in ids.iter().enumerate() {
+            let at = now + Duration::from_secs(at as u64);
+            a.insert_session(*id, Session::new([1; 16], [2; 16], addr, at));
+        }
+        assert_eq!(a.sessions.len(), 4);
+        assert!(!a.sessions.contains_key(&ids[0]) && !a.sessions.contains_key(&ids[1]));
+        assert!(ids[2..].iter().all(|id| a.sessions.contains_key(id)));
+        assert_eq!(a.metrics.sessions_evicted, 2);
+    }
+
+    /// Spoofed senders spend the global budget, not the one of table nodes
+    /// at their recorded address.
+    #[test]
+    fn test_unknown_whoareyou_flood_spares_table_nodes() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19191);
+        let (b, b_addr) = make_node(19192);
+        a.add_enr(&b.local_enr, now);
+        collect_sends(&mut a);
+
+        let local_id = a.local_id;
+        let garbage = |src_id: NodeId, request: u64| {
+            let key = crate::crypto::make_cipher(&[0xCC; 16]);
+            let ping = Message::Ping { request_id: RequestId::from(request), enr_seq: 0 };
+            Packet::encode_message(src_id, local_id, &key, ping).unwrap()
+        };
+        for i in 0..a.config.whoareyou_global_limit + 10 {
+            let octets = [10, 1, (i >> 8) as u8, i as u8];
+            let src_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), 30000);
+            let src_id =
+                NodeId::from(SecretKey::new(&mut rand::thread_rng()).public_key(SECP256K1));
+            let data = garbage(src_id, i as u64);
+            a.handle(src_addr, &data, now);
+        }
+        assert_eq!(collect_sends(&mut a).len(), a.config.whoareyou_global_limit as usize);
+
+        let data = garbage(b.local_id, 1_000);
+        a.handle(b_addr, &data, now);
+        let sends = collect_sends(&mut a);
+        assert_eq!(sends.len(), 1, "the table node is challenged");
+        assert_eq!(sends[0].0, b_addr);
     }
 
     #[test]

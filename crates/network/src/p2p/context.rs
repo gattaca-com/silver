@@ -13,6 +13,8 @@ pub struct Context {
     pub identify: Option<ProtoIdentify>,
     pub cluster_nodes: Option<ClusterNodes>,
     pub cluster_inbound_producer: TProducer,
+    /// An ingress reservation the gossip readers are asked to give up.
+    pub evict_ingress: Option<u64>,
     /// Opens the retained data-columns consumer for partial column sends.
     pub partial_columns: bool,
     pub reader: TCacheReader,

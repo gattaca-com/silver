@@ -1070,6 +1070,7 @@ pub enum RpcOffence {
     InvalidBackfillColumn,
     InboundStreamRateLimit,
     InboundGossipRateLimit,
+    GossipBodySlow,
 }
 
 impl RpcOffence {
@@ -1084,6 +1085,7 @@ impl RpcOffence {
             Self::InvalidBackfillColumn => "invalid backfill data column",
             Self::InboundStreamRateLimit => "inbound stream rate limit exceeded",
             Self::InboundGossipRateLimit => "inbound gossip rate limit exceeded",
+            Self::GossipBodySlow => "inbound gossip body behind its minimum rate",
         }
     }
 }

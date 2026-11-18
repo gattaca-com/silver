@@ -101,6 +101,15 @@ impl Producer {
         self.state.retention_moved = true;
     }
 
+    /// The oldest reservation not yet committed or aborted, if it is what
+    /// keeps the ring short: every consumer has read past it.
+    pub fn blocking_reservation(&mut self) -> Option<u64> {
+        let cache = self.cache_ref();
+        self.state.advance_min_allocation(&cache);
+        let oldest = self.state.min_allocation;
+        (oldest < self.state.seq && cache.min_tail(oldest) == oldest).then_some(oldest)
+    }
+
     /// A producer-side claim cannot survive an allocation, even after the view
     /// has been consumed.
     ///

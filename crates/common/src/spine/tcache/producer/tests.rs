@@ -260,3 +260,26 @@ fn reservation_read_stamps_the_emitter_and_the_reserve_time_floor() {
     let later = producer.reserve(32, false).unwrap();
     assert_eq!(later.read().floor, third.seq());
 }
+
+#[test]
+fn blocking_reservation_names_the_oldest_unfinished_write_once_consumers_passed_it() {
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
+    let mut consumer = producer.cache_ref().consumer("").unwrap();
+    producer.reserve(32, true).unwrap().write_all(&[0xab; 32]).unwrap();
+    let held = producer.reserve(32, false).unwrap();
+    for _ in 0..2 {
+        producer.reserve(32, true).unwrap().write_all(&[0xcd; 32]).unwrap();
+    }
+    assert!(producer.reserve(32, false).is_none());
+
+    // The consumer has not read the first write: it, not `held`, keeps the
+    // ring short.
+    assert_eq!(producer.blocking_reservation(), None);
+
+    assert_eq!(consumer.read().unwrap().0, &[0xab; 32]);
+    consumer.free();
+    assert_eq!(producer.blocking_reservation(), Some(held.seq()));
+
+    drop(held);
+    assert_eq!(producer.blocking_reservation(), None);
+}

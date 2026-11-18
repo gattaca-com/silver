@@ -83,6 +83,7 @@ pub fn broadcast(c: &mut Criterion) {
                             identify: None,
                             cluster_nodes: None,
                             cluster_inbound_producer: cluster_in,
+                            evict_ingress: None,
                             partial_columns: false,
                             reader: TCacheReader::new(tcaches),
                         };
@@ -167,6 +168,7 @@ pub fn broadcast(c: &mut Criterion) {
                         identify: None,
                         cluster_nodes: None,
                         cluster_inbound_producer: cluster_in,
+                        evict_ingress: None,
                         partial_columns: false,
                         reader: TCacheReader::new(tcaches),
                     };
