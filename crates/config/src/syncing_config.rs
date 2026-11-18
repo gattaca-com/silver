@@ -28,6 +28,15 @@ pub struct SyncingConfig {
     /// wall slot. Beyond this, the claim is rejected as bogus.
     #[serde(default = "default_u64::<32>")]
     pub wall_clock_tolerance_slots: u64,
+    /// Ceiling on a peer's claimed head slot over the slot clock. Below
+    /// `head_lag_threshold_slots`, so no claim opens a head gap on a synced
+    /// node.
+    #[serde(default = "default_u64::<2>")]
+    pub head_clock_tolerance_slots: u64,
+    /// A sync target needs one in this many of the peers with a Status behind
+    /// it, and at least one peer.
+    #[serde(default = "default_u64::<8>")]
+    pub target_backing_divisor: u64,
     #[serde(default = "default_u64::<2000>")]
     pub inflight_progress_timeout_ms: u64,
     /// Beacon-state pending-block buffer bounds.
@@ -42,6 +51,8 @@ impl Default for SyncingConfig {
             head_lag_threshold_slots: 8,
             finalized_lag_threshold_epochs: 2,
             wall_clock_tolerance_slots: 32,
+            head_clock_tolerance_slots: 2,
+            target_backing_divisor: 8,
             inflight_progress_timeout_ms: 2_000,
             pending: PendingBounds::default(),
         }

@@ -342,6 +342,7 @@ fn unavailable_chain_ahead_withdraws_following() {
 
     let ahead = [8; 32];
     e.ctx.peers.mark_unavailable(ahead);
+    e.set_clock_slot(100 + 2 * head_lag());
     peer_status(&mut e, PEER, ahead, 100 + 2 * head_lag());
     assert_eq!(e.advance(), Some(SyncUpdate::Stalled));
     assert_eq!(e.current_target(), Some(SyncUpdate::Stalled));
@@ -633,6 +634,7 @@ fn retarget_drops_the_window_and_re_asks_for_what_it_held() {
     assert!(e.window.coverage(1).columns_covered);
 
     // Selection moves to another chain.
+    e.set_clock_slot(220);
     peer_status(&mut e, PEER, [9; 32], 220);
     advance(&mut e);
     assert!(
@@ -684,6 +686,7 @@ fn chain_abandoned_for_a_head_target_does_not_carry_its_coverage() {
     assert_eq!(tail(&e), 0, "the slot was never skipped");
 
     // A peer on some other chain is all that is left to chase.
+    e.set_clock_slot(220);
     peer_status(&mut e, PEER + 1, [9; 32], 220);
     advance(&mut e);
     assert!(
@@ -1520,6 +1523,7 @@ fn new_chain_does_not_inherit_the_old_chains_coverage() {
 
     // Selection moves to an unrelated chain.
     e.on_peer_disconnected(PEER);
+    e.set_clock_slot(300);
     peer_status(&mut e, 2, [9; 32], 300);
     local_status(&mut e, 0, 300);
     advance(&mut e);
@@ -1723,6 +1727,83 @@ fn no_envelopes_below_gloas_fork() {
     let issued = drive_all(&mut e, now);
     assert!(issued.block.is_some(), "blocks are still fetched");
     assert!(issued.envelope.is_none(), "no envelope request below the gloas fork slot");
+}
+
+/// CL-244: a synced node ignores one peer's claim of a finalized checkpoint
+/// one epoch ahead, and of a head past the clock.
+#[test]
+fn implausible_status_does_not_move_a_synced_node() {
+    let mut e = engine();
+    let wall_slot = 10 * SLOTS_PER_EPOCH + 4;
+    e.on_local_status(wall_slot, 8, [1; 32], wall_slot);
+    e.set_clock_slot(wall_slot);
+    peer_status(&mut e, PEER, HEAD_ROOT, wall_slot);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+
+    // Finalized at the next epoch, with a head to match.
+    let hostile = PEER + 1;
+    e.on_peer_status(hostile, &status_ssz([9; 32], 11 * SLOTS_PER_EPOCH, (11, [6; 32])));
+    assert_eq!(e.advance(), None);
+    // A head inside the old 32-slot tolerance, past the lag threshold.
+    peer_status(&mut e, hostile, [9; 32], wall_slot + head_lag() + 1);
+    assert_eq!(e.advance(), None);
+    // Finalized ahead of its own head.
+    e.on_peer_status(hostile, &status_ssz([9; 32], wall_slot, (10, [6; 32])));
+    assert_eq!(e.advance(), None);
+    assert_eq!(e.current_target(), Some(SyncUpdate::Following));
+}
+
+/// An implausible Status also withdraws what the peer claimed before.
+#[test]
+fn implausible_status_drops_the_peers_earlier_claim() {
+    let mut e = engine();
+    e.set_clock_slot(100);
+    peer_status(&mut e, PEER, HEAD_ROOT, 100);
+    assert!(e.ctx.peers.backs_head(&HEAD_ROOT));
+
+    peer_status(&mut e, PEER, HEAD_ROOT, u64::MAX);
+    assert!(!e.ctx.peers.backs_head(&HEAD_ROOT));
+    assert!(!e.ctx.peers.any_peer_ahead_of(1, &SyncingConfig::default()));
+}
+
+/// A node fresh from a checkpoint reports its head at the finalized slot.
+#[test]
+fn checkpoint_synced_peer_status_is_plausible() {
+    let mut e = engine();
+    e.set_clock_slot(10 * SLOTS_PER_EPOCH);
+    e.on_peer_status(PEER, &status_ssz(HEAD_ROOT, 8 * SLOTS_PER_EPOCH, (8, [5; 32])));
+    assert!(e.ctx.peers.backs_finalized(8, &[5; 32]));
+}
+
+/// A target needs one in `target_backing_divisor` of the peers with a Status
+/// behind it.
+#[test]
+fn target_needs_a_share_of_the_peers_behind_it() {
+    let divisor = SyncingConfig::default().target_backing_divisor as usize;
+    let mut e = engine();
+    e.set_clock_slot(200);
+    local_status(&mut e, 100, 200);
+    for peer in 0..2 * divisor - 1 {
+        peer_status(&mut e, peer, HEAD_ROOT, 100);
+    }
+    let ahead = [9; 32];
+    peer_status(&mut e, 1_000, ahead, 200);
+    e.advance();
+    assert!(
+        !matches!(e.current_target(), Some(SyncUpdate::SyncingHead { .. })),
+        "one backer in {} peers is not enough: {:?}",
+        2 * divisor,
+        e.current_target()
+    );
+
+    peer_status(&mut e, 1_001, ahead, 200);
+    e.advance();
+    assert!(
+        matches!(e.current_target(), Some(SyncUpdate::SyncingHead { head_root, .. }) if head_root == ahead),
+        "two backers in {} peers are: {:?}",
+        2 * divisor + 1,
+        e.current_target()
+    );
 }
 
 /// A peer is free to claim any `head_slot`; the level check adds the lag
