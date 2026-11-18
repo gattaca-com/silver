@@ -126,6 +126,8 @@ pub struct StorageTile {
     /// finalized ahead (in which case we skip it and sync from them).
     syncing_strategy: Option<SyncingStrategy>,
     peers_loaded: bool,
+    // Empty leaves them unpinned.
+    io_worker_cores: &'static [usize],
     #[cfg(feature = "thread_park")]
     spine_wake: Option<SpineWake>,
 
@@ -145,6 +147,7 @@ impl StorageTile {
         spec: Arc<SpecConfig>,
         data_store_dir: String,
         replay_from_disk: bool,
+        io_worker_cores: &'static [usize],
     ) -> Self {
         let store = Store::load(data_store_dir, spec.clone(), custody_group_columns)
             .expect("failed to load storage store");
@@ -175,6 +178,7 @@ impl StorageTile {
             replay_done: !replay_from_disk,
             syncing_strategy: None,
             peers_loaded: false,
+            io_worker_cores,
             #[cfg(feature = "thread_park")]
             spine_wake: None,
             reader: TCacheReader::new(tcaches),
@@ -398,6 +402,11 @@ impl Tile<SilverSpine> for StorageTile {
 
     fn try_init(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         self.open_tcaches().expect("tcache wiring");
+        if !self.io_worker_cores.is_empty() &&
+            let Err(error) = flux_disk::pin_io_workers(self.io_worker_cores)
+        {
+            silver_log::warn!(?error, cores = ?self.io_worker_cores, "io workers not pinned");
+        }
         #[cfg(feature = "thread_park")]
         {
             let (spine_wake, waker) = SpineWake::new();
@@ -713,6 +722,7 @@ mod tests {
             Arc::new(SpecConfig::mainnet()),
             store_dir.to_string(),
             true,
+            &[],
         );
         tile.open_tcaches().unwrap();
         (tile, dc)
@@ -823,6 +833,7 @@ mod tests {
             Arc::new(SpecConfig::mainnet()),
             store_dir.path().to_str().unwrap().to_owned(),
             true,
+            &[],
         );
         tile.open_tcaches().unwrap();
         assert_eq!(tile.replay_steps.len(), 3, "skip decided at replay, not load");

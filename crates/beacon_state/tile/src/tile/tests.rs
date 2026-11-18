@@ -1481,6 +1481,7 @@ fn api_block_reaches_storage_through_control_and_beacon_state() {
         Arc::new(spec),
         directory.path().to_str().unwrap().to_owned(),
         false,
+        &[],
     );
     storage.open_tcaches().unwrap();
     let (mut spine, mut adapter) = spine_adapter(&tile);
