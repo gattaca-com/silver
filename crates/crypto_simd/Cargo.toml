@@ -22,6 +22,7 @@ blst = "0.3.16"
 c-kzg.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
+sha3.workspace = true
 
 [[test]]
 name = "proof_vectors"

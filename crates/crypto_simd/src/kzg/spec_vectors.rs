@@ -3,8 +3,6 @@
 //! Inputs with sizes incompatible with the Rust types cannot reach the
 //! verifier; those vectors must expect an error.
 
-use std::{fs, path::PathBuf};
-
 use crate::{
     bls::COMPRESSED_LEN,
     kzg::{
@@ -12,76 +10,17 @@ use crate::{
         CellBatchVerifier, CellExtender, blst_ops::fr_from_bytes,
         challenge::challenge_in_parts_portable, verify::Deduplicated,
     },
+    spec_vectors::{field, fixed, hex_items, integers, suite},
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{kzg::challenge::challenge_in_parts, sha_kernel_runs};
-
-fn suite(name: &str) -> Vec<(String, String)> {
-    let dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("cryptography-specs-tests/kzg").join(name);
-    let mut cases: Vec<_> = fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}; run `make -C crates/crypto_simd`", dir.display()))
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.is_dir())
-        .map(|path| {
-            let data = fs::read_to_string(path.join("data.yaml")).unwrap();
-            (path.file_name().unwrap().to_string_lossy().into_owned(), data)
-        })
-        .collect();
-    cases.sort();
-    assert!(!cases.is_empty(), "{} has no cases", dir.display());
-    cases
-}
-
-/// The text of `key`'s value: from the key to the next key at the same or lower
-/// indentation.
-fn field<'a>(data: &'a str, key: &str) -> &'a str {
-    let marker = format!("{key}:");
-    let start = data.find(&marker).unwrap_or_else(|| panic!("no {key}")) + marker.len();
-    let rest = &data[start..];
-    let end = rest
-        .match_indices('\n')
-        .map(|(i, _)| i + 1)
-        .find(|&i| {
-            let line = &rest[i..];
-            let indent = line.len() - line.trim_start_matches(' ').len();
-            indent <= 2 && line.trim_start().contains(':') && !line.trim_start().starts_with('-')
-        })
-        .unwrap_or(rest.len());
-    &rest[..end]
-}
-
-fn hex_items(text: &str) -> Vec<Vec<u8>> {
-    text.split("0x")
-        .skip(1)
-        .map(|item| {
-            let digits: String = item.chars().take_while(char::is_ascii_hexdigit).collect();
-            assert!(digits.len().is_multiple_of(2), "odd-length hex");
-            (0..digits.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&digits[i..i + 2], 16).unwrap())
-                .collect()
-        })
-        .collect()
-}
-
-fn integers(text: &str) -> Vec<u64> {
-    text.split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse().unwrap())
-        .collect()
-}
-
-fn fixed<const N: usize>(items: Vec<Vec<u8>>) -> Option<Vec<[u8; N]>> {
-    items.into_iter().map(|item| item.try_into().ok()).collect()
-}
 
 #[test]
 fn verify_cell_kzg_proof_batch_vectors() {
     let mut verifier = CellBatchVerifier::new();
     let mut scalar = CellBatchVerifier::without_kernel();
     let mut unrepresentable = 0;
-    for (name, data) in suite("verify_cell_kzg_proof_batch") {
+    for (name, data) in suite("kzg", "verify_cell_kzg_proof_batch") {
         let expected = match field(&data, "output").trim() {
             "true" => Some(true),
             "false" => Some(false),
@@ -108,7 +47,7 @@ fn verify_cell_kzg_proof_batch_vectors() {
 /// In parts, on the SHA extensions and in plain Rust.
 #[test]
 fn challenge_vectors() {
-    for (name, data) in suite("compute_verify_cell_kzg_proof_batch_challenge") {
+    for (name, data) in suite("kzg", "compute_verify_cell_kzg_proof_batch_challenge") {
         let commitments = fixed::<COMPRESSED_LEN>(hex_items(field(&data, "commitments"))).unwrap();
         let commitment_of_cell: Vec<usize> =
             integers(field(&data, "commitment_indices")).into_iter().map(|i| i as usize).collect();
@@ -154,7 +93,7 @@ fn challenge_vectors() {
 fn deduplication_reproduces_challenge_vectors() {
     let mut deduplicated = Deduplicated::default();
     let mut reproduced = 0;
-    for (name, data) in suite("compute_verify_cell_kzg_proof_batch_challenge") {
+    for (name, data) in suite("kzg", "compute_verify_cell_kzg_proof_batch_challenge") {
         let commitments = fixed::<COMPRESSED_LEN>(hex_items(field(&data, "commitments"))).unwrap();
         let index_of_cell: Vec<usize> =
             integers(field(&data, "commitment_indices")).into_iter().map(|i| i as usize).collect();
@@ -183,7 +122,7 @@ fn compute_cells_vectors() {
     let mut extender = CellExtender::new();
     let mut cells = Box::new([[0u8; BYTES_PER_CELL]; CELLS_PER_EXT_BLOB]);
     let mut unrepresentable = 0;
-    for (name, data) in suite("compute_cells") {
+    for (name, data) in suite("kzg", "compute_cells") {
         let output = field(&data, "output");
         let expected =
             (output.trim() != "null").then(|| fixed::<BYTES_PER_CELL>(hex_items(output)).unwrap());

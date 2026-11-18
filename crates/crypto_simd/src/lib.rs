@@ -2,6 +2,9 @@ pub mod bls;
 pub mod kzg;
 pub(crate) mod portable;
 mod sha256;
+#[cfg(all(test, feature = "spec_vectors"))]
+mod spec_vectors;
+pub mod xmss;
 
 /// Whether the IFMA kernels run: built with the `simd` feature, on a CPU with
 /// AVX-512F and AVX-512 IFMA. Without IFMA, point decoding and pairing use
