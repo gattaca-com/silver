@@ -87,11 +87,11 @@ Silver reads only these files from it:
 | File | Use |
 |---|---|
 | `config.yaml` | The spec. Missing keys default to mainnet values. |
-| `genesis.ssz` | The boot state, read on every start. Required. |
+| `genesis.ssz` | The boot state until a checkpoint is persisted, then the chain's identity. Required. |
 | `bootstrap_nodes.yaml` | The bootnodes, as a list of ENRs. Optional. |
 
-Its data lives in a `~/.local/silver/devnet-<id>` subdirectory. Silver logs the
-path at startup.
+Its data lives in a `~/.local/silver/devnet-<root>-<genesis time>` subdirectory.
+Silver logs the path at startup.
 
 ## Flags
 
