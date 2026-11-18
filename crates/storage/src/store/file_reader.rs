@@ -1,7 +1,7 @@
 use std::{
     io::{Error, ErrorKind},
     os::fd::{AsRawFd, RawFd},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use flux_disk::{DiskEvent, DiskIo, FileToken, OpenOptions};
@@ -23,6 +23,7 @@ enum State {
 }
 
 struct Read<T> {
+    path: PathBuf,
     file: Option<FileToken>,
     tag: T,
     state: State,
@@ -56,18 +57,21 @@ impl<T> FileReader<T> {
         self.reads.iter().map(|read| &read.tag)
     }
 
-    pub(super) fn start(&mut self, path: &Path, tag: T) {
-        let read = match self.disk.open(path, OpenOptions::new().read(true)) {
-            Ok(file) if self.disk.file_len(file) => {
-                Read { file: Some(file), tag, state: State::Sizing }
-            }
+    /// Paths are built one way, so bytes compare exactly.
+    pub(super) fn busy_with(&self, path: &Path) -> bool {
+        self.reads.iter().any(|read| read.path.as_os_str() == path.as_os_str())
+    }
+
+    pub(super) fn start(&mut self, path: PathBuf, tag: T) {
+        let (file, state) = match self.disk.open(&path, OpenOptions::new().read(true)) {
+            Ok(file) if self.disk.file_len(file) => (Some(file), State::Sizing),
             Ok(file) => {
                 let error = Error::other("file closed before its length was read");
-                Read { file: Some(file), tag, state: State::Done(ReadOutcome::Failed(error)) }
+                (Some(file), State::Done(ReadOutcome::Failed(error)))
             }
-            Err(error) => Read { file: None, tag, state: State::Done(ReadOutcome::Failed(error)) },
+            Err(error) => (None, State::Done(ReadOutcome::Failed(error))),
         };
-        self.reads.push(read);
+        self.reads.push(Read { path, file, tag, state });
     }
 
     /// Reaps completions and hands each finished read to `done`. A read that

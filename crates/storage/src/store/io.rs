@@ -117,7 +117,8 @@ impl Store {
             Some(Err(error)) => return Start::Done(self.write_landed(pending, Err(error), emit)),
             Some(Ok(op)) => op,
         };
-        if self.writer.conflicts_with(&op) {
+        // A create would truncate a file under an open read.
+        if self.writer.conflicts_with(&op) || op.paths().any(|path| self.reader.busy_with(path)) {
             return Start::Busy(pending);
         }
         // SAFETY: the op's bytes are a `TRead` or a buffer that `pending`
@@ -170,8 +171,12 @@ impl Store {
                 bytes: ptr::from_ref(&records[..]),
             }),
             PendingWrite::Coverage { bytes, .. } => {
+                let (_, staged) = coverage::codec::files(&self.store_dir);
+                Ok(WriteOp::Create { path: staged, bytes: ptr::from_ref(&bytes[..]) })
+            }
+            PendingWrite::CommitCoverage { .. } => {
                 let (path, staged) = coverage::codec::files(&self.store_dir);
-                Ok(WriteOp::Replace { path, staged, bytes: ptr::from_ref(&bytes[..]) })
+                Ok(WriteOp::Rename { from: staged, to: path })
             }
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::BackfillBlock { .. } |
@@ -181,8 +186,7 @@ impl Store {
     }
 
     /// Only once nothing is queued or in flight, so the file describes data
-    /// already down. A failed write still replaces the file; a torn one fails
-    /// to decode and is rebuilt.
+    /// already down.
     fn persist_coverage(&mut self) -> bool {
         let settled = self.write_queue.is_empty() && self.writer.in_flight() == 0;
         if !settled || !self.finalized.coverage().changed() {
@@ -265,8 +269,13 @@ impl Store {
                 self.finalized.envelope_landed(slot);
                 emit(IoEvent::Need(self.finalized.persisted(DataKind::Envelope, slot, None)));
             }
+            // A failed write leaves the live file as it was.
             PendingWrite::Coverage { version, bytes } => {
                 self.coverage_bytes = bytes;
+                result?;
+                self.write_queue.push_back(PendingWrite::CommitCoverage { version });
+            }
+            PendingWrite::CommitCoverage { version } => {
                 result?;
                 self.finalized.coverage_persisted(version);
             }
@@ -433,7 +442,7 @@ impl Store {
                 self.query_queue.push_back(query);
                 continue;
             };
-            self.reader.start(&path, (query, unit));
+            self.reader.start(path, (query, unit));
             started = true;
         }
         started

@@ -6,7 +6,7 @@ use std::{
 
 use flux_disk::{DiskEvent, DiskIo, FileToken, OpenOptions, OperationId};
 
-const DIRECTORY_TOKENS: usize = 4;
+pub(super) const DIRECTORY_TOKENS: usize = 4;
 
 /// Open handles on one directory, taken in turn: a rename or unlink on a
 /// token runs only once the one before it on that token has completed.
@@ -42,13 +42,6 @@ pub(super) enum WriteOp {
         path: PathBuf,
         bytes: *const [u8],
     },
-    /// Written to `staged`, which is then renamed over `path`. Once `staged`
-    /// opens, the rename follows even a failed write.
-    Replace {
-        path: PathBuf,
-        staged: PathBuf,
-        bytes: *const [u8],
-    },
     Rename {
         from: PathBuf,
         to: PathBuf,
@@ -62,12 +55,17 @@ impl WriteOp {
     /// The file the op changes; ops on one file run one at a time.
     fn key(&self) -> &Path {
         match self {
-            Self::Create { path, .. } |
-            Self::Append { path, .. } |
-            Self::Replace { path, .. } |
-            Self::Unlink { path } => path,
+            Self::Create { path, .. } | Self::Append { path, .. } | Self::Unlink { path } => path,
             Self::Rename { from, .. } => from,
         }
+    }
+
+    pub(super) fn paths(&self) -> impl Iterator<Item = &Path> {
+        let renamed_to = match self {
+            Self::Rename { to, .. } => Some(to.as_path()),
+            _ => None,
+        };
+        std::iter::once(self.key()).chain(renamed_to)
     }
 }
 
@@ -88,7 +86,7 @@ struct Write<T> {
 // SAFETY: `append` points into memory `tag` keeps alive, and moves with it.
 unsafe impl<T: Send> Send for Write<T> {}
 
-/// Creates, appends, replaces, renames and unlinks files without blocking.
+/// Creates, appends, renames and unlinks files without blocking.
 /// Ops on different files overlap; [`Self::conflicts_with`] lets the caller
 /// keep ops on one file in order. [`Self::next_finished`] hands each finished
 /// write's tag back, in no particular order.
@@ -133,11 +131,7 @@ impl<T> FileWriter<T> {
     }
 
     pub(super) fn conflicts_with(&self, op: &WriteOp) -> bool {
-        let renamed_to = match op {
-            WriteOp::Rename { to, .. } => Some(to),
-            _ => None,
-        };
-        self.busy_with(op.key()) || renamed_to.is_some_and(|to| self.busy_with(to))
+        op.paths().any(|path| self.busy_with(path))
     }
 
     /// # Safety
@@ -169,15 +163,6 @@ impl<T> FileWriter<T> {
                 write.append = Some(bytes);
                 write.key = path;
                 started
-            }
-            WriteOp::Replace { path, staged, bytes } => {
-                // SAFETY: forwarded from this function's contract.
-                let started = unsafe { self.create(&staged, bytes, &mut write) }.and_then(|()| {
-                    let file = write.file.expect("created above");
-                    queued(self.disk.rename(file, &path))
-                });
-                write.key = path;
-                started.map(|id| write.finishing_op = Some(id))
             }
             WriteOp::Rename { from, to } => {
                 let started = queued(self.disk.rename_path(self.directory.next(), &from, &to));

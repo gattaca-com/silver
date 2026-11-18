@@ -1160,6 +1160,69 @@ fn coverage_is_persisted_once_the_writes_settle() {
     let _ = std::fs::remove_dir_all(&store_path);
 }
 
+/// The staged file replaces the live one only once it is fully written.
+#[test]
+fn failed_coverage_write_keeps_the_live_file() {
+    let block = bare_block(40, [0x31; 32]);
+    let root = block_root_fulu(&block);
+    // Before the store: its in-flight writes point into the staged reads.
+    let mut staged = stage("coverage_failed", &block, 1);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    let (live, staged_path) = super::coverage::codec::files(&store_path);
+    std::fs::write(&live, b"good").unwrap();
+    // Opens, then fails every write with `ENOSPC`.
+    std::os::unix::fs::symlink("/dev/full", &staged_path).unwrap();
+    following(&mut store, 40, root);
+    store.backfill_block(staged.consumer.acquire(staged.reads[0]));
+
+    let mut producer = silver_common::TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).is_ok() {
+        assert!(Instant::now() < deadline, "the staged write did not fail");
+    }
+    assert!(!live.is_symlink(), "the failed staged file was not renamed in");
+    assert_eq!(std::fs::read(&live).unwrap(), b"good", "the live file is untouched");
+
+    std::fs::remove_file(&staged_path).unwrap();
+    drain(&mut store).unwrap();
+    assert_ne!(std::fs::read(&live).unwrap(), b"good", "a later write replaces it");
+}
+
+/// A create truncates its file, so it waits for a read open on that file.
+#[test]
+fn write_waits_for_a_read_of_its_file() {
+    let (slot, column) = (40, 3);
+    // Before the store: its in-flight writes point into the staged reads.
+    let mut staged = stage("read_race", &bare_block(slot, [0; 32]), 1);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    let path = column_path(&store_path, slot, column);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"old").unwrap();
+
+    let source = super::RequestSource::Api { request_id: 0, root: [0; 32], canonical: true };
+    let query = super::PendingQuery::new(source, std::collections::VecDeque::new());
+    store.reader.start(path.clone(), (query, super::QueryUnit::Column { slot, column }));
+    store.write_queue.push_back(super::PendingWrite::Column {
+        slot,
+        column,
+        custody_set_complete: false,
+        ssz: staged.consumer.acquire(staged.reads[0]),
+    });
+
+    // Writes start before reads finish within a turn.
+    let mut producer = silver_common::TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert_eq!(store.write_queue.len(), 1, "the write waits for the read");
+    assert_eq!(store.writer.in_flight(), 0);
+
+    drain(&mut store).unwrap();
+    assert_ne!(std::fs::read(&path).unwrap(), b"old", "and lands once it is done");
+}
+
 /// The index gives the blocks, one header read per gap says whether it is
 /// empty, and the first read of a group settles what an absent column set
 /// means.

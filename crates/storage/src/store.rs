@@ -201,10 +201,14 @@ enum PendingWrite {
         dir: PathBuf,
         records: Vec<u8>,
     },
-    /// The encoded coverage at `version`.
+    /// The encoded coverage at `version`, into the staged file.
     Coverage {
         version: u64,
         bytes: Vec<u8>,
+    },
+    /// The fully written staged file, renamed over the live one.
+    CommitCoverage {
+        version: u64,
     },
 }
 
@@ -249,7 +253,8 @@ impl PendingWrite {
             PendingWrite::PersistPeer { .. } |
             PendingWrite::LoadPeers |
             PendingWrite::IndexBlock { .. } |
-            PendingWrite::Coverage { .. } => false,
+            PendingWrite::Coverage { .. } |
+            PendingWrite::CommitCoverage { .. } => false,
         }
     }
 }

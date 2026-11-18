@@ -219,7 +219,7 @@ impl CheckpointWriter {
     fn sync_and_link_pubkeys(&mut self) -> Result<(), Error> {
         let path = self.named("pubkeys");
         let synced = self.disk.sync_all(self.pubkeys);
-        let linked = self.disk.link(self.pubkeys, path).unwrap_or(None);
+        let linked = self.disk.link(self.pubkeys, path)?;
         self.wait_for(&[synced, linked], Stage::SyncingAndLinkingPubkeys)
     }
 
