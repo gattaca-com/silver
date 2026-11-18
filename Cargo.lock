@@ -717,27 +717,13 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "byte-stable"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
-
-[[package]]
-name = "byte-stable"
-version = "0.11.0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 
 [[package]]
 name = "byte-stable-derive"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
-name = "byte-stable-derive"
-version = "0.11.0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1672,63 +1658,65 @@ dependencies = [
 
 [[package]]
 name = "flux"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "bitcode",
- "byte-stable 0.10.0",
- "byte-stable-derive 0.10.0",
+ "byte-stable",
+ "byte-stable-derive",
  "core_affinity",
  "flux-communication",
- "flux-timing 0.10.0",
- "flux-utils 0.10.0",
+ "flux-timing",
+ "flux-utils",
  "libc",
  "mio",
  "serde",
  "signal-hook",
  "spine-derive",
  "tracing",
- "type-hash 0.10.0",
- "type-hash-derive 0.10.0",
+ "type-hash",
+ "type-hash-derive",
  "zstd",
 ]
 
 [[package]]
 name = "flux-clickhouse"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "cityhash-rs",
  "flux-network",
- "flux-timing 0.10.0",
+ "flux-timing",
  "lz4_flex",
  "serde",
+ "zstd",
 ]
 
 [[package]]
 name = "flux-communication"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "directories",
- "flux-timing 0.10.0",
- "flux-utils 0.10.0",
+ "flux-timing",
+ "flux-utils",
  "libc",
  "mio",
  "rand 0.9.4",
  "shared_memory",
  "thiserror 1.0.69",
  "tracing",
- "type-hash 0.10.0",
- "type-hash-derive 0.10.0",
+ "type-hash",
+ "type-hash-derive",
 ]
 
 [[package]]
 name = "flux-disk"
-version = "0.11.0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
- "flux-timing 0.11.0",
- "flux-utils 0.11.0",
+ "flux-timing",
+ "flux-utils",
  "io-uring",
  "libc",
  "tracing",
@@ -1736,49 +1724,52 @@ dependencies = [
 
 [[package]]
 name = "flux-network"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
- "byte-stable 0.10.0",
+ "base64 0.22.1",
+ "byte-stable",
  "bytes",
  "flux",
  "flux-communication",
- "flux-timing 0.10.0",
- "flux-utils 0.10.0",
+ "flux-timing",
+ "flux-utils",
  "http",
  "httparse",
  "libc",
  "mio",
+ "rand 0.9.4",
  "rustc-hash",
  "serde",
+ "sha1",
  "tracing",
 ]
 
 [[package]]
 name = "flux-profiler"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "bytesize",
  "clap",
  "flux-communication",
  "flux-profiler-macros",
- "flux-timing 0.10.0",
- "flux-utils 0.10.0",
+ "flux-timing",
+ "flux-utils",
  "humantime",
  "libc",
  "rustc-hash",
  "serde",
  "tracing",
  "tracing-subscriber",
- "type-hash 0.10.0",
- "type-hash-derive 0.10.0",
+ "type-hash",
+ "type-hash-derive",
 ]
 
 [[package]]
 name = "flux-profiler-macros"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "quote",
  "syn 2.0.118",
@@ -1786,12 +1777,12 @@ dependencies = [
 
 [[package]]
 name = "flux-timing"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "bitcode",
- "byte-stable 0.10.0",
- "byte-stable-derive 0.10.0",
+ "byte-stable",
+ "byte-stable-derive",
  "chrono",
  "governor",
  "humantime",
@@ -1799,64 +1790,28 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "type-hash 0.10.0",
- "type-hash-derive 0.10.0",
-]
-
-[[package]]
-name = "flux-timing"
-version = "0.11.0"
-dependencies = [
- "bitcode",
- "byte-stable 0.11.0",
- "byte-stable-derive 0.11.0",
- "chrono",
- "governor",
- "humantime",
- "quanta",
- "serde",
- "serde_json",
- "tracing",
- "type-hash 0.11.0",
- "type-hash-derive 0.11.0",
+ "type-hash",
+ "type-hash-derive",
 ]
 
 [[package]]
 name = "flux-utils"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
- "byte-stable 0.10.0",
+ "byte-stable",
  "bytes",
  "core_affinity",
  "directories",
- "flux-timing 0.10.0",
+ "flux-timing",
  "libc",
  "rand 0.9.4",
  "serde",
  "spin",
  "thiserror 1.0.69",
  "tracing",
- "type-hash 0.10.0",
- "type-hash-derive 0.10.0",
-]
-
-[[package]]
-name = "flux-utils"
-version = "0.11.0"
-dependencies = [
- "byte-stable 0.11.0",
- "core_affinity",
- "directories",
- "flux-timing 0.11.0",
- "libc",
- "rand 0.9.4",
- "serde",
- "spin",
- "thiserror 1.0.69",
- "tracing",
- "type-hash 0.11.0",
- "type-hash-derive 0.11.0",
+ "type-hash",
+ "type-hash-derive",
 ]
 
 [[package]]
@@ -4802,6 +4757,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5029,8 +4995,8 @@ dependencies = [
  "serde",
  "silver_ssz",
  "toml",
- "type-hash 0.10.0",
- "type-hash-derive 0.10.0",
+ "type-hash",
+ "type-hash-derive",
 ]
 
 [[package]]
@@ -5065,7 +5031,7 @@ dependencies = [
  "c-kzg",
  "flux",
  "flux-profiler",
- "flux-utils 0.10.0",
+ "flux-utils",
  "foldhash 0.2.0",
  "fxhash",
  "hex",
@@ -5671,8 +5637,8 @@ dependencies = [
 
 [[package]]
 name = "spine-derive"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6195,27 +6161,13 @@ checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 
 [[package]]
 name = "type-hash"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
-
-[[package]]
-name = "type-hash"
-version = "0.11.0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 
 [[package]]
 name = "type-hash-derive"
-version = "0.10.0"
-source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70a4c220a10368a0#004884d1e82bb6afb1df81fa70a4c220a10368a0"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
-name = "type-hash-derive"
-version = "0.11.0"
+version = "0.13.1"
+source = "git+https://github.com/gattaca-com/flux?rev=72e5e9062c73ecf8d42012cd29fce521b514c8cd#72e5e9062c73ecf8d42012cd29fce521b514c8cd"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
