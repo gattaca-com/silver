@@ -12,6 +12,9 @@ pub struct DiscoveryConfig {
     pub lookup_distances: usize,
     #[serde(default = "default_usize::<128>")]
     pub target_sessions: usize,
+    /// At the cap, a new session replaces the least recently active.
+    #[serde(default = "default_usize::<1024>")]
+    pub max_sessions: usize,
     #[serde(default = "default_u64::<5>")]
     pub ping_frequency_s: u64,
     #[serde(default = "default_usize::<5>")]
@@ -34,6 +37,10 @@ pub struct DiscoveryConfig {
     pub whoareyou_per_ip_limit: u32,
     #[serde(default = "default_u32::<100>")]
     pub whoareyou_global_limit: u32,
+    /// Challenges to table nodes at their recorded address, apart from the
+    /// global limit.
+    #[serde(default = "default_u32::<400>")]
+    pub whoareyou_known_limit: u32,
     #[serde(default = "default_u64::<1000>")]
     pub whoareyou_window_ms: u64,
     pub persisted_kbuckets_path: Option<PathBuf>,
@@ -80,6 +87,7 @@ impl Default for DiscoveryConfig {
             lookup_interval_ms: 60_000,
             lookup_distances: 6,
             target_sessions: 128,
+            max_sessions: 1024,
             ping_frequency_s: 5,
             probes_per_lookup: 5,
             pings_per_poll: 10,
@@ -91,6 +99,7 @@ impl Default for DiscoveryConfig {
             kbucket_pending_timeout_s: 60,
             whoareyou_per_ip_limit: 5,
             whoareyou_global_limit: 100,
+            whoareyou_known_limit: 400,
             whoareyou_window_ms: 1000,
             persisted_kbuckets_path: None,
             persisted_banned_nodes_path: None,

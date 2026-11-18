@@ -7,10 +7,7 @@ use silver_common::{
     rpc_rate_limit::{RpcRateLimit, RpcRateLimitSet},
 };
 
-use super::{
-    gossip_in::{GOSSIP_BODY_STALL_TIMEOUT, GossipReadState},
-    gossip_out::GossipWriteState,
-};
+use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
 use crate::{
     NetEvent,
     p2p::{
@@ -132,6 +129,10 @@ impl StreamState {
 
     /// Parked waiting on a tcache reservation. Space frees when another tile
     /// consumes — no quinn event fires, so the owner must poll-retry.
+    pub fn reading_gossip_body(&self) -> bool {
+        matches!(self, StreamState::Gossip { read: GossipReadState::ReadingBody { .. }, .. })
+    }
+
     pub fn awaiting_alloc(&self) -> bool {
         matches!(
             self,
@@ -185,10 +186,7 @@ impl StreamState {
             StreamState::OutgoingRpc { rpc: RpcOut::ReadResponse(read_response), .. } => {
                 read_response.deadline()
             }
-            StreamState::Gossip {
-                read: GossipReadState::ReadingBody { last_read, deadline, .. },
-                ..
-            } => Some((*last_read + GOSSIP_BODY_STALL_TIMEOUT).min(*deadline)),
+            StreamState::Gossip { read, .. } => read.deadline(),
             StreamState::Cluster { read: ClusterRead::ReadingBody { last_read, .. }, .. } => {
                 Some(*last_read + BODY_STALL_TIMEOUT)
             }
@@ -300,8 +298,10 @@ impl StreamState {
                             },
                             StreamProtocol::Identity => {
                                 if id.is_incoming() {
-                                    // TODO identify should always be present post-startup.
-                                    let mut identify = context.identify.clone().unwrap();
+                                    let mut identify = context
+                                        .identify
+                                        .clone()
+                                        .ok_or(StreamError::StreamRejected)?;
                                     silver_log::trace!(
                                         "send identify protocols: {:?}",
                                         identify.protocols
@@ -384,8 +384,15 @@ impl StreamState {
                 }
             }
             StreamState::Gossip { mut read, mut write } => {
-                read =
-                    read.spin(io, &mut context.gossip_producer, id, now, inbound_limits, emit)?;
+                read = read.spin(
+                    io,
+                    &mut context.gossip_producer,
+                    &mut context.evict_ingress,
+                    id,
+                    now,
+                    inbound_limits,
+                    emit,
+                )?;
                 write = write.spin(io, id)?;
 
                 if matches!(read, GossipReadState::Closed) && id.is_incoming() {

@@ -84,7 +84,7 @@ impl PeerId {
     /// Returns the secp256k1 pubket embedded in this id.
     pub fn pubkey(&self) -> &[u8] {
         debug_assert!(self.length == 39);
-        &self.buffer[6..self.length]
+        self.buffer.get(6..self.length).unwrap_or(&[])
     }
 }
 

@@ -51,6 +51,7 @@ pub enum StreamError {
     InvalidIdentify,
     ReadResponseTimeout,
     ReadStall,
+    GossipBodySlow,
     ClusterFrameTooLarge,
     ClusterFrameZeroSize,
 }

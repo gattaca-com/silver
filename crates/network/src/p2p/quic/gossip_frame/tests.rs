@@ -73,6 +73,7 @@ impl Harness {
             identify: None,
             cluster_nodes: None,
             cluster_inbound_producer: TCache::producer(TCacheId::ClusterInbound, 1 << 16),
+            evict_ingress: None,
             partial_columns: true,
             reader: TCacheReader::new(TCacheTable::from_iter(
                 [&gossip, &columns, &rpc_out, &control_rpc, &cluster].map(|p| p.cache_ref()),

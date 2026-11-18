@@ -183,6 +183,7 @@ fn multipart_response_past_the_requested_count_is_rejected() {
         identify: None,
         cluster_nodes: None,
         cluster_inbound_producer: TCache::producer(TCacheId::ClusterInbound, 1 << 16),
+        evict_ingress: None,
         partial_columns: false,
         reader: TCacheReader::new(TCacheTable::from_iter([])),
     };

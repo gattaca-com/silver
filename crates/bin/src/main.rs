@@ -276,6 +276,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
         cluster_nodes: config.cluster_config().map(|_| ClusterNodes::default()),
         cluster_inbound_producer,
+        evict_ingress: None,
         partial_columns: partial_columns.supports_sending(),
         reader: TCacheReader::new(tcaches),
     };

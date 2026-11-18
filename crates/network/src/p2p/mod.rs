@@ -134,6 +134,8 @@ pub struct P2p {
     stats_cursor: usize,
     admission: InboundAdmission,
     inbound_limits: InboundLimits,
+    /// The ingress eviction the peers were told of, for one pass.
+    announced_eviction: Option<u64>,
 }
 
 impl P2p {
@@ -158,6 +160,7 @@ impl P2p {
             stats_cursor: 0,
             admission: InboundAdmission::new(max_connections, trusted_ips),
             inbound_limits,
+            announced_eviction: None,
         }
     }
 
@@ -433,6 +436,21 @@ impl P2p {
 
         for dead_peer in dead_peers {
             self.peers.remove(&ConnectionHandle(dead_peer.connection));
+        }
+
+        // Its holder takes an eviction in the pass after it is announced; one
+        // it did not take names no gossip body and is dropped.
+        match context.evict_ingress {
+            Some(seq) if self.announced_eviction != Some(seq) => {
+                self.announced_eviction = Some(seq);
+                self.peers.values_mut().for_each(Peer::spin_gossip_bodies);
+                any_dirty = true;
+            }
+            Some(_) => {
+                context.evict_ingress = None;
+                self.announced_eviction = None;
+            }
+            None => self.announced_eviction = None,
         }
 
         // Still-dirty peers need an immediate re-poll; otherwise sleep until

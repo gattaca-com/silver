@@ -286,6 +286,7 @@ impl PublisherStack {
             identify: Some(ProtoIdentify::from((&Identify::default(), &keypair))),
             cluster_nodes: None,
             cluster_inbound_producer: cluster_in_producer,
+            evict_ingress: None,
             partial_columns: false,
             reader: TCacheReader::new(network_tcaches),
         };
@@ -428,6 +429,7 @@ impl EchoStack {
             identify: Some(ProtoIdentify::from((&Identify::default(), &keypair))),
             cluster_nodes: None,
             cluster_inbound_producer: cluster_in_producer,
+            evict_ingress: None,
             partial_columns: false,
             reader: TCacheReader::new(network_tcaches),
         };
