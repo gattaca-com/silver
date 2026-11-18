@@ -103,8 +103,7 @@ impl ValidatorsDelta {
         self.slashed_edits.scatter_bits(&mut base.slashed);
     }
 
-    /// Mirror of [`BalancesDelta::rebase_and_prune_from`] for the multi-column
-    /// registry: finalize survivor `old` into `self` against promoted `winner`,
+    /// Finalize survivor `old` into `self` against promoted `winner`,
     /// pre-promote and read-only so lock-free readers stay unblocked. The
     /// winner-promoted prefix of `appended` is dropped; every column delegates
     /// the rebase/prune to [`Edits::rebase_and_prune_from`].

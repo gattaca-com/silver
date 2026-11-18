@@ -27,11 +27,6 @@ jobs:
         with:
           toolchain: nightly-2026-06-21
 
-      - name: Install buf
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
-
       - name: Download consensus-spec-tests
         run: make -C crates/beacon_state/tile
 

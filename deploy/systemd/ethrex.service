@@ -1,0 +1,19 @@
+[Unit]
+Description=ethrex execution client
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=silver
+WorkingDirectory=/var/lib/silver
+ExecStart=/var/lib/silver/ethrex --network mainnet --datadir /var/lib/silver/ethrex-data \
+    --authrpc.addr 127.0.0.1 --authrpc.port 8551 --authrpc.jwtsecret /var/lib/silver/jwt.hex
+StandardOutput=append:/var/lib/silver/logs/ethrex.log
+StandardError=append:/var/lib/silver/logs/ethrex.log
+LimitNOFILE=1048576
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

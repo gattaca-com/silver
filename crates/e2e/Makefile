@@ -7,7 +7,7 @@ FINALIZED_STATE := $(CHECKPOINTS_DIR)/finalized_state.ssz
 # them when retained.
 ANCHOR_SLOT ?= finalized
 FINALIZED_STATE_URL ?= https://beaconstate-mainnet.chainsafe.io/eth/v2/debug/beacon/states/$(ANCHOR_SLOT)
-NEXT_BLOCK_URL_BASE ?= https://lodestar-mainnet.chainsafe.io/eth/v2/beacon/blocks
+NEXT_BLOCK_URL_BASE ?= http://testing.mainnet.beacon-api.nimbus.team/eth/v2/beacon/blocks
 # Number of post-anchor blocks to fetch + apply in the checkpoint_load /
 # sync_pm_bs tests. Must match `EXPECTED_BLOCKS` in `tests/sync_pm_bs.rs`.
 NEXT_BLOCKS_COUNT ?= 4
@@ -25,7 +25,7 @@ checkpoint-fixtures: finalized-state next-blocks
 # `finalized` alias — pin to a concrete slot with
 # `make ANCHOR_SLOT=<slot> checkpoint-fixtures-large` when you have an
 # archive that retains it. ~13 min wall-clock for a fresh pull
-# (lodestar's 6s per-request anti-rate-limit sleep dominates).
+# (the 6s per-request anti-rate-limit sleep dominates).
 checkpoint-fixtures-large: NEXT_BLOCKS_COUNT := 128
 checkpoint-fixtures-large: NEXT_BLOCKS_LOOKAHEAD := 160
 checkpoint-fixtures-large: checkpoint-fixtures
@@ -55,8 +55,8 @@ $(FINALIZED_STATE):
 # Re-runs are idempotent — if the on-disk state has rotated since the last
 # fetch, run `make clean` first.
 #
-# lodestar serves SSZ binary at non-epoch-boundary slots but rate-limits per
-# IP — sleep 6s between requests to stay under the cap.
+# The block API rate-limits per IP — sleep 6s between requests to stay under
+# the cap.
 next-blocks: $(FINALIZED_STATE)
 	@slot=$$(od -An -j40 -N8 -tu8 < $(FINALIZED_STATE) | tr -d ' '); \
 	echo "anchor slot: $$slot, fetching up to $(NEXT_BLOCKS_COUNT) following blocks"; \

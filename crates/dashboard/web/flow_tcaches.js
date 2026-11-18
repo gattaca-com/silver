@@ -20,8 +20,7 @@ const HEAD_SLOT = 1;
 const FIRST_TAIL = 2;
 const SELECT = 'tc:';
 
-// [tcache, producer]; names as `TCacheId::name`. Mirrors the TCaches table in
-// docs/spine-message-flow.md.
+// [tcache, producer]; names as `TCacheId::name`.
 const TCACHES = [
   ['network_ingress', NET],
   ['network_processing', NET],
@@ -34,6 +33,7 @@ const TCACHES = [
   ['storage_delivery', STO],
   ['boundary_processing', AB],
   ['beacon_state_handoff', BS],
+  ['proposed_columns', DC],
 ];
 
 // Consumer name prefix → tile, after the names each tile passes to

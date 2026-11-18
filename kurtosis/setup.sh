@@ -2,8 +2,8 @@
 # Spin up the kurtosis ethereum-package devnet, harvest the network-specific
 # values silver needs, and write the silver config TOML.
 #
-#   kurtosis/setup.sh [--recreate] [--finalized-anchor|--genesis-anchor] [enclave-name]
-#                                                       (default: silver-dev)
+#   kurtosis/setup.sh [--recreate] [--finalized-anchor] [enclave-name]
+#                                           (default: silver-dev)
 #
 # --recreate tears down the enclave first for a fresh chain (new genesis ->
 # new digest/ENRs/genesis-time -> silver must restart). Without it, a healthy
@@ -12,10 +12,7 @@
 # --finalized-anchor anchors silver at the chain's current finalized state
 # instead of genesis, so it joins mid-chain: it forward-syncs the finality gap
 # and backfills the history below the anchor. Nothing is finalized at genesis,
-# so run it (without --recreate) once the chain has finalized. Implied by
-# --gloas. --genesis-anchor pins the genesis anchor, which is what --gloas
-# needs on a chain whose Gloas activation is epoch 0: there is nothing
-# finalized yet, and genesis is already a Gloas state.
+# so run it (without --recreate) once the chain has finalized.
 #
 # Generates silver-devnet.toml from scratch each run (derived fields harvested
 # from the CL; static fields — ports — taken from the
@@ -29,35 +26,20 @@
 set -euo pipefail
 
 RECREATE=0
-GLOAS=0
 ANCHOR=genesis
-ANCHOR_PINNED=0
-ENCLAVE=""
+ENCLAVE="silver-dev"
 for arg in "$@"; do
   case "$arg" in
     --recreate) RECREATE=1 ;;
-    --gloas) GLOAS=1 ;;
     --finalized-anchor) ANCHOR=finalized ;;
-    --genesis-anchor) ANCHOR=genesis; ANCHOR_PINNED=1 ;;
     -*) echo "unknown flag: $arg" >&2; exit 1 ;;
     *) ENCLAVE="$arg" ;;
   esac
 done
-[ -n "$ENCLAVE" ] || { [ "$GLOAS" -eq 1 ] && ENCLAVE="silver-gloas" || ENCLAVE="silver-dev"; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Gloas: separate args/config/anchor so the Fulu devnet files are untouched.
-# Default anchor is finalized — silver then anchors already in Gloas and follows
-# live, sidestepping the from-genesis DA wedge and the Fulu→Gloas digest
-# transition; --genesis-anchor opts into both.
-if [ "$GLOAS" -eq 1 ]; then
-  ARGS_FILE="$HERE/net-gloas.yaml"
-  CONFIG="$HERE/silver-gloas.toml"
-  [ "$ANCHOR_PINNED" -eq 1 ] || ANCHOR=finalized
-else
-  ARGS_FILE="$HERE/net.yaml"
-  CONFIG="$HERE/silver-devnet.toml"
-fi
+ARGS_FILE="$HERE/net.yaml"
+CONFIG="$HERE/silver-devnet.toml"
 # The devnet's metadata directory, as a published devnet ships it; `network`
 # names it. silver boots from its genesis.ssz, or with a finalized anchor from
 # the enclave's CLs as checkpoint providers.
@@ -89,9 +71,8 @@ esac
 #   PACKAGE='github.com/ethpandaops/ethereum-package@<tag>' kurtosis/setup.sh
 # Discover tags:
 #   git ls-remote --tags https://github.com/ethpandaops/ethereum-package
-# 6.1.0 already exposes `gloas_fork_epoch`, and its Starlark is compatible with
-# the installed Kurtosis CLI (HEAD trips an `undefined: GpuConfig` regression),
-# so both Fulu and Gloas pin 6.1.0.
+# 6.1.0's Starlark is compatible with the installed Kurtosis CLI (HEAD trips an
+# `undefined: GpuConfig` regression).
 PACKAGE="${PACKAGE:-github.com/ethpandaops/ethereum-package@6.1.0}"
 
 for bin in kurtosis docker curl jq; do
@@ -266,5 +247,5 @@ echo "start silver's local reth (separate terminal):"
 echo "  kurtosis/run-reth.sh"
 echo
 echo "run silver:"
-echo "  RUST_LOG=info,silver_network=info,silver_peer=info \\"
+echo "  LOG_STDOUT=1 RUST_LOG=info,silver_network=info,silver_peer=info \\"
 echo "    cargo run --release --bin silver -- --config $CONFIG"

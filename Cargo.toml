@@ -16,7 +16,6 @@ members = [
   "crates/e2e",
   "crates/gossip",
   "crates/hashing",
-  "crates/hashing/bench",
   "crates/state_memory",
   "crates/httpcore",
   "crates/log",
@@ -35,6 +34,7 @@ members = [
   "crates/columns",
   "crates/telemetry",
 ]
+exclude = ["crates/hashing/bench"]
 resolver = "2"
 
 [workspace.package]

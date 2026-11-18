@@ -70,12 +70,12 @@ checkpoint-fixtures:
 # on so invariant checks run. Run `just ef-tests-download` + `just
 # checkpoint-fixtures` first if you don't have the fixtures locally.
 test:
-  cargo test --locked --workspace --features "silver_beacon_state/ef_tests,silver_e2e/lh-client,silver_state_hashing/multi-owner" --profile release-with-debug --no-fail-fast 2>&1
+  cargo test --locked --workspace --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --profile release-with-debug --no-fail-fast 2>&1
 
 # As above but using `nextest`
 nextest:
   cargo install --locked cargo-nextest && \
-  cargo nextest r --locked --features "silver_beacon_state/ef_tests,silver_e2e/lh-client,silver_state_hashing/multi-owner" --cargo-profile release-with-debug --no-fail-fast --status-level skip
+  cargo nextest r --locked --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --cargo-profile release-with-debug --no-fail-fast --status-level skip
 
 # Run the perf-regression harness on the committed mainnet fixtures.
 # Release-only (no debug-assertions — they skew the counters); reads crates/e2e/data/perf (git-lfs). CI runs this too.
@@ -105,7 +105,7 @@ surfer *args='':
   cargo run --locked --release -p silver_surfer -- {{args}}
 
 # Refresh crates/e2e/data/perf from mainnet (~13 min for the default 128
-# blocks at lodestar's ~1 req / 6 s cap). Commit the result via git-lfs.
+# blocks at the ~1 req / 6 s block request spacing). Commit the result via git-lfs.
 # Pass `--continue` (and/or `--blocks N`) to resume after a network blip.
 perf-update-fixtures *args='--blocks 128':
   cargo run --locked --release -p silver_e2e --bin perf_update_fixtures -- {{args}}

@@ -13,11 +13,13 @@ import {
 /** Width spans 1/s … 100k/s. */
 const RATE_DECADES = 5;
 
-// [queue, message type, producers, consumers]. Mirrors the queue table in
-// docs/spine-message-flow.md; update both together. Every consumer of a
+// [queue, message type, producers, consumers], after `SilverSpine` and each
+// tile's produce and consume calls; update with them. Every consumer of a
 // broadcast queue reads every producer's messages, so the cross product is
 // the expected pair set: drawn grey until its timer reports traffic.
-// `engine_health` and `peer_stats` have no in-process consumer.
+// Left out, as one end is not a tile: `engine_health` has no consumer,
+// `peer_stats` and `cluster_commits` are read by telemetry, and
+// `cluster_admin_requests` / `cluster_admin_responses` talk to the cluster CLI.
 const QUEUES = [
   ['gossip_in', 'GossipMsgIn', [NET], [CTL]],
   ['new_gossip', 'NewGossipMsg', [CTL], [BS, DC]],
@@ -25,8 +27,9 @@ const QUEUES = [
   ['rpc_inbound', 'RpcInbound', [NET], [CTL, BS, DC, STO]],
   ['cluster_inbound', 'ClusterIn', [NET], [CTL]],
   ['cluster_outbound', 'ClusterMsgOut', [CTL], [NET]],
-  ['beacon_api_requests', 'BeaconApiRequest', [AB], [CTL, BS, STO]],
-  ['beacon_api_responses', 'BeaconApiResponse', [CTL, BS, STO], [AB]],
+  ['beacon_api_requests', 'BeaconApiRequest', [AB, BS, DC], [CTL, BS, STO]],
+  ['beacon_api_responses', 'BeaconApiResponse', [CTL, BS, DC, STO], [AB]],
+  ['locked_proposals', 'LockedProposal', [CTL], [DC]],
   ['peer_events', 'PeerEvent', [NET, CTL, BS, DC, STO], [CTL, AB]],
   ['peer_control', 'PeerControl', [CTL], [NET, STO]],
   ['beacon_events', 'BeaconStateEvent', [BS], [CTL, NET, STO, DC, AB]],
@@ -40,6 +43,10 @@ const QUEUES = [
   ['engine_reqs', 'EngineReq', [BS, DC], [AB]],
   // AB consumes its own NewPayload responses; the self-edge is not drawn.
   ['engine_resps', 'EngineResp', [AB], [BS, DC, AB]],
+  ['sidecar_bid_requests', 'SidecarBidRequest', [BS], [AB]],
+  ['sidecar_bid_answers', 'SidecarBidResponse', [AB], [BS]],
+  ['builder_bid_requests', 'BuilderBidsRequest', [BS], [AB]],
+  ['builder_bid_answers', 'BuilderBidsResponse', [AB], [BS]],
 ];
 
 const QUEUE_OF = new Map(QUEUES.map(([queue, msg]) => [msg, queue]));

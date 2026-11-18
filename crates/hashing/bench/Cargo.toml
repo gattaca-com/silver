@@ -1,25 +1,28 @@
 [package]
 name = "silver_state_hashing_bench"
-edition.workspace = true
+edition = "2024"
 publish = false
-rust-version.workspace = true
+rust-version = "1.91.0"
 version = "0.0.0"
 
+# Its own workspace, so its `multi-owner` dependency never unifies into silver's builds.
+[workspace]
+
 [dev-dependencies]
-criterion.workspace = true
-milhouse.workspace = true
-mimalloc.workspace = true
-rand.workspace = true
-rayon.workspace = true
-silver_state_hashing = { workspace = true, features = ["multi-owner"] }
+criterion = "0.5.1"
+milhouse = { version = "0.9", default-features = false }
+mimalloc = { version = "0.1.52", features = ["v2"] }
+rand = "0.8.5"
+rayon = "1"
+silver_state_hashing = { path = "..", features = ["multi-owner"] }
 ssz = { git = "https://github.com/grandinetech/grandine", package = "ssz", rev = "129fbd2912943e02e621028b8e5e39cc092a1f19" }
-tree_hash.workspace = true
+tree_hash = "0.12"
 try_from_iterator = { git = "https://github.com/grandinetech/grandine", rev = "129fbd2912943e02e621028b8e5e39cc092a1f19" }
-typenum.workspace = true
+typenum = "1"
 
 [[bench]]
 harness = false
 name = "comparison"
 
-[lints]
-workspace = true
+[lints.clippy]
+too_long_first_doc_paragraph = "allow"

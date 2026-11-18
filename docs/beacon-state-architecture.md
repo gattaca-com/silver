@@ -1,78 +1,63 @@
 # Beacon state: groups, forks, and the read/write model
 
-How `silver_beacon_state_data` stores the beacon state and how the single
-writer (the beacon-state tile) and lock-free readers (e.g. the storage tile)
-share it.
+How `silver_beacon_state_data` stores the beacon state.
+It also covers how one writer and many lock-free readers share it.
+The writer is the beacon-state tile.
+Readers include the storage, columns and beacon API tiles.
 
 ## 1. The state is a set of independent groups
 
-There is no monolithic state object. `BeaconState` is a bag of per-tier
-**groups**, split by write cadence, plus one immutable block:
+There is no monolithic state object.
+`BeaconState` is a bag of per-tier **groups**, plus the `immutable` block.
 
-```
-BeaconState
-├── immutable: Immutable            // genesis data, fork schedule — never changes
-│
-│   per-block tiers (rolled for every block)
-├── validators        ─┐
-├── balances           │  Group = finalized base + Ring of per-fork deltas
-├── eth1               │
-├── pending            │
-├── previous_participation
-├── current_participation
-├── inactivity         │
-├── slot_states       ─┘
-│
-│   boundary tiers (rolled only when their boundary event fires)
-├── epoch                           // epoch transition
-└── longtail                        // sync-committee rotation / historical summaries
-```
+| cadence | groups |
+|---|---|
+| every block | `validators`, `balances`, `eth1`, `pending`, `previous_participation`, `current_participation`, `inactivity`, `slashings`, `block_roots`, `state_roots`, `randao_mixes`, `slot_states`, `builders` |
+| boundary only | `epoch` (epoch transition), `longtail` (sync-committee rotation, historical summaries) |
 
-Every group has the same shape:
+`builders` stays empty until the Gloas fork.
+The `epoch` tier also carries the Gloas PTC window.
 
-```
-          Group
-┌───────────────────────┐    finalized = the canonical FINALIZED state of this
-│ finalized: Finalized* │                tier (mutated only during finalization)
-│                       │
-│ deltas: Ring<G,Δ,N>   │    ring      = N reusable slots holding per-fork
-│  ┌───┬───┬───┬───┐    │                DELTAS (what a fork changed vs the
-│  │ Δ │ Δ │ Δ │ Δ │…   │                finalized state)
-│  └───┴───┴───┴───┘    │
-└───────────────────────┘    a fork's effective value = finalized ⊕ its delta
-```
+Each group holds a finalized base and per-fork entries addressed by a typed `Id`.
+A fork's value is the base overlaid with its entry.
+Groups come in two shapes:
 
-A **fork** (a block's post-state) is identified by a `StateId` — a ~72-byte
-`Copy` bundle of one typed ring id per tier:
+- **Tree groups** (`TreeGroup<C>`: balances, participation, inactivity, slashings, roots, randao mixes).
+  One flat writer tree takes all writes.
+  A commit stores the fork as a page-table snapshot in a shared `PagePool`.
+  The hash columns of `validators` and `builders` are tree groups too.
+- **Ring groups** (validators, builders, eth1, pending queues, slot, epoch, longtail).
+  Each fork owns a delta in a `Ring` slot.
+  Validators and builders keep sparse `Edits` plus an appended tail.
+  Eth1 and pending keep append logs.
+  Slot, epoch and longtail keep a full working copy.
 
-```
-StateId { validators_idx, balances_idx, eth1_idx, pending_idx, …, slot_idx,
-          epoch_idx: Option<EpochId>, longtail_idx: Option<LongtailId> }
-```
+A **fork** (a block's post-state) is named by a `StateId`.
+It is a `Copy` bundle of one id per tier.
+`epoch_idx` and `longtail_idx` are `Option`: a fork that never crossed that boundary reads the base.
 
-The boundary tiers are `Option` because a fork that never crossed an epoch
-boundary simply reads the base. Fork-choice nodes own their fork's `StateId`
-by value; the published head's `StateId` lives inline in the control word
-(section 4).
+Every `StateId` holder is re-based at finalization (section 5).
+Holders are the fork-choice nodes, `last_applied`, precomputed epochs, held blocks, and block production.
+The published head's `StateId` lives inline in the control word (section 4).
 
 ## 2. Append-only writes and `commit`
 
-The ring API is deliberately tiny — `get(id)`, `roll_fresh`, `roll_from`,
-`roll_fresh_deriving`, `free`/`free_outdated`:
+- A **writer exists only by rolling** a new slot: fresh, or derived from a parent id.
+  There is no way to re-open a committed slot for writing.
+- An **id exists only by committing**: `Slot::commit(self)` and `TreeWriteView::commit(self)` consume the writer.
+- A committed slot is **never mutated again**.
+  It is promoted into the base at finalization, or freed after it.
 
-* a **writer exists only by rolling** a new slot (fresh, or copy-on-write
-  from a parent id). There is no way to re-open a slot by id for writing.
-* an **id exists only by committing**: `Slot::commit(self) -> Id` consumes
-  the writer. While a writer is live, nobody can name (or read) its slot.
-* a committed slot is **never mutated again** — it is either promoted into
-  the base at finalization or reclaimed (`free`) after it.
+This gives the central invariant: *everything reachable from a published `StateId` is immutable*.
+That is what lets readers run without locks.
 
-This gives the central invariant: *everything reachable from a published
-`StateId` is immutable*. That is what lets readers run without locks.
+`StateId` follows the same rule.
+It has no `Default`, and only `StateWriterView::commit` assembles one.
 
-`StateId` itself follows the same rule: it has no `Default` and is only
-assembled by `StateWriterView::commit`, from the held writers' ids — a bundle
-cannot exist before its entries do.
+Rings grow by doubling under non-finality.
+A grow publishes a new buffer and retains the old one until the `Ring` drops.
+Growing per-fork collections use `silver_state_memory::RetainedVec` for the same reason.
+A racing reader therefore never dereferences freed memory.
 
 ## 3. The write path (one block)
 
@@ -80,147 +65,102 @@ cannot exist before its entries do.
 parent: StateId
    │
    ▼
-apply_block_view(parent)              owner rolls the 8 per-block tiers
-   │   roll_from(parent.X_idx) ×8     and HOLDS the writers
-   ▼
-StateWriterView { validators, balances, eth1, pending, …, slot }  ← held writers
+owner.apply_block_view(parent) -> ForkWriter      rolls every per-block tier, holds the writers
    │
-   ├─ process_slots(...)              epoch boundary? roll + HOLD the epoch
-   │     └─ process_epoch(...)        writer; longtail iff its gate fires;
-   │                                  their ids return as plain data
-   ├─ process_block_body(...)         leaves take &mut view (the holder) or
-   │                                  the single tier they touch
+   ├─ stf::process_slots(cfg, &mut fork, ..)       epoch boundary: rolls and commits the epoch
+   │     └─ process_epoch(..)                      entry; longtail only if its gate fires
+   ├─ stf::process_block_body(cfg, &mut fork, ..)
    ▼
-view.commit(epoch_idx, longtail_idx)  consumes the writers, assembles the
-   │                                  child StateId
+fork.commit()                                     consumes the writers, assembles the child StateId
+   │
    ▼
-publish_state_id(child)               ONE small seqlock write — the only
-                                      cross-thread synchronization on the
-                                      block path
+owner.publish_state_id(child)                     one seqlock write: the only cross-thread sync
 ```
 
-Notes:
+`ForkWriter` holds the `StateWriterView` plus `&mut EpochGroup` and `&mut LongtailGroup`.
+Boundary tiers travel as ids, not resolved views.
+A resolved view shared-borrows the group that a later roll needs `&mut` on.
 
-* The holder (`StateWriterView`) is a **methodless field bundle**. Leaves
-  touching one tier take that tier's writer/view; leaves touching many take
-  `&mut view` and bind fields locally. There are no whole-state delegator
-  methods.
-* The boundary groups (`EpochGroup`, `LongtailGroup`) travel as separate
-  `&mut` args next to the holder. Their *ids* — not resolved views — cross
-  any call that may still roll, because a resolved view shared-borrows the
-  group the roll needs `&mut` on.
-* Rolls never touch the seqlock. Readers are unaffected by a block being
-  processed (its slots are unreachable until publish).
+Rolls never touch the seqlock.
+A block in progress is invisible to readers until its publish.
 
 ## 4. The read paths
 
-`StateReadView` exposes the tiers available to optimistic readers.
-`StateView` adds owner-only access to Eth1 votes, pending queues, effective
-increments, and historical summary entries. It dereferences to `StateReadView`
-for helpers that need only the shared fields.
+| view | who | sees |
+|---|---|---|
+| `StateReadView` | any thread, via `BeaconStateReader::read` / `read_pinned` | tiers safe to read during a concurrent write |
+| `StateView` | writer thread, via `owner.read_view` / `ForkWriter::read` | adds eth1 votes, pending queues, effective increments, historical summaries |
 
-Both `BeaconStateReader::read` and `read_pinned` supply `StateReadView`.
-Its `EpochReadView` omits effective increments. Its `LongtailReadView` exposes
-sync committees and the cached summaries root, without exposing `LongtailState`.
+`StateView` dereferences to `StateReadView`.
+The split is enforced by `compile_fail` doctests on `StateReadView`.
 
-```
-writer thread (tile's own reads):          cross-thread (lock-free):
-  owner.read_view(state_id)                  reader.read(|rv| { … })
-  view.read(epoch_v, longtail_v)
-       │                                          │
-       ▼                                          ▼
-    StateView                                StateReadView
-       └── dereferences to StateReadView
-```
-
-The cross-thread protocol (`BeaconStateReader::read`) is an optimistic
-seqlock read:
+The cross-thread read is an optimistic seqlock read over the control word `{state_id, finalize_version}`:
 
 ```
-            writer                              reader
-              │                                   │
- publish ───► │ control = Seqlock<{StateId,       │ loop:
-              │           finalize_version}>      │   ctrl = read_copy()
-              │   counter odd = finalize window   │     ── spins while the counter is odd
-              │                                   │   fence(Acquire)
-              │                                   │   rv = state.state_read_view(ctrl.state_id)
-              │                                   │   … read tier data …
-              │                                   │   fence(Acquire)
-              │                                   │   finalize_version unchanged? → accept
-              │                                   │   else                        → retry
+reader loop:
+  ctrl = read_copy()            spin while finalize_version is odd
+  fence(Acquire)
+  run the closure on state_read_view(ctrl.state_id)
+  fence(Acquire)
+  finalize_version unchanged? → accept, else retry
 ```
 
-A publish rewrites `state_id` but carries the finalize counter unchanged —
-tiers are append-only between finalizations, so a publish never invalidates
-an in-flight read. Only the finalize window (which rebases and frees tier
-slots) bumps the counter.
+A publish rewrites `state_id` but keeps the finalize counter.
+Tiers are append-only between finalizations, so a publish never invalidates an in-flight read.
+Only the finalize window bumps the counter.
 
-The state allocation is shared as `Arc<StateCell>` (an `UnsafeCell` newtype,
-the seqlock's one irreducible `unsafe`): a reader handle can never dangle,
-whatever the teardown order. Reads cost a pointer deref — the `Arc` refcount
-is touched only at clone/drop.
+`pin` + `read_pinned` reuse one head across many reads until the next finalize.
+Checkpoint encoding (`begin_checkpoint` / `checkpoint_chunk`) restarts when a finalize lands.
+It also takes the groups' `with_finalized_locked` for pending queues and historical summaries.
 
-The shared view cannot expose these reallocating collections through safe APIs.
-Checkpoint encoding retains the groups' promotion locks (`with_finalized_locked`)
-for pending queues and historical summaries.
-Retained allocations protect the other growing collections' backing storage;
-metadata publication and concurrent in-place writes remain separate concerns.
+The state allocation is shared as `Arc<StateCell>`, the seqlock's one `unsafe`.
+A reader handle can never dangle, whatever the teardown order.
 
-## 5. Finalization — the only reader-blocking window
+## 5. Finalization: the only reader-blocking window
 
-When fork choice finalizes a block, its deltas are folded into the bases and
-every surviving fork is re-anchored:
+`BeaconStateTile::finalize` runs when fork-choice finality advances past node 0:
 
 ```
-maybe_finalize:
-  fork-choice prune, survivor collection            readers: unaffected
-  ┌─ write() ── version goes ODD ──────────────┐
-  │  for each group:                            │    readers: spin
-  │    finalize(winner, survivors):             │
-  │      free forks older than the winner       │
-  │      reanchor survivors → FRESH slots       │   (append-only: survivors
-  │      promote winner delta into base         │    get new ids, published
-  │      free the survivors' old slots          │    slots are not re-opened)
-  │  rewrite survivor StateIds (locals)         │
-  │  stage the head's rewritten StateId         │
-  └─ guard drop ── control word + version even ─┘
-  write rewritten StateIds back to fork-choice nodes  readers: unaffected
+fork_choice.prune(), drop outdated held/precomputed state ids      readers: unaffected
+┌─ state.write(): finalize_version goes odd ─────────────────────┐ readers: spin
+│  BeaconState::finalize(winner, every live StateId):            │
+│    ring groups: re-anchor survivors into fresh slots,          │
+│                 then promote the winner delta into the base    │
+│    tree groups: adopt the winner's page table as the base;     │
+│                 survivor ids stay valid unchanged              │
+│  set_state_id(last_applied)                                    │
+└─ guard drop: control word + even counter in one write ─────────┘
+prune operation pools against the new finalized state             readers: unaffected
 ```
 
-The window must block readers: their views borrow directly into the base
-allocations being rewritten in place. Budget: a few milliseconds of base
-promotion once per finalization — everything else on the read side is
-wait-free (plus one ≤80-byte retry per publish).
+Re-anchoring gives survivors new ids, so published slots are never re-opened.
+The sparse re-base rule is `Edits::rebase_and_prune_from`.
+It runs before promotion, because it reads the old base.
 
-`write()` is for **finalization and bootstrap only**. Rolls never take it.
+The window must block readers.
+Their views borrow directly into the base allocations that promotion rewrites in place.
+
+`write()` is for finalization only (plus EF-test hooks).
+Rolls never take it.
 
 ## 6. Lifecycle: no state before the snapshot
 
-* `BeaconState::decompose(ssz, cfg, pubkeys) -> Result<Self>` is the only public
-  constructor — a state exists only from real data.
-* Before the snapshot arrives (checkpoint file or network sync), the owner
-  holds a writer-private stub and the control seqlock is **unwritten**:
-  `reader.read(..)` returns `None`. Nothing is observable until `bootstrap`
-  decomposes the snapshot (replacing the stub under the write window) and
-  publishes the anchor `StateId`.
-* `BeaconState::roll_fresh()` rolls one fresh fork per per-block tier and
-  assembles the anchor bundle — used at bootstrap and as the pre-bootstrap
-  placeholder head.
+- `BeaconState::decompose(ssz, cfg, pubkeys)` builds a state from real SSZ.
+  It picks the Fulu or Gloas decoder from `fork.current_version`.
+  `from_checkpoint` adds the decompressed-pubkeys sidecar.
+  The test constructors are `#[doc(hidden)]`.
+- The tile is built only once a checkpoint state exists (`CheckpointState`).
+  Before the first `publish_state_id`, the control seqlock is unwritten and `reader.read(..)` returns `None`.
+- `fresh_fork_writer` rolls the anchor fork off the bases.
+  The tile commits it, seeds fork choice, and publishes it.
 
-## 7. Cheat sheet
-
-| operation            | who          | reader impact            |
-|----------------------|--------------|---------------------------|
-| roll / STF / commit  | block path   | none (unpublished slots)  |
-| `publish_state_id`   | block path   | none (in-flight reads stand) |
-| `write()` window     | finalize, bootstrap | spin for the window |
-| reading              | anyone       | wait-free, no refcounts   |
+## 7. Rules and what enforces them
 
 | rule | enforced by |
-|------|-------------|
-| writer only from a roll          | ring API surface              |
-| id only from `commit`            | `Slot::commit(self)`          |
-| published slots immutable        | no re-open API exists         |
-| bundle only from committed ids   | `StateId` has no `Default`    |
-| nothing readable before publish  | unwritten control seqlock     |
-| state only from real data        | `decompose` is the only ctor  |
+|---|---|
+| writer only from a roll | ring and tree API surface |
+| id only from `commit` | `commit(self)` consumes the writer |
+| published slots immutable | no re-open API exists |
+| bundle only from committed ids | `StateId` has no `Default` |
+| shared readers cannot reach freeable collections | `StateReadView` type, `compile_fail` doctests |
+| nothing readable before publish | unwritten control seqlock |

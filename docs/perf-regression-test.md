@@ -17,9 +17,9 @@ git lfs pull                           # download fixture blobs into this checko
 
 ## Block replay
 
-Replays committed mainnet fixtures through `process_block` and fails if
-per-block / per-validator hashing time exceeds `thresholds.json`. Same path
-local and CI: `just perf-local`, driven by `sync_pm_bs_perf.rs`.
+Replays committed mainnet fixtures through the sync path (`PmBsHarness`).
+It fails if a `#[timed]` frame exceeds its ceiling in `thresholds.json`. Same
+path local and CI: `just perf-local`, driven by `sync_pm_bs_perf.rs`.
 
 ```sh
 just perf-local

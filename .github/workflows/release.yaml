@@ -70,22 +70,18 @@ jobs:
         with:
           toolchain: 1.91.0
 
-      - name: Install buf
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
-
       - name: Build
-        run: cargo build --profile release-prod --locked --bin silver --bin silver_surfer
+        run: cargo build --profile release-prod --locked --bin silver --bin silver_surfer --bin silver_telemetry
 
       - name: Package
         run: |
           mkdir dist && cd dist
-          for bin in silver silver_surfer; do
+          for bin in silver silver_surfer silver_telemetry; do
             cp ../target/release-prod/$bin $bin-linux-x86_64
             sha256sum $bin-linux-x86_64 > $bin-linux-x86_64.sha256
           done
           ./silver-linux-x86_64 --version
+          ./silver_telemetry-linux-x86_64 --help > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:
@@ -166,10 +162,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Only a new release moves `latest`; republishing an old one must not.
       - name: Publish tested image
         id: push
+        env:
+          EXISTING: ${{ needs.unreleased-version.outputs.existing }}
         run: |
           docker push "$IMAGE:$TAG"
+          if [ "$EXISTING" != true ]; then
+            docker tag "$IMAGE:$TAG" "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
           repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
           echo "digest=${repo_digest#*@}" >> "$GITHUB_OUTPUT"
 

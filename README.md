@@ -29,6 +29,8 @@ first start takes a few minutes to download a recent state.
 An EL on another machine works too: point `--execution-endpoint` at its engine
 API URL and give both the same JWT secret file.
 
+To run it under systemd, with telemetry, see [running as a service](docs/running.md).
+
 ## Check it works
 
 [Silver Surfer](crates/surfer/README.md) is a live dashboard for the node,
@@ -101,7 +103,7 @@ Flags override the config file. The common ones are:
 ## Config file
 
 Pass it with `--config <path>`. Every key is optional. Missing keys default to
-mainnet values. Unknown keys are ignored, so check spelling. A malformed config
+mainnet values. An `[engine_config]` table, if present, needs both of its keys below. Unknown keys are ignored, so check spelling. A malformed config
 stops Silver at startup.
 
 ```toml
@@ -157,8 +159,10 @@ These `[chain_config]` keys replace the network's own values:
 Release images are available as GitHub packages:
 
 ```bash
-docker pull ghcr.io/gattaca-com/silver:v0.1.0-alpha.6
+docker pull ghcr.io/gattaca-com/silver:latest
 ```
+
+`latest` follows the newest release. Pin a release tag, such as `v0.1.0-alpha.17`, to stay on one version.
 
 Images contain the same Linux amd64 `silver` and `silver_surfer` binaries attached to the corresponding release.
 Each release links to its image tag and digest. Set `LOG_STDOUT=1` and `RUST_LOG` to configure container logs.
@@ -173,8 +177,10 @@ For Kubernetes, install the [Helm chart](charts/silver/README.md):
 
 ```bash
 helm upgrade --install silver oci://ghcr.io/gattaca-com/charts/silver \
-  --version 0.1.0-alpha.6 --values silver-values.yaml
+  --devel --values silver-values.yaml
 ```
+
+Releases are pre-releases, so Helm needs `--devel` to pick the newest one. Use `--version` to pin one instead.
 
 The chart guide explains the required execution endpoint, JWT Secret, storage, and UDP networking.
 Maintainers can find package setup and release instructions in [publishing](docs/publishing.md).
