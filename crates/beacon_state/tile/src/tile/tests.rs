@@ -1482,7 +1482,8 @@ fn api_block_reaches_storage_through_control_and_beacon_state() {
         directory.path().to_str().unwrap().to_owned(),
         false,
         &[],
-    );
+    )
+    .unwrap();
     storage.open_tcaches().unwrap();
     let (mut spine, mut adapter) = spine_adapter(&tile);
     let mut storage_adapter = SpineAdapter::connect_tile(&storage, &mut *spine.spine);

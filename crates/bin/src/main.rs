@@ -354,7 +354,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         chain_config.data_dir.clone(),
         booting_from_local_checkpoint,
         &[STORAGE_CORE],
-    );
+    )?;
 
     let state_reader = beacon_state_tile.reader();
     let data_columns_tile = DataColumnsTile::new(

@@ -15,6 +15,8 @@ use tempfile::TempDir;
 
 use super::{column_path, envelope_path, slot_dir};
 
+const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
+
 fn index_records(dir: &std::path::Path) -> Vec<super::block_index::Record> {
     let mut records = Vec::new();
     super::block_index::load_dir(dir, &mut |r| records.push(r)).unwrap();
@@ -1110,7 +1112,7 @@ fn truncation_removes_whole_groups_below_the_floor() {
 
     store.write_queue.push_back(super::PendingWrite::TruncateHistory {
         payload: super::Payload::Column,
-        finalized_slot: super::COLUMN_SLOTS_RETAINED + group + 5,
+        finalized_slot: COLUMN_SLOTS_RETAINED + group + 5,
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     drain(&mut store).unwrap();
@@ -1184,8 +1186,13 @@ fn failed_coverage_write_keeps_the_live_file() {
     }
     assert!(!live.is_symlink(), "the failed staged file was not renamed in");
     assert_eq!(std::fs::read(&live).unwrap(), b"good", "the live file is untouched");
+    for _ in 0..100 {
+        store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    }
+    assert!(store.write_queue.is_empty(), "a failed write is not retried at once");
 
     std::fs::remove_file(&staged_path).unwrap();
+    store.coverage_retry_at = Some(Instant::now());
     drain(&mut store).unwrap();
     assert_ne!(std::fs::read(&live).unwrap(), b"good", "a later write replaces it");
 }
@@ -1587,7 +1594,7 @@ fn backfilled_blob_block_under_the_column_floor_owes_no_columns() {
     let mut staged = stage("below_column_floor", &block, 1);
 
     // Finality far enough above that the block is past column retention.
-    store.head.finalized_slot = slot + super::COLUMN_SLOTS_RETAINED + 32;
+    store.head.finalized_slot = slot + COLUMN_SLOTS_RETAINED + 32;
     store.head.finalized_root = root;
     store.backfill_block(staged.consumer.acquire(staged.reads[0]));
     drain(&mut store).unwrap();
@@ -1686,7 +1693,7 @@ fn truncation_waits_for_earlier_writes() {
     store.add_data_column([2; 32], 1, staged.consumer.acquire(staged.reads[0]), 1, false);
     store.write_queue.push_back(super::PendingWrite::TruncateHistory {
         payload: super::Payload::Column,
-        finalized_slot: super::COLUMN_SLOTS_RETAINED + group,
+        finalized_slot: COLUMN_SLOTS_RETAINED + group,
     });
     store.add_data_column([2; 32], 2, staged.consumer.acquire(staged.reads[1]), group, false);
 
@@ -1895,7 +1902,7 @@ fn backfill_below_retention_is_dropped() {
 
     store.write_queue.push_back(super::PendingWrite::TruncateHistory {
         payload: super::Payload::Column,
-        finalized_slot: super::COLUMN_SLOTS_RETAINED + group,
+        finalized_slot: COLUMN_SLOTS_RETAINED + group,
     });
     store.add_data_column([2; 32], 1, staged.consumer.acquire(staged.reads[0]), 1, false);
 

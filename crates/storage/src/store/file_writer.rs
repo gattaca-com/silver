@@ -115,6 +115,12 @@ impl<T> FileWriter<T> {
         self.writes.len()
     }
 
+    /// A finished write's close outlives it; its completion must still be
+    /// reaped, or the ring stays readable and the tile's wait never blocks.
+    pub(super) fn is_idle(&self) -> bool {
+        self.writes.is_empty() && self.disk.is_idle()
+    }
+
     pub(super) fn ring_fd(&mut self) -> RawFd {
         self.disk.submit();
         self.disk.as_raw_fd()
@@ -286,4 +292,47 @@ fn queued(id: Result<Option<OperationId>, Error>) -> Result<OperationId, Error> 
 
 fn file_closed() -> Error {
     Error::other("file closed")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        os::fd::AsRawFd,
+        time::{Duration, Instant},
+    };
+
+    use tempfile::TempDir;
+
+    use super::{FileWriter, WriteOp};
+
+    fn ring_readable<T>(writer: &FileWriter<T>) -> bool {
+        let mut poll_fd =
+            libc::pollfd { fd: writer.disk.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: `poll_fd` outlives the call.
+        unsafe { libc::poll(&mut poll_fd, 1, 0) > 0 }
+    }
+
+    #[test]
+    fn close_after_finish_keeps_the_writer_busy_until_reaped() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = FileWriter::new(dir.path().to_str().unwrap()).unwrap();
+        let bytes = b"block".to_vec();
+        let op = WriteOp::Create { path: dir.path().join("1.ssz"), bytes: &bytes[..] };
+        // SAFETY: `bytes` outlives the write.
+        unsafe { writer.start(op, ()) };
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while writer.next_finished().is_none() {
+            assert!(Instant::now() < deadline, "the write did not finish");
+            writer.step();
+        }
+        assert_eq!(writer.in_flight(), 0);
+        assert!(!writer.is_idle(), "its close is still in flight");
+
+        while !writer.is_idle() {
+            assert!(Instant::now() < deadline, "the close was not reaped");
+            writer.step();
+        }
+        assert!(!ring_readable(&writer), "an idle writer leaves no completion to wake on");
+    }
 }

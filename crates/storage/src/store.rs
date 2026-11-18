@@ -78,8 +78,6 @@ const PEERS_DIR: &str = "peers";
 /// same. Two, so a checkpoint fsync never holds the only one.
 const IO_WORKERS: u32 = 2;
 
-const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
-
 const ALL_PAYLOADS: [Payload; 3] = [Payload::Block, Payload::Column, Payload::Envelope];
 
 #[derive(Clone, Copy, Debug)]
@@ -111,7 +109,7 @@ impl Payload {
             Payload::Block | Payload::Envelope => {
                 spec.min_epochs_for_block_requests(epoch) * SLOTS_PER_EPOCH
             }
-            Payload::Column => COLUMN_SLOTS_RETAINED,
+            Payload::Column => spec.min_epochs_for_data_column_sidecars_requests * SLOTS_PER_EPOCH,
         }
     }
 
@@ -563,6 +561,7 @@ pub(super) struct Store {
     write_queue: WriteQueue,
     writer: FileWriter<PendingWrite>,
     coverage_bytes: Vec<u8>,
+    coverage_retry_at: Option<Instant>,
     // Group directories known to exist, so each is created once.
     known_dirs: FxHashSet<PathBuf>,
     query_queue: VecDeque<PendingQuery>,
@@ -614,6 +613,7 @@ impl Store {
             write_queue: Default::default(),
             writer,
             coverage_bytes: Vec::new(),
+            coverage_retry_at: None,
             known_dirs: FxHashSet::default(),
             query_queue: Default::default(),
             reader: FileReader::new()?,

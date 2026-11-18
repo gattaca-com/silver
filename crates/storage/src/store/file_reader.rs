@@ -48,6 +48,12 @@ impl<T> FileReader<T> {
         self.reads.len()
     }
 
+    /// A finished read's close outlives it; its completion must still be
+    /// reaped, or the ring stays readable and the tile's wait never blocks.
+    pub(super) fn is_idle(&self) -> bool {
+        self.reads.is_empty() && self.disk.is_idle()
+    }
+
     pub(super) fn ring_fd(&mut self) -> RawFd {
         self.disk.submit();
         self.disk.as_raw_fd()

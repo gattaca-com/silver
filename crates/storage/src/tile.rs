@@ -3,7 +3,7 @@ use std::os::fd::AsRawFd;
 use std::{
     collections::VecDeque,
     fs::File,
-    io::Read,
+    io::{self, Read},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -148,9 +148,8 @@ impl StorageTile {
         data_store_dir: String,
         replay_from_disk: bool,
         io_worker_cores: &'static [usize],
-    ) -> Self {
-        let store = Store::load(data_store_dir, spec.clone(), custody_group_columns)
-            .expect("failed to load storage store");
+    ) -> io::Result<Self> {
+        let store = Store::load(data_store_dir, spec.clone(), custody_group_columns)?;
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
         let replay_steps = if replay_from_disk {
             let anchor_block_slot =
@@ -165,7 +164,7 @@ impl StorageTile {
         };
         silver_log::info!("have {} replay steps", replay_steps.len());
 
-        Self {
+        Ok(Self {
             delivery_producer,
             beacon_state,
             store,
@@ -183,7 +182,7 @@ impl StorageTile {
             spine_wake: None,
             reader: TCacheReader::new(tcaches),
             persist_reader: TCacheReader::new(tcaches),
-        }
+        })
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
@@ -723,7 +722,8 @@ mod tests {
             store_dir.to_string(),
             true,
             &[],
-        );
+        )
+        .unwrap();
         tile.open_tcaches().unwrap();
         (tile, dc)
     }
@@ -834,7 +834,8 @@ mod tests {
             store_dir.path().to_str().unwrap().to_owned(),
             true,
             &[],
-        );
+        )
+        .unwrap();
         tile.open_tcaches().unwrap();
         assert_eq!(tile.replay_steps.len(), 3, "skip decided at replay, not load");
 

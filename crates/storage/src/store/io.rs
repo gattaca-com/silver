@@ -38,6 +38,9 @@ const MAX_READS_IN_FLIGHT: usize = 64;
 /// Bounds queries started or drained per call, so a burst of empty
 /// (Complete-only) requests can't extend tile time.
 const MAX_ITERATIONS_PER_LOOP: usize = 64;
+/// A failed coverage write leaves coverage changed, so without a pause it is
+/// queued again on the next turn and fails in a tight loop (e.g. disk full).
+const COVERAGE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 impl Store {
     /// Returns the first failure, after which the write is dropped.
@@ -189,13 +192,20 @@ impl Store {
     /// already down.
     fn persist_coverage(&mut self) -> bool {
         let settled = self.write_queue.is_empty() && self.writer.in_flight() == 0;
-        if !settled || !self.finalized.coverage().changed() {
+        let backing_off = self.coverage_retry_at.is_some_and(|at| Instant::now() < at);
+        if !settled || backing_off || !self.finalized.coverage().changed() {
             return false;
         }
         let mut bytes = std::mem::take(&mut self.coverage_bytes);
         let version = self.finalized.coverage().encode_for_persist(&mut bytes);
         self.write_queue.push_back(PendingWrite::Coverage { version, bytes });
         true
+    }
+
+    fn back_off_coverage_on_failure(&mut self, result: &Result<(), Error>) {
+        if result.is_err() {
+            self.coverage_retry_at = Some(Instant::now() + COVERAGE_RETRY_DELAY);
+        }
     }
 
     fn create(&mut self, path: PathBuf, ssz: &TRead) -> Result<WriteOp, Error> {
@@ -272,10 +282,12 @@ impl Store {
             // A failed write leaves the live file as it was.
             PendingWrite::Coverage { version, bytes } => {
                 self.coverage_bytes = bytes;
+                self.back_off_coverage_on_failure(&result);
                 result?;
                 self.write_queue.push_back(PendingWrite::CommitCoverage { version });
             }
             PendingWrite::CommitCoverage { version } => {
+                self.back_off_coverage_on_failure(&result);
                 result?;
                 self.finalized.coverage_persisted(version);
             }
@@ -479,13 +491,12 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
-        let (writes, mut progressed) =
-            if !self.write_queue.is_empty() || self.writer.in_flight() > 0 {
-                self.drain_pending_writes(emit)
-            } else {
-                (Ok(()), false)
-            };
-        if !self.query_queue.is_empty() || self.reader.in_flight() > 0 {
+        let (writes, mut progressed) = if !self.write_queue.is_empty() || !self.writer.is_idle() {
+            self.drain_pending_writes(emit)
+        } else {
+            (Ok(()), false)
+        };
+        if !self.query_queue.is_empty() || !self.reader.is_idle() {
             progressed |= self.serve_pending_reads(&fork_digest_at, producer, emit);
         }
 

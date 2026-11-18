@@ -8,7 +8,7 @@ use silver_common::{
 };
 
 use super::{
-    COLUMN_SLOTS_RETAINED, Head, Payload, PendingWrite, WriteQueue,
+    Head, Payload, PendingWrite, WriteQueue,
     backfill::{self, BlockFacts, Pending, VerifiedColumns},
     coverage::{self, Block, Floors},
     finalized::Finalized,
@@ -88,7 +88,9 @@ impl History {
             blocks: finalized_slot
                 .saturating_sub(Payload::Block.slots_retained(&self.spec, epoch))
                 .max(1),
-            columns: finalized_slot.saturating_sub(COLUMN_SLOTS_RETAINED).max(1),
+            columns: finalized_slot
+                .saturating_sub(Payload::Column.slots_retained(&self.spec, epoch))
+                .max(1),
             envelopes: self.spec.gloas_fork_slot(),
         }
     }
@@ -162,7 +164,7 @@ impl History {
         let epoch = finalized_slot / SLOTS_PER_EPOCH;
         let retained = match finalized.custody() {
             0 => Payload::Block.slots_retained(&self.spec, epoch),
-            _ => COLUMN_SLOTS_RETAINED,
+            _ => Payload::Column.slots_retained(&self.spec, epoch),
         };
         let floor = finalized_slot.saturating_sub(retained).max(1);
         let claim = finalized.coverage().claim(finalized_slot, floor, missing_from);
