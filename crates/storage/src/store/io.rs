@@ -470,16 +470,6 @@ impl Store {
         unsafe { libc::ppoll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, &timeout, ptr::null()) };
     }
 
-    #[cfg(test)]
-    pub(crate) fn has_pending_io(&self) -> bool {
-        !self.write_queue.is_empty() ||
-            self.writer.in_flight() > 0 ||
-            !self.query_queue.is_empty() ||
-            self.reader.in_flight() > 0 ||
-            self.checkpoint.is_some() ||
-            !self.remover.is_idle()
-    }
-
     pub(crate) fn file_io<F>(
         &mut self,
         fork_digest_at: impl Fn(u64) -> [u8; 4],

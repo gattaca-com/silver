@@ -1182,6 +1182,4 @@ fn test_spec(gloas_fork_epoch: u64) -> Arc<SpecConfig> {
 }
 
 #[cfg(test)]
-mod bench;
-#[cfg(test)]
 mod tests;
