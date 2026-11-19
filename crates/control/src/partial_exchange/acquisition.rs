@@ -19,6 +19,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_millis(250);
 const ACQUISITION_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_ATTEMPTS: u8 = 2;
 
+enum OfferOutcome {
+    Pending,
+    Withdrawn,
+    Broken,
+}
+
 #[derive(Clone, Copy)]
 struct Request {
     peer: Option<usize>,
@@ -65,11 +71,28 @@ impl Request {
         }
     }
 
-    /// The peer whose offered rows are still missing at the deadline.
-    fn broken_offer(&self, missing: u128, now: Instant) -> Option<usize> {
-        (self.offered && self.rows & missing != 0 && now >= self.deadline)
-            .then_some(self.peer)
-            .flatten()
+    /// What became of rows the peer offered and we asked it for.
+    fn offer_outcome(
+        &self,
+        missing: u128,
+        exchange: Option<&PeerColumnExchange>,
+        now: Instant,
+    ) -> OfferOutcome {
+        let rows = self.rows & missing;
+        let Some(exchange) = exchange else { return OfferOutcome::Pending };
+        if !self.offered || rows == 0 {
+            return OfferOutcome::Pending;
+        }
+        if exchange.remote.is_some_and(|remote| remote.available & rows == 0) {
+            return OfferOutcome::Withdrawn;
+        }
+        // The peer is only late once our request has been with it for the
+        // whole timeout; a frame held back by our own send budget is not.
+        let asked = exchange.advertised_requests & rows == rows;
+        match asked && now >= exchange.requests_sent_at + REQUEST_TIMEOUT {
+            true => OfferOutcome::Broken,
+            false => OfferOutcome::Pending,
+        }
     }
 
     fn can_retry(&self) -> bool {
@@ -271,27 +294,40 @@ impl Acquisition {
     }
 
     /// Before any assignment, so no column in this pass goes to a peer that
-    /// broke an offer on another.
-    fn note_broken_offers(&mut self, ingress: &CellIngress, now: Instant) {
-        for (root, block) in &self.blocks {
+    /// broke an offer on another. Such a peer is skipped for the slot, and
+    /// its attempt is not charged: liars must not spend the retries.
+    fn note_broken_offers(
+        &mut self,
+        ingress: &CellIngress,
+        exchanges: &FxHashMap<ExchangeKey, PeerColumnExchange>,
+        now: Instant,
+    ) {
+        for (root, block) in &mut self.blocks {
             if block.recovering {
                 continue;
             }
             let all = u128::MAX.checked_shr(128 - block.n_rows as u32).unwrap_or(0);
             for column in columns_of(self.columns) {
-                let request = &block.requests[column as usize];
-                if request.rows == 0 {
-                    continue;
-                }
+                let request = &mut block.requests[column as usize];
+                let Some(peer) = request.peer.filter(|_| request.rows != 0) else { continue };
+                let group = ColumnGroupKey { domain: block.domain, block_root: *root, column };
                 let available = ingress
                     .availability(root, column as usize, now)
                     .filter(|c| c.domain == block.domain && c.blob_count == block.n_rows)
                     .map_or(0, |c| c.available);
-                if let Some(peer) = request.broken_offer(all & !available, now) &&
-                    self.broken_offers.insert(peer)
-                {
-                    self.pending_penalties.push(peer);
+                let exchange = exchanges.get(&ExchangeKey { peer, group });
+                match request.offer_outcome(all & !available, exchange, now) {
+                    OfferOutcome::Pending => continue,
+                    OfferOutcome::Withdrawn => {
+                        self.broken_offers.insert(peer);
+                    }
+                    OfferOutcome::Broken => {
+                        if self.broken_offers.insert(peer) {
+                            self.pending_penalties.push(peer);
+                        }
+                    }
                 }
+                request.attempts = request.attempts.saturating_sub(1);
             }
         }
     }
@@ -309,7 +345,7 @@ impl Acquisition {
         }
         self.next_poll = now + POLL;
         self.peer_load.clear();
-        self.note_broken_offers(ingress, now);
+        self.note_broken_offers(ingress, exchanges, now);
         for (&root, block) in &mut self.blocks {
             if block.recovering {
                 continue;
@@ -359,13 +395,16 @@ impl Acquisition {
                                 Some((peer, offered))
                             })
                             .max_by_key(|(peer, offered)| {
+                                let idle = usize::MAX -
+                                    self.peer_load.get(&peer.connection).copied().unwrap_or(0);
+                                // Peers offering every missing row are
+                                // interchangeable, so columns spread over
+                                // them: one liar cannot take every column.
+                                let complete = *offered == missing;
                                 (
-                                    offered.count_ones(),
-                                    usize::MAX -
-                                        self.peer_load
-                                            .get(&peer.connection)
-                                            .copied()
-                                            .unwrap_or(0),
+                                    complete,
+                                    if complete { idle } else { offered.count_ones() as usize },
+                                    idle,
                                     peer.meshed,
                                     usize::MAX - peer.connection,
                                 )

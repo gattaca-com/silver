@@ -157,9 +157,13 @@ impl Ranges {
             served == 0 &&
             kind == DataKind::Block &&
             peers.claims_span(peer, span.0..=span.1);
-        if silent && r.silent_from.is_none_or(|first| first == peer) {
+        let confirmed = silent && r.silent_from.is_some_and(|first| first != peer);
+        // A confirming request that fails, or lands on a peer without the
+        // span, must not erase the first silence: the range would go back to
+        // the silent peer.
+        if !confirmed && served == 0 && (silent || r.silent_from.is_some()) {
             silver_log::debug!(peer, start = span.0, end = span.1, "silent range, confirming");
-            r.silent_from = Some(peer);
+            r.silent_from.get_or_insert(peer);
             r.placement = Placement::AwaitingPeer { retry_at: now };
             return None;
         }

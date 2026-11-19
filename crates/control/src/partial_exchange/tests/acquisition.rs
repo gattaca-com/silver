@@ -461,3 +461,53 @@ fn broken_offers_are_reported_once_and_excluded_for_the_slot() {
     rig.acquire();
     assert_eq!(rig.exchange.take_penalties().count(), 0, "no offer, no penalty");
 }
+
+/// Liars that do not tie: one offers every row, one a row fewer. Columns
+/// spread over the peers offering everything, and a broken offer costs no
+/// attempt, so the honest peer serves both columns without a fallback.
+#[test]
+fn unequal_liars_cannot_spend_the_retries() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.enable_requests();
+    for peer in 1..=3 {
+        rig.connect(peer, false, true);
+    }
+    for column in 0..2 {
+        rig.availability(column, 0);
+    }
+    rig.demand(3);
+    for column in 0..2 {
+        rig.offer(1, column, 15);
+        rig.offer(2, column, 7);
+        rig.offer(3, column, 15);
+    }
+    assert!(rig.acquire().is_empty());
+    let first: Vec<_> = rig.requests().into_iter().filter(|r| r.3 != 0).collect();
+    assert_eq!(first.len(), 2);
+    assert!(first.iter().any(|r| r.0 == 3), "not every column to one peer: {first:?}");
+    assert!(first.iter().all(|r| r.0 != 2), "a partial offer loses: {first:?}");
+
+    rig.now += Duration::from_millis(250);
+    assert!(rig.acquire().is_empty(), "no fallback");
+    assert_eq!(rig.exchange.take_penalties().collect::<Vec<_>>(), [1, 3]);
+    let retried: Vec<_> = rig.requests().into_iter().filter(|r| r.3 != 0).collect();
+    assert!(retried.iter().all(|r| r.0 == 2), "the last peer standing: {retried:?}");
+    assert!(!retried.is_empty(), "the attempts were not charged");
+}
+
+/// A request frame our own send budget held back never reached the peer:
+/// its timeout is not a broken offer.
+#[test]
+fn unsent_request_is_not_a_broken_offer() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.enable_requests();
+    rig.connect(1, false, true);
+    rig.availability(0, 0);
+    rig.demand(1);
+    rig.offer(1, 0, 15);
+    assert!(rig.acquire().is_empty());
+
+    rig.now += Duration::from_millis(250);
+    rig.acquire();
+    assert_eq!(rig.exchange.take_penalties().count(), 0);
+}
