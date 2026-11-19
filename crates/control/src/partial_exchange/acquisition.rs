@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
     DataColumnsEvent, GossipDomain, GossipTopic, SyncNeed,
     cell_store::{AssemblyRequest, CellStoreConfig, ColumnGroupKey},
@@ -63,6 +63,13 @@ impl Request {
             self.cancel();
             ControlCounters::PartialRequestsTimedOut.inc();
         }
+    }
+
+    /// The peer whose offered rows are still missing at the deadline.
+    fn broken_offer(&self, missing: u128, now: Instant) -> Option<usize> {
+        (self.offered && self.rows & missing != 0 && now >= self.deadline)
+            .then_some(self.peer)
+            .flatten()
     }
 
     fn can_retry(&self) -> bool {
@@ -140,6 +147,9 @@ pub(super) struct Acquisition {
     completed: FxHashMap<[u8; 32], u128>,
     changed: Vec<ExchangeKey>,
     peer_load: FxHashMap<usize, usize>,
+    /// Peers that offered rows and did not deliver them this slot.
+    broken_offers: FxHashSet<usize>,
+    pending_penalties: Vec<usize>,
     capacity: usize,
     completion_capacity: usize,
     columns: u128,
@@ -160,6 +170,13 @@ impl Acquisition {
             peer_load: FxHashMap::with_capacity_and_hasher(
                 capacity * config.columns().count_ones() as usize,
                 Default::default(),
+            ),
+            broken_offers: FxHashSet::with_capacity_and_hasher(
+                capacity * config.columns().count_ones() as usize,
+                Default::default(),
+            ),
+            pending_penalties: Vec::with_capacity(
+                capacity * config.columns().count_ones() as usize,
             ),
             capacity,
             completion_capacity: config.block_capacity(),
@@ -223,6 +240,11 @@ impl Acquisition {
         self.changed.pop()
     }
 
+    /// Each peer at most once per slot.
+    pub fn take_penalties(&mut self) -> impl Iterator<Item = usize> + '_ {
+        self.pending_penalties.drain(..)
+    }
+
     pub fn requests(&self, key: ExchangeKey) -> u128 {
         self.blocks
             .get(&key.group.block_root)
@@ -242,8 +264,35 @@ impl Acquisition {
             self.blocks.clear();
             self.completed.clear();
             self.changed.clear();
+            self.broken_offers.clear();
             self.slot = slot;
             self.next_poll = now;
+        }
+    }
+
+    /// Before any assignment, so no column in this pass goes to a peer that
+    /// broke an offer on another.
+    fn note_broken_offers(&mut self, ingress: &CellIngress, now: Instant) {
+        for (root, block) in &self.blocks {
+            if block.recovering {
+                continue;
+            }
+            let all = u128::MAX.checked_shr(128 - block.n_rows as u32).unwrap_or(0);
+            for column in columns_of(self.columns) {
+                let request = &block.requests[column as usize];
+                if request.rows == 0 {
+                    continue;
+                }
+                let available = ingress
+                    .availability(root, column as usize, now)
+                    .filter(|c| c.domain == block.domain && c.blob_count == block.n_rows)
+                    .map_or(0, |c| c.available);
+                if let Some(peer) = request.broken_offer(all & !available, now) &&
+                    self.broken_offers.insert(peer)
+                {
+                    self.pending_penalties.push(peer);
+                }
+            }
         }
     }
 
@@ -260,6 +309,7 @@ impl Acquisition {
         }
         self.next_poll = now + POLL;
         self.peer_load.clear();
+        self.note_broken_offers(ingress, now);
         for (&root, block) in &mut self.blocks {
             if block.recovering {
                 continue;
@@ -291,7 +341,10 @@ impl Acquisition {
                                 GossipTopic::DataColumnSidecar(column),
                                 group.domain.digest(),
                             )
-                            .filter(|peer| request.peer != Some(peer.connection))
+                            .filter(|peer| {
+                                request.peer != Some(peer.connection) &&
+                                    !self.broken_offers.contains(&peer.connection)
+                            })
                             .filter_map(|peer| {
                                 let exchange =
                                     exchanges.get(&ExchangeKey { peer: peer.connection, group });

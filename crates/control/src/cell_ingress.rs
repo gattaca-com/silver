@@ -16,7 +16,7 @@ use silver_peer::PeerManager;
 use crate::cell_allocator::CellAllocator;
 
 mod partial;
-use partial::PartialBudget;
+use partial::{PartialBudget, ProvisionalClaims};
 
 pub(super) fn handle_data_column_event<F>(
     event: DataColumnsEvent,
@@ -75,6 +75,7 @@ pub struct CellIngress {
     capacity: usize,
     min_slot: u64,
     partial_budget: PartialBudget,
+    provisional_claims: ProvisionalClaims,
 }
 
 impl CellIngress {
@@ -90,12 +91,14 @@ impl CellIngress {
     ) -> Result<Self, StoreError> {
         let capacity = config.column_capacity();
         let partial_budget = PartialBudget::new(&config);
+        let provisional_claims = ProvisionalClaims::new(&config);
         Ok(Self {
             allocator: CellAllocator::new(config, producer, slot, slot_start)?,
             available: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             capacity,
             min_slot: 0,
             partial_budget,
+            provisional_claims,
         })
     }
 
@@ -111,6 +114,7 @@ impl CellIngress {
         }
         if expired {
             self.partial_budget.clear();
+            self.provisional_claims.clear();
         }
     }
 
@@ -123,10 +127,14 @@ impl CellIngress {
         self.spin(now, producers);
         match event {
             CellStoreEvent::RejectedContext { block_root } => {
+                self.provisional_claims.forget(&block_root);
                 self.allocator.reject(&block_root);
                 self.available.retain(|(root, _), _| *root != block_root);
             }
             CellStoreEvent::Allocate(request) => {
+                if let Some(verdict) = self.provisional_claims.contradicted(&request.context) {
+                    producers.produce(verdict);
+                }
                 let set = match self.allocator.allocate(request) {
                     Ok(set) => Some(set),
                     Err(e) => {

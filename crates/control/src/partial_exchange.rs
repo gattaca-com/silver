@@ -40,6 +40,10 @@ pub(crate) struct PartialExchange {
     ready: VecDeque<ExchangeKey>,
     capacity: usize,
     peer_capacity: usize,
+    /// Exchanges for roots without a trusted context. Metadata often precedes
+    /// the block, so they are admitted, but only into half the map.
+    untrusted: usize,
+    trusted_roots: Vec<[u8; 32]>,
     max_rows: usize,
     columns: u128,
     slot: u64,
@@ -63,6 +67,8 @@ impl PartialExchange {
             ready: VecDeque::with_capacity(capacity),
             capacity,
             peer_capacity,
+            untrusted: 0,
+            trusted_roots: Vec::with_capacity(config.live_blocks()),
             max_rows: config.max_blobs(),
             columns: config.columns(),
             slot,
@@ -72,6 +78,7 @@ impl PartialExchange {
     }
 
     pub fn context(&mut self, request: AssemblyRequest, expires: Instant, now: Instant) {
+        self.trust(request.context.block_root);
         if let Some(acquisition) = &mut self.acquisition {
             acquisition.context(request, expires, now);
         }
@@ -104,6 +111,10 @@ impl PartialExchange {
         }
     }
 
+    pub fn take_penalties(&mut self) -> impl Iterator<Item = usize> + '_ {
+        self.acquisition.iter_mut().flat_map(Acquisition::take_penalties)
+    }
+
     fn admit(
         &mut self,
         key: ExchangeKey,
@@ -112,7 +123,9 @@ impl PartialExchange {
         expires: Instant,
         now: Instant,
     ) -> Option<&mut PeerColumnExchange> {
-        let full = self.exchanges.len() >= self.capacity;
+        let trusted = self.trusted_roots.contains(&key.group.block_root);
+        let full = self.exchanges.len() >= self.capacity ||
+            (!trusted && self.untrusted >= self.capacity / 2);
         match self.exchanges.entry(key) {
             Entry::Occupied(entry) => Some(entry.into_mut()),
             Entry::Vacant(entry) => {
@@ -124,8 +137,22 @@ impl PartialExchange {
                     ControlCounters::PartialStateLimited.inc();
                     return None;
                 }
-                self.peer_exchanges.entry(key.peer).or_default().columns += 1;
-                Some(entry.insert(PeerColumnExchange::new(slot, rows, expires, now)))
+                self.peer_exchanges.entry(key.peer).or_default().add(key.group.column);
+                self.untrusted += usize::from(!trusted);
+                Some(entry.insert(PeerColumnExchange::new(slot, rows, expires, now, trusted)))
+            }
+        }
+    }
+
+    fn trust(&mut self, root: [u8; 32]) {
+        if self.trusted_roots.contains(&root) {
+            return;
+        }
+        self.trusted_roots.push(root);
+        for (key, exchange) in &mut self.exchanges {
+            if key.group.block_root == root && !exchange.trusted {
+                exchange.trusted = true;
+                self.untrusted -= 1;
             }
         }
     }
@@ -270,11 +297,17 @@ impl PartialExchange {
                 digest,
             } |
             PeerEvent::P2pGossipPartialCaps { p2p_peer, subnet: column, digest, .. } => {
-                self.remove_where(|key| {
-                    key.peer == p2p_peer &&
-                        key.group.column == column &&
-                        key.group.domain.digest() == digest
-                });
+                // Subscription entries are cheap to send in bulk: scan only for
+                // a column this peer holds exchanges in.
+                if self.peer_exchanges.get(&p2p_peer).is_some_and(|peer| {
+                    peer.per_column.get(column as usize).is_some_and(|&n| n != 0)
+                }) {
+                    self.remove_where(|key| {
+                        key.peer == p2p_peer &&
+                            key.group.column == column &&
+                            key.group.domain.digest() == digest
+                    });
+                }
             }
             PeerEvent::P2pStreamClosed { stream_id } if stream_id.protocol().is_gossip() => {
                 self.retry_peer(stream_id.peer(), now);
@@ -305,17 +338,18 @@ impl PartialExchange {
     }
 
     fn remove_where(&mut self, mut predicate: impl FnMut(&ExchangeKey) -> bool) {
-        self.exchanges.retain(|key, _| {
+        self.exchanges.retain(|key, exchange| {
             if !predicate(key) {
                 return true;
             }
             // Keep the spent per-peer budget until the next heartbeat, even
             // when unsubscribing removes the peer's last column exchange.
             if let Some(peer) = self.peer_exchanges.get_mut(&key.peer) {
-                peer.columns = peer.columns.saturating_sub(1);
+                peer.remove(key.group.column);
             } else {
                 silver_log::error!(?key, "partial exchange has no peer budget during removal");
             }
+            self.untrusted -= usize::from(!exchange.trusted);
             self.headers.forget_sent(key.peer, key.group);
             false
         });
@@ -549,8 +583,10 @@ impl PartialExchange {
             }
         }
         self.exchanges.clear();
+        self.untrusted = 0;
+        self.trusted_roots.clear();
         for peer in self.peer_exchanges.values_mut() {
-            peer.columns = 0;
+            peer.clear_columns();
             peer.reset_sends();
         }
         self.headers.clear();

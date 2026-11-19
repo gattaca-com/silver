@@ -20,10 +20,11 @@ pub(super) struct PeerColumnExchange {
     pub slot: u64,
     pub n_rows: usize,
     pub frames_sent: u8,
+    pub trusted: bool,
 }
 
 impl PeerColumnExchange {
-    pub fn new(slot: u64, n_rows: usize, expires: Instant, now: Instant) -> Self {
+    pub fn new(slot: u64, n_rows: usize, expires: Instant, now: Instant, trusted: bool) -> Self {
         Self {
             remote: None,
             remote_slot: None,
@@ -36,6 +37,7 @@ impl PeerColumnExchange {
             slot,
             n_rows,
             frames_sent: 0,
+            trusted,
         }
     }
 
@@ -66,7 +68,7 @@ mod tests {
 
     fn exchange() -> PeerColumnExchange {
         let now = Instant::now();
-        PeerColumnExchange::new(0, 128, now, now)
+        PeerColumnExchange::new(0, 128, now, now, true)
     }
 
     fn metadata(available: u128, requests: u128) -> PartsMetadata {

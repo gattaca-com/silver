@@ -1,4 +1,5 @@
 use silver_common::{
+    PeerEvent,
     cell_store::{AssemblyRequest, ColumnGroupKey, HeaderValidationRequest},
     ssz_view::partial_column::{bitlist_bytes, write_bitlist_u128},
 };
@@ -258,4 +259,25 @@ fn closed_optimistic_column_is_replaced_before_promotion() {
             .unwrap()
             .all(|reference| reference.read().seq() > pending.data.reservation().read().seq())
     );
+}
+
+#[test]
+fn trusted_context_convicts_only_a_contradicted_first_contact() {
+    for format in [ForkName::Fulu, ForkName::Gloas] {
+        for lied in [true, false] {
+            let mut rig = Rig::new(format);
+            rig.adapters[2].consume(|_: PeerEvent, _| {});
+            let count = if lied { 1 } else { 2 };
+            assert_eq!(rig.partial(count, 1, None, 1).0.len(), 1);
+            rig.admit();
+            let mut verdicts = Vec::new();
+            rig.adapters[2].consume(|event: PeerEvent, _| {
+                if let PeerEvent::ColumnVerdict { p2p_peer, accepted, .. } = event {
+                    verdicts.push((p2p_peer, accepted));
+                }
+            });
+            let expected: &[(usize, bool)] = if lied { &[(1, false)] } else { &[] };
+            assert_eq!(verdicts, expected, "{format:?}, lied: {lied}");
+        }
+    }
 }

@@ -421,3 +421,43 @@ fn live_fulu_to_gloas_cutover_uses_new_context_group_and_requests_without_a_head
     assert!(rig.acquire().is_empty());
     assert!(rig.spin().is_empty());
 }
+
+/// A peer that offers rows and never sends them is reported once and skipped
+/// for the rest of the slot, so a second liar cannot spend the last attempt.
+#[test]
+fn broken_offers_are_reported_once_and_excluded_for_the_slot() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.enable_requests();
+    for peer in 1..=3 {
+        rig.connect(peer, false, true);
+    }
+    for column in 0..2 {
+        rig.availability(column, 0);
+    }
+    rig.demand(3);
+    for peer in 1..=2 {
+        for column in 0..2 {
+            rig.offer(peer, column, 15);
+        }
+    }
+    assert!(rig.acquire().is_empty());
+    let liars: Vec<_> = rig.requests().iter().filter(|r| r.3 != 0).map(|r| r.0).collect();
+    assert!(liars.iter().all(|&peer| peer != 3), "offers win: {liars:?}");
+
+    rig.now += Duration::from_millis(250);
+    assert!(rig.acquire().is_empty());
+    let mut penalised: Vec<_> = rig.exchange.take_penalties().collect();
+    penalised.sort_unstable();
+    penalised.dedup();
+    let mut expected = liars.clone();
+    expected.sort_unstable();
+    expected.dedup();
+    assert_eq!(penalised, expected);
+    let retried: Vec<_> = rig.requests().into_iter().filter(|r| r.3 != 0).collect();
+    assert!(!retried.is_empty());
+    assert!(retried.iter().all(|r| r.0 == 3), "liars are skipped: {retried:?}");
+
+    rig.now += Duration::from_millis(250);
+    rig.acquire();
+    assert_eq!(rig.exchange.take_penalties().count(), 0, "no offer, no penalty");
+}

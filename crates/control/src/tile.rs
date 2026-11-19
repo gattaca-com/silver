@@ -905,6 +905,9 @@ impl Tile<SilverSpine> for Controller {
             ) {
                 adapter.mark_work();
             }
+            for peer in exchange.take_penalties() {
+                self.peer_manager.on_broken_partial_offer(peer);
+            }
         }
     }
 

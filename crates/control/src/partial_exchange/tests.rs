@@ -741,3 +741,72 @@ fn subscription_changes_and_slot_expiry_cannot_reset_the_heartbeat_budget() {
     assert_eq!(rig.exchange.exchanges[&key].retry_at, rig.now);
     assert!(rig.exchange.ready.is_empty());
 }
+
+/// Metadata for roots without a trusted context fills at most half the map. A
+/// trusted root still gets exchanges once it is full.
+#[test]
+fn untrusted_roots_cannot_crowd_out_trusted_exchanges() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    let (half, per_peer) = (rig.exchange.capacity / 2, rig.exchange.peer_capacity);
+    let flooders = half.div_ceil(per_peer) + 1;
+    for peer in 1..=flooders + 1 {
+        rig.connect(peer, true, false);
+    }
+    let mut invented = 0u64;
+    for peer in 1..=flooders {
+        for _ in 0..per_peer {
+            let mut message = rig.message(peer, 0, 1);
+            message.group.block_root[..8].copy_from_slice(&invented.to_le_bytes());
+            message.group.block_root[31] = 0xff;
+            invented += 1;
+            rig.exchange.metadata(message, &rig.ingress, &rig.peers, rig.now);
+        }
+    }
+    assert_eq!(rig.exchange.untrusted, half);
+    assert_eq!(rig.exchange.exchanges.len(), half);
+
+    let honest = flooders + 1;
+    rig.request(honest, 0, 1);
+    let key = ExchangeKey { peer: honest, group: rig.message(honest, 0, 1).group };
+    assert!(!rig.exchange.exchanges.contains_key(&key), "untrusted, and the share is full");
+
+    rig.exchange.context(rig.request, rig.ingress.slot_window().1, rig.now);
+    rig.request(honest, 0, 1);
+    assert!(rig.exchange.exchanges[&key].trusted, "a trusted root is still admitted");
+}
+
+/// Metadata usually precedes the block: the trusted context promotes it out of
+/// the untrusted share.
+#[test]
+fn trusted_context_promotes_early_metadata() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.connect(1, true, false);
+    rig.request(1, 0, 1);
+    assert_eq!(rig.exchange.untrusted, 1);
+
+    rig.exchange.context(rig.request, rig.ingress.slot_window().1, rig.now);
+    assert_eq!(rig.exchange.untrusted, 0);
+    let key = ExchangeKey { peer: 1, group: rig.message(1, 0, 1).group };
+    assert!(rig.exchange.exchanges[&key].trusted);
+}
+
+#[test]
+fn unsubscribe_removes_only_the_columns_a_peer_holds() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.connect(1, true, false);
+    rig.request(1, 0, 1);
+    let key = ExchangeKey { peer: 1, group: rig.message(1, 0, 1).group };
+    let unsubscribe = |column| PeerEvent::P2pGossipTopicUnsubscribe {
+        p2p_peer: 1,
+        topic: GossipTopic::DataColumnSidecar(column),
+        digest: [0; 4],
+    };
+
+    rig.exchange.peer_event(&unsubscribe(1), rig.now);
+    assert!(rig.exchange.exchanges.contains_key(&key));
+
+    rig.exchange.peer_event(&unsubscribe(0), rig.now);
+    assert!(rig.exchange.exchanges.is_empty());
+    assert_eq!(rig.exchange.peer_exchanges[&1].per_column[0], 0);
+    assert_eq!(rig.exchange.untrusted, 0);
+}
