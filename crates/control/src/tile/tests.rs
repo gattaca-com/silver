@@ -4,9 +4,9 @@ use silver_chain_spec::SpecConfig;
 use silver_common::{
     BeaconApiResponse, BroadcastValidation, ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut,
     GossipTraffic, GossipTrafficBytes, HeadChange, IpBytes, Keypair, LOCAL_GOSSIP_STREAM_ID,
-    MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, SszCache,
-    StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable,
-    TProducer, TReadMode,
+    MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, RpcOffence,
+    RpcSeverity, SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheTable, TProducer, TReadMode,
     ssz_view::{PAYLOAD_ATTESTATION_MESSAGE_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE},
     test_util::{ShmemDir, empty_signed_envelope},
 };
@@ -96,6 +96,7 @@ impl GossipPublications {
                 TCache::producer(TCacheId::ControlProcessing, 1 << 16),
                 protobuf,
                 Some(test_domain()),
+                Duration::from_secs(12),
             )
             .unwrap(),
             TCache::producer(TCacheId::ControlRpc, 1 << 16),
@@ -549,6 +550,7 @@ fn assert_column_publication(origin: ColumnOrigin) {
         decoded,
         protobuf,
         Some(test_domain()),
+        Duration::from_secs(12),
     )
     .unwrap();
     receiver.open_tcaches().unwrap();
@@ -654,4 +656,49 @@ fn local_execution_envelope_is_copied_into_gossip_and_waits_for_validation() {
         }
     });
     assert!(completed);
+}
+
+#[test]
+fn publish_spam_is_dropped_and_reported_once() {
+    let mut capture = GossipPublications::new(GossipTopic::BeaconAttestation(0), &[]);
+    let mut incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
+    let decoded = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
+    let protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 16);
+    let mut receiver = GossipHandler::new(
+        TCacheTable::from_iter([incoming.cache_ref(), protobuf.cache_ref()]),
+        decoded,
+        protobuf,
+        Some(test_domain()),
+        Duration::from_secs(12),
+    )
+    .unwrap();
+    receiver.open_tcaches().unwrap();
+    let mut receiver_adapter = SpineAdapter::connect_tile(&Observer, &mut capture._spine);
+    receiver.spin(&mut receiver_adapter, None);
+
+    // Empty publish entries: one field each, so a frame stays in the field
+    // budget. Four frames fit a slot's 64 Ki entries; the fifth does not.
+    let stream = P2pStreamId::new(2, 0, StreamProtocol::GossipSub, true);
+    let mut packet = stream.as_ref().to_vec();
+    packet.extend_from_slice(&[0x12, 0x00].repeat(16_000));
+    let mut spam = Vec::new();
+    for _ in 0..6 {
+        let tcache = write_bytes(&mut incoming, &packet);
+        capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
+        receiver.spin(&mut receiver_adapter, None);
+        let mut reported = 0;
+        while let Some(event) = receiver.pop_event() {
+            if let GossipHandlerEvent::PeerEvent(PeerEvent::RpcMisbehaviour {
+                p2p_peer,
+                severity: RpcSeverity::Fatal,
+                offence: RpcOffence::GossipPublishSpam,
+            }) = event
+            {
+                assert_eq!(p2p_peer, 2);
+                reported += 1;
+            }
+        }
+        spam.push(reported);
+    }
+    assert_eq!(spam, [0, 0, 0, 0, 1, 0], "reported once, when the budget runs out");
 }

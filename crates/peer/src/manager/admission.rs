@@ -1893,6 +1893,28 @@ mod tests {
     }
 
     #[test]
+    fn gossip_spam_bans_the_peer() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        cap.0.clear();
+
+        mgr.handle_event(
+            PeerEvent::RpcMisbehaviour {
+                p2p_peer: 1,
+                severity: silver_common::RpcSeverity::Fatal,
+                offence: silver_common::RpcOffence::GossipPublishSpam,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
+        assert!(cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })), "got {:?}", cap.0);
+        assert!(mgr.score(1).is_none(), "banned peer should be gone");
+    }
+
+    #[test]
     fn rpc_low_tolerance_penalises_but_keeps_peer() {
         let now = Instant::now();
         // Defaults: graylist_threshold = -80, Low delta = -10.

@@ -181,6 +181,7 @@ impl PmBsHarness {
             TCache::producer(TCacheId::ControlProcessing, 32),
             dummy_protobuf,
             None,
+            Duration::from_secs(12),
         )
         .unwrap();
         let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 12);

@@ -10,6 +10,7 @@ mod handler;
 mod mcache;
 mod message;
 mod partial;
+mod publish_budget;
 
 pub use control::{
     copy_grafts_to_protobuf_output, copy_prunes_to_protobuf_output,
