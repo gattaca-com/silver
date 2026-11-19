@@ -1,0 +1,97 @@
+name: spec-tests
+
+# Builds the mainnet EF vectors silver reads (fulu, gloas) at an exact
+# ethereum/consensus-specs commit. They are published as release
+# `spec-tests-<commit>`, in the layout of an upstream release tarball, for the
+# beacon_state Makefile to download when pinned to that commit.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Full ethereum/consensus-specs commit hash"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: true
+      matrix:
+        fork: [fulu, gloas]
+
+    steps:
+      - name: Check commit hash
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::expected a full 40-character commit hash, got '$COMMIT'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ethereum/consensus-specs
+          ref: ${{ inputs.commit }}
+          path: consensus-specs
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: consensus-specs/pyproject.toml
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Generate ${{ matrix.fork }} vectors
+        working-directory: consensus-specs
+        run: make test preset=mainnet fork=${{ matrix.fork }} reftests=true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: reftests-${{ matrix.fork }}
+          path: consensus-specs/reftests/mainnet
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: generate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: spec-tests-${{ inputs.commit }}
+
+    steps:
+      - name: Refuse to replace an existing pin
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::release $TAG already exists"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: reftests-*
+          path: tests/mainnet
+          merge-multiple: true
+
+      # Upstream's release flags: entry order, owners and times do not vary.
+      - name: Archive
+        run: |
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' --format=gnu \
+            --use-compress-program='gzip --no-name' --create --file=mainnet.tar.gz tests/mainnet
+
+      - name: Publish
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          gh release create "$TAG" mainnet.tar.gz --prerelease --latest=false \
+            --title "EF spec tests at consensus-specs ${COMMIT:0:12}" \
+            --notes "Mainnet fulu and gloas vectors generated from https://github.com/ethereum/consensus-specs/commit/$COMMIT"
