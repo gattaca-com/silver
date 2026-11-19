@@ -176,6 +176,7 @@ impl PeerManager {
                 });
             }
             if work.reset_heartbeat {
+                peer.ihave_frames_received = 0;
                 peer.ihaves_received = 0;
                 peer.iwant_ids_sent = 0;
                 peer.iwant_ids_served = 0;

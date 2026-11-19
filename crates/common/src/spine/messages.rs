@@ -744,15 +744,6 @@ pub enum PeerEvent {
         p2p_peer: usize,
         hash: MessageId,
     },
-    P2pGossipHave {
-        p2p_peer: usize,
-        topic: GossipTopic,
-        hash: MessageId,
-        /// `true` if we already have this message in our dedup/mcache
-        /// (no IWANT will be sent; counts toward IHAVE rate limits only).
-        /// `false` if the id is new-to-us — an IWANT is implied.
-        already_seen: bool,
-    },
     GossipDuplicate {
         p2p_peer: usize,
         topic: GossipTopic,

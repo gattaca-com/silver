@@ -65,8 +65,9 @@ pub(crate) struct PeerState {
     pub behaviour_penalty: f64, // P7, quadratic over threshold
 
     // Per-heartbeat rate-limit counters; reset every `heartbeat_interval`.
-    pub ihaves_received: u16, // caps IWANT issuance via max_ihave_length
-    pub iwant_ids_sent: u16,  // caps the per-heartbeat IWANT budget
+    pub ihave_frames_received: u16, // caps IWANT issuance via max_ihave_messages
+    pub ihaves_received: u16,       // caps IWANT issuance via max_ihave_length
+    pub iwant_ids_sent: u16,        // caps the per-heartbeat IWANT budget
     // `msg_cache` slots are shared, so serve counts can be evicted; these
     // bound re-serving after an eviction.
     pub iwant_ids_served: u16,
@@ -126,6 +127,7 @@ impl Default for PeerState {
             msg_cache: CountingWitherFilter::default(),
             application_score: 0.0,
             behaviour_penalty: 0.0,
+            ihave_frames_received: 0,
             ihaves_received: 0,
             iwant_ids_sent: 0,
             iwant_ids_served: 0,
@@ -168,6 +170,7 @@ impl PeerState {
         self.topic_stats.clear();
         self.application_score = 0.0;
         self.behaviour_penalty = 0.0;
+        self.ihave_frames_received = 0;
         self.ihaves_received = 0;
         self.iwant_ids_sent = 0;
         self.iwant_ids_served = 0;

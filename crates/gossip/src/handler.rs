@@ -431,21 +431,26 @@ impl GossipHandler {
         }
     }
 
+    /// `on_ihave` gets each IHAVE frame's id count and unseen ids, and keeps
+    /// the ones to IWANT.
     pub fn spin(
         &mut self,
         adapter: &mut SpineAdapter<SilverSpine>,
         data_columns: Option<&mut TProducer>,
+        on_ihave: &mut impl FnMut(usize, usize, &mut Vec<MessageId>),
     ) -> bool {
-        self.spin_columns(adapter, data_columns)
+        self.spin_columns(adapter, data_columns, on_ihave)
     }
 
     pub fn spin_columns<I: ColumnIngress>(
         &mut self,
         adapter: &mut SpineAdapter<SilverSpine>,
         data_columns: Option<&mut I>,
+        on_ihave: &mut impl FnMut(usize, usize, &mut Vec<MessageId>),
     ) -> bool {
         let mut events = std::mem::take(&mut self.events);
-        let did_work = self.spin_inner(adapter, data_columns, &mut |e| events.push_back(e));
+        let did_work =
+            self.spin_inner(adapter, data_columns, &mut |e| events.push_back(e), on_ihave);
         self.events = events;
         did_work
     }
@@ -455,6 +460,7 @@ impl GossipHandler {
         adapter: &mut SpineAdapter<SilverSpine>,
         mut data_columns: Option<&mut I>,
         emit: &mut impl FnMut(GossipHandlerEvent),
+        on_ihave: &mut impl FnMut(usize, usize, &mut Vec<MessageId>),
     ) -> bool {
         let mut did_work = false;
         let now = Instant::now();
@@ -559,6 +565,7 @@ impl GossipHandler {
                         &self.dedup_cache,
                         &mut self.mcache_publish,
                         emit,
+                        on_ihave,
                         &mut self.iwant_buffer,
                     );
                 }

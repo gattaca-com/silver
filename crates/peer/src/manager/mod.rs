@@ -451,9 +451,6 @@ impl PeerManager {
             PeerEvent::P2pGossipTopicPrune { p2p_peer, topic, digest, backoff_seconds } => {
                 self.on_remote_prune(p2p_peer, topic, digest, now, backoff_seconds, emit);
             }
-            PeerEvent::P2pGossipHave { p2p_peer, topic: _, hash, already_seen } => {
-                self.on_ihave(p2p_peer, hash, already_seen, now);
-            }
             PeerEvent::GossipDuplicate { p2p_peer, topic, hash, recv_ts } => {
                 self.on_gossip_duplicate(p2p_peer, topic, hash, recv_ts);
             }
