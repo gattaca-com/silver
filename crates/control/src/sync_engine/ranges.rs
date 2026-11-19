@@ -4,6 +4,7 @@ use silver_common::{DataKind, Origin, RequestId, Scope, SyncRequest};
 
 use super::{
     ControlCounters, Placement, SyncAction,
+    peers::PeerView,
     sync_window::{Needs, Slot, SyncWindow},
 };
 
@@ -23,7 +24,13 @@ impl Range {
         (self.start..=self.end()).contains(&slot)
     }
 
-    fn action(self, kind: DataKind, origin: Origin, columns: u128) -> SyncAction {
+    fn action(
+        self,
+        kind: DataKind,
+        origin: Origin,
+        columns: u128,
+        exclude: Option<usize>,
+    ) -> SyncAction {
         SyncAction::Request {
             request_id: self.request_id,
             request: SyncRequest {
@@ -32,6 +39,7 @@ impl Range {
                 scope: Scope::Range { start: self.start, count: self.count },
                 columns,
             },
+            exclude,
         }
     }
 }
@@ -42,6 +50,7 @@ struct Inflight {
     placement: Placement,
     served: u32,
     reported: u32,
+    silent_from: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,13 +84,6 @@ enum RangeState {
     Idle,
     WithPeers(Inflight),
     Settling(Settling),
-}
-
-pub(super) struct Delivered {
-    pub(super) kind: DataKind,
-    pub(super) span: (Slot, Slot),
-    /// Zero means the peer ended the range having served nothing.
-    pub(super) served: u32,
 }
 
 pub(super) struct Ranges {
@@ -137,16 +139,31 @@ impl Ranges {
         }
     }
 
-    /// Returns what the peer delivered, so emptiness can be read from a span it
-    /// answered with silence.
+    /// Returns a block span that two peers holding it answered with silence.
+    /// One peer's silence is not believed: it re-offers the range to any
+    /// other peer.
     pub(super) fn on_terminator(
         &mut self,
+        peers: &PeerView,
         request_id: u64,
+        peer: usize,
         delivered: bool,
         now: Instant,
-    ) -> Option<Delivered> {
+    ) -> Option<(Slot, Slot)> {
         let (kind, r) = self.inflight_of(request_id)?;
         let (range, served, reported) = (r.range, r.served, r.reported);
+        let span = (range.start, range.end());
+        let silent = delivered &&
+            served == 0 &&
+            kind == DataKind::Block &&
+            peers.claims_span(peer, span.0..=span.1);
+        if silent && r.silent_from.is_none_or(|first| first == peer) {
+            silver_log::debug!(peer, start = span.0, end = span.1, "silent range, confirming");
+            r.silent_from = Some(peer);
+            r.placement = Placement::AwaitingPeer { retry_at: now };
+            return None;
+        }
+
         // Silence leaves nothing in anyone's hands to wait for, so the span is
         // free to be offered to another peer at once.
         self.ranges[kind.index()] = match delivered && served > 0 {
@@ -159,7 +176,7 @@ impl Ranges {
             }),
             false => RangeState::Idle,
         };
-        delivered.then(|| Delivered { kind, span: (range.start, range.end()), served })
+        silent.then_some(span)
     }
 
     pub(super) fn reoffer_unplaced(
@@ -172,7 +189,7 @@ impl Ranges {
             if !r.placement.needs_reoffer(now) {
                 continue;
             }
-            let placed = emit(r.range.action(kind, self.origin, self.columns));
+            let placed = emit(r.range.action(kind, self.origin, self.columns, r.silent_from));
             r.placement = Placement::after_emit(placed, now);
             self.ranges[kind.index()] = RangeState::WithPeers(r);
         }
@@ -231,7 +248,7 @@ impl Ranges {
             let range = Range { request_id, start, count };
 
             silver_log::debug!(?kind, start, count, origin = ?self.origin, "range request");
-            let placed = emit(range.action(kind, self.origin, self.columns));
+            let placed = emit(range.action(kind, self.origin, self.columns, None));
             if placed {
                 ControlCounters::RangesIssued.inc();
             } else {
@@ -242,6 +259,7 @@ impl Ranges {
                 placement: Placement::after_emit(placed, now),
                 served: 0,
                 reported: 0,
+                silent_from: None,
             });
         }
     }

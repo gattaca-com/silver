@@ -33,6 +33,9 @@ fn head_lag() -> u64 {
 
 const PEER: usize = 1;
 
+/// A second peer holding the span, to confirm `PEER`'s silence.
+const WITNESS: usize = 9;
+
 fn tail(e: &SyncEngine) -> u64 {
     e.window.tail()
 }
@@ -115,6 +118,13 @@ fn served(e: &mut SyncEngine, rid: u64, slot: u64, parent_slot: Option<u64>) {
     covered(e, slot, parent_slot);
 }
 
+/// `PEER`, then `WITNESS`, answer range `rid` with silence.
+fn silent(e: &mut SyncEngine, rid: u64, peer_head: u64, now: Instant) {
+    e.on_terminator(rid, PEER, true, now);
+    peer_status(e, WITNESS, HEAD_ROOT, peer_head);
+    e.on_terminator(rid, WITNESS, true, now);
+}
+
 /// Re-select, discarding the target. Tests that care about what was
 /// published read `SyncEngine::advance`'s return directly.
 fn advance(e: &mut SyncEngine) {
@@ -136,7 +146,7 @@ fn ranges(actions: &[SyncAction], kind: DataKind) -> Vec<(u64, u64, u64)> {
     actions
         .iter()
         .filter_map(|a| match a {
-            SyncAction::Request { request_id, request }
+            SyncAction::Request { request_id, request, .. }
                 if request.kind == kind && matches!(request.scope, Scope::Range { .. }) =>
             {
                 let Scope::Range { start, count } = request.scope else { unreachable!() };
@@ -499,8 +509,8 @@ fn terminator_marks_unfilled_slots_empty() {
     // One batch size for both targets — no separate head-sync batch.
     assert_eq!((start, count), (1, BATCH));
 
-    // Peer served nothing across the whole range and completed cleanly.
-    e.on_terminator(rid, PEER, true, now);
+    // Two peers served nothing across the whole range and completed cleanly.
+    silent(&mut e, rid, 200, now);
     drive(&mut e, now);
     assert_eq!(tail(&e), BATCH, "a clean Complete is positive emptiness evidence");
 }
@@ -609,9 +619,9 @@ fn block_in_hand_disproves_an_assumed_empty_slot() {
     let mut e = engine();
     let (rid, ..) = issue_one(&mut e, 200, 0, now);
 
-    // The peer holds the span and served nothing, so the batch reads as
+    // Two peers hold the span and served nothing, so the batch reads as
     // empty — while beacon state is holding a block for slot 3.
-    e.on_terminator(rid, PEER, true, now);
+    silent(&mut e, rid, 200, now);
     parked_at(&mut e, 3, Some(2));
 
     drive(&mut e, now);
@@ -717,8 +727,8 @@ fn peer_that_does_not_claim_the_range_proves_nothing_by_silence() {
     let (rid, ..) = drive(&mut e, now).expect("range re-asked, not written off");
     assert_eq!(tail(&e), 0, "silence from a peer without the range is not emptiness");
 
-    // The peer that does claim it says the same thing, and is believed.
-    e.on_terminator(rid, PEER, true, now);
+    // Peers that do claim it say the same thing, and are believed.
+    silent(&mut e, rid, 200, now);
     drive(&mut e, now);
     assert_eq!(tail(&e), count, "a peer holding the range proves it empty");
 }
@@ -742,9 +752,51 @@ fn peer_that_pruned_the_range_proves_nothing_by_silence() {
     let (rid, ..) = drive(&mut e, now).expect("range re-asked, not written off");
     assert_eq!(tail(&e), 0, "silence from a peer without the history is not emptiness");
 
-    e.on_terminator(rid, PEER, true, now);
+    silent(&mut e, rid, 200, now);
     drive(&mut e, now);
-    assert_eq!(tail(&e), count, "a peer holding the whole span proves it empty");
+    assert_eq!(tail(&e), count, "peers holding the whole span prove it empty");
+}
+
+/// One peer's silence is not believed: the same range goes to any other peer,
+/// and only a second silence proves the span empty.
+#[test]
+fn silence_is_confirmed_by_a_second_peer() {
+    let now = Instant::now();
+    let mut e = engine();
+    let (rid, _, count) = issue_one(&mut e, 200, 0, now);
+
+    e.on_terminator(rid, PEER, true, now);
+    let exclude = actions(&mut e, now, true).into_iter().find_map(|a| match a {
+        SyncAction::Request { request_id, exclude, .. } if request_id == rid => Some(exclude),
+        _ => None,
+    });
+    assert_eq!(exclude, Some(Some(PEER)), "re-offered to any peer but the silent one");
+    assert_eq!(tail(&e), 0, "one peer's silence is not emptiness");
+
+    peer_status(&mut e, WITNESS, HEAD_ROOT, 200);
+    e.on_terminator(rid, WITNESS, true, now);
+    drive(&mut e, now);
+    assert_eq!(tail(&e), count, "a second peer's silence is");
+}
+
+/// A peer answering silently over blocks it holds skips nothing: the peer
+/// asked to confirm serves them.
+#[test]
+fn silence_over_blocks_is_disproved_by_the_second_peer() {
+    let now = Instant::now();
+    let mut e = engine();
+    let (rid, ..) = issue_one(&mut e, 200, 0, now);
+
+    e.on_terminator(rid, PEER, true, now);
+    peer_status(&mut e, WITNESS, HEAD_ROOT, 200);
+    for slot in 1..=3 {
+        served(&mut e, rid, slot, Some(slot - 1));
+    }
+    e.on_terminator(rid, WITNESS, true, now);
+
+    let (_, start, _) = drive(&mut e, now).expect("remainder re-requested");
+    assert_eq!(tail(&e), 3, "the tail stops at the last block delivered");
+    assert_eq!(start, 4, "nothing was written off empty");
 }
 
 /// A block can land inside an in-flight range without that range's peer
@@ -1368,8 +1420,8 @@ fn silence_from_a_peer_holding_the_span_proves_it_empty() {
     e.on_sync_need(prefill(0, ALL, ALL), now);
     let (rid, ..) = drive(&mut e, now).expect("blocks owed");
 
-    // Delivered, but nothing served: `PEER` claims from slot 0 to its head.
-    e.on_terminator(rid, PEER, true, now);
+    // Delivered, but nothing served: both claim from slot 0 to their head.
+    silent(&mut e, rid, 100, now);
     assert!(drive(&mut e, now).is_none(), "the span is empty, not missing");
 }
 
@@ -1382,7 +1434,7 @@ fn silence_chases_the_wanted_parent_by_root() {
     let mut e = following_at(100, 120);
     e.on_sync_need(prefill(0, ALL, ALL), now);
     let (rid, ..) = drive(&mut e, now).expect("blocks owed");
-    e.on_terminator(rid, PEER, true, now);
+    silent(&mut e, rid, 100, now);
 
     let issued = actions(&mut e, now, true);
     assert_eq!(roots(&issued, DataKind::Block), vec![WANTED], "the wanted parent, by root");
@@ -1423,7 +1475,7 @@ fn silence_storage_never_moves_past_is_asked_again() {
     let mut e = following_at(100, 120);
     e.on_sync_need(prefill(0, ALL, ALL), now);
     let (first, ..) = drive(&mut e, now).expect("blocks owed");
-    e.on_terminator(first, PEER, true, now);
+    silent(&mut e, first, 100, now);
     assert!(drive(&mut e, now).is_none(), "silence counts as empty at first");
 
     let later = now + BACKFILL_SETTLE_TIMEOUT + Duration::from_secs(1);
@@ -1627,7 +1679,7 @@ struct Issued {
 fn drive_all(e: &mut SyncEngine, now: Instant) -> Issued {
     let emitted = actions(e, now, true);
     let columns = emitted.iter().find_map(|a| match a {
-        SyncAction::Request { request_id, request } if request.kind == DataKind::Columns => {
+        SyncAction::Request { request_id, request, .. } if request.kind == DataKind::Columns => {
             let Scope::Range { start, count } = request.scope else { return None };
             Some((*request_id, start, count, request.columns))
         }

@@ -107,24 +107,21 @@ impl Backfill {
         delivered: bool,
         now: Instant,
     ) {
-        let Some(d) = self.ranges.on_terminator(request_id, delivered, now) else { return };
         // The one emptiness storage cannot prove: a run with no block above it
-        // has no link over it. As on the live chase, a peer that holds the span
-        // and served nothing is the proof.
-        if d.kind == DataKind::Block &&
-            d.served == 0 &&
-            peers.claims_span(peer, d.span.0..=d.span.1)
-        {
-            for slot in d.span.0..=d.span.1 {
-                self.window.mark_empty(slot);
-            }
-            // Storage links only from a block, so a range holding none can
-            // move it only through the block below, reached by root.
-            if let Some(prefill) = self.prefill {
-                let root = prefill.wanted_parent;
-                root_requests.want(root, DataKind::Block, 0, Origin::Backfill, prefill.start, now);
-                self.chased = Some(root);
-            }
+        // has no link over it. As on the live chase, peers that hold the span
+        // and served nothing are the proof.
+        let Some(span) = self.ranges.on_terminator(peers, request_id, peer, delivered, now) else {
+            return;
+        };
+        for slot in span.0..=span.1 {
+            self.window.mark_empty(slot);
+        }
+        // Storage links only from a block, so a range holding none can
+        // move it only through the block below, reached by root.
+        if let Some(prefill) = self.prefill {
+            let root = prefill.wanted_parent;
+            root_requests.want(root, DataKind::Block, 0, Origin::Backfill, prefill.start, now);
+            self.chased = Some(root);
         }
     }
 
