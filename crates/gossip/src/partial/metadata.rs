@@ -4,7 +4,7 @@ pub use silver_common::cell_store::ColumnGroupKey;
 use silver_common::{
     ForkName, GossipTopic, P2pStreamId,
     ssz_view::partial_column::{
-        FULU_GROUP_ID_SIZE, GLOAS_GROUP_ID_SIZE, PARTIAL_COLUMNS_VERSION_BYTE,
+        FULU_GROUP_ID_SIZE, FULU_GROUP_ID_VERSION, GLOAS_GROUP_ID_SIZE, GLOAS_GROUP_ID_VERSION,
         PartialDataColumnPartsMetadataView,
     },
 };
@@ -54,12 +54,16 @@ impl PartialGroup {
             return None;
         }
         let group_id = partial.group_id?;
-        if group_id.first().copied()? != PARTIAL_COLUMNS_VERSION_BYTE {
-            return None;
-        }
+        let version = *group_id.first()?;
         let slot = match domain.format() {
-            ForkName::Fulu if group_id.len() == FULU_GROUP_ID_SIZE => None,
-            ForkName::Gloas if group_id.len() == GLOAS_GROUP_ID_SIZE => {
+            ForkName::Fulu
+                if version == FULU_GROUP_ID_VERSION && group_id.len() == FULU_GROUP_ID_SIZE =>
+            {
+                None
+            }
+            ForkName::Gloas
+                if version == GLOAS_GROUP_ID_VERSION && group_id.len() == GLOAS_GROUP_ID_SIZE =>
+            {
                 Some(u64::from_le_bytes(group_id[33..].try_into().ok()?))
             }
             _ => return None,
@@ -111,10 +115,20 @@ mod tests {
             partial.topic_id = Some(b"/eth2/01020304/data_column_sidecar_7/ssz_snappy");
             partial.group_id = Some(&group[..group.len() - 1]);
             assert!(PartialMetadataReceived::decode(&partial, stream, &domains).is_none());
-            let mut unknown = group.to_vec();
-            unknown[0] = 1;
-            partial.group_id = Some(&unknown);
-            assert!(PartialMetadataReceived::decode(&partial, stream, &domains).is_none());
+            let other_fork_version = if format == ForkName::Fulu {
+                GLOAS_GROUP_ID_VERSION
+            } else {
+                FULU_GROUP_ID_VERSION
+            };
+            let unknown = [other_fork_version, 0xff].map(|version| {
+                let mut id = group.to_vec();
+                id[0] = version;
+                id
+            });
+            for id in &unknown {
+                partial.group_id = Some(id);
+                assert!(PartialMetadataReceived::decode(&partial, stream, &domains).is_none());
+            }
         }
     }
 }
