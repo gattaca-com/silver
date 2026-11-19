@@ -40,8 +40,9 @@ pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) const BACKFILL_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub enum SyncAction {
-    /// Ask the peer manager to place this. It answers whether any peer took it.
-    Request { request_id: u64, request: SyncRequest },
+    /// Ask the peer manager to place this, with any peer but `exclude`. It
+    /// answers whether any peer took it.
+    Request { request_id: u64, request: SyncRequest, exclude: Option<usize> },
     /// Nobody can serve what we need; go looking for peers who can.
     DiscoverPeers,
 }

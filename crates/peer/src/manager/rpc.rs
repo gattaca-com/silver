@@ -545,6 +545,7 @@ impl PeerManager {
         &mut self,
         request: SyncRequest,
         request_id: u64,
+        exclude: Option<usize>,
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) -> bool {
@@ -554,7 +555,7 @@ impl PeerManager {
         match request.kind {
             DataKind::Columns => self.place_across_custody(request, request_id, now, emit),
             DataKind::Block | DataKind::Envelope => {
-                self.place_with_one(request, request_id, now, emit)
+                self.place_with_one(request, request_id, exclude, now, emit)
             }
         }
     }
@@ -593,6 +594,7 @@ impl PeerManager {
         &mut self,
         request: SyncRequest,
         request_id: u64,
+        exclude: Option<usize>,
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) -> bool {
@@ -601,10 +603,11 @@ impl PeerManager {
         // chasing; backfill and by-root only need a peer that can serve it.
         let peer = match request.scope {
             Scope::Range { start, count } if request.origin == Origin::Live => {
-                self.pick_sync_peer(start, count, now)
+                self.pick_sync_peer(start, count, exclude, now)
             }
             _ => self.best_peer_for(protocol, |i| {
-                self.serves(i, &request) &&
+                Some(i) != exclude &&
+                    self.serves(i, &request) &&
                     self.outbound_has_capacity(
                         i,
                         protocol,
@@ -657,7 +660,13 @@ impl PeerManager {
     /// Highest-scoring connected peer that (a) backs the current sync
     /// target and (b) has BlocksByRange outbound capacity. `None` if no
     /// target is pinned or no eligible peer is connected.
-    pub(crate) fn pick_sync_peer(&self, start: u64, count: u64, now: Instant) -> Option<usize> {
+    pub(crate) fn pick_sync_peer(
+        &self,
+        start: u64,
+        count: u64,
+        exclude: Option<usize>,
+        now: Instant,
+    ) -> Option<usize> {
         let target = self.current_sync_target();
         if !target.is_syncing() {
             return None;
@@ -665,7 +674,7 @@ impl PeerManager {
 
         let mut best: Option<(usize, f64)> = None;
         for (peer, ssz) in self.database.iter_live_status_bytes() {
-            if !self.holds_slots_from(peer, start) {
+            if Some(peer) == exclude || !self.holds_slots_from(peer, start) {
                 continue;
             }
             if !target.is_served_by(ssz) {
@@ -984,7 +993,7 @@ mod tests {
                 columns,
             };
             let id = RequestId::next(DataKind::Columns, origin, &mut seq);
-            mgr.place(request, id, now, &mut |c| cap.0.push(c));
+            mgr.place(request, id, None, now, &mut |c| cap.0.push(c));
         };
         let in_flight =
             |mgr: &PeerManager, peer| mgr.peers.get(&peer).unwrap().outbound_in_flight[dcbr];
@@ -1043,7 +1052,7 @@ mod tests {
 
         let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 99 });
         assert!(
-            !mgr.place(column_root([0xEE; 32]), id, now, &mut |c| cap.0.push(c)),
+            !mgr.place(column_root([0xEE; 32]), id, None, now, &mut |c| cap.0.push(c)),
             "refused at the cap, not queued"
         );
     }
@@ -1069,11 +1078,11 @@ mod tests {
 
         let second = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 2 });
         assert!(
-            !mgr.place(column_root(ROOT), second, now, &mut |c| cap.0.push(c)),
+            !mgr.place(column_root(ROOT), second, None, now, &mut |c| cap.0.push(c)),
             "already out there"
         );
         assert!(
-            mgr.place(column_root([0xCD; 32]), second, now, &mut |c| cap.0.push(c)) ||
+            mgr.place(column_root([0xCD; 32]), second, None, now, &mut |c| cap.0.push(c)) ||
                 mgr.outbound_attempts.len() == 1,
             "another root is not blocked by it"
         );
@@ -1137,7 +1146,7 @@ mod tests {
         cap.0.clear();
 
         assert!(
-            !mgr.place(backfill_column_range(10), 1, now, &mut |c| cap.0.push(c)),
+            !mgr.place(backfill_column_range(10), 1, None, now, &mut |c| cap.0.push(c)),
             "a peer that pruned slot 10 cannot serve it"
         );
         assert!(mgr.outbound_attempts.is_empty(), "and nothing goes out to be penalised for");
@@ -1154,7 +1163,7 @@ mod tests {
         cap.0.clear();
 
         assert!(
-            mgr.place(backfill_column_range(200), 2, now, &mut |c| cap.0.push(c)),
+            mgr.place(backfill_column_range(200), 2, None, now, &mut |c| cap.0.push(c)),
             "slot 200 is above the peer's floor"
         );
         assert_eq!(mgr.outbound_attempts.len(), 1);
@@ -1182,7 +1191,7 @@ mod tests {
             scope: Scope::Root([3; 32]),
             columns: 0b11,
         };
-        assert!(!mgr.place(request, 1, now, &mut |c| cap.0.push(c)), "nothing goes out");
+        assert!(!mgr.place(request, 1, None, now, &mut |c| cap.0.push(c)), "nothing goes out");
         assert!(mgr.outbound_attempts.is_empty());
     }
 
@@ -1209,7 +1218,7 @@ mod tests {
             scope: Scope::Root([3; 32]),
             columns: 0,
         };
-        assert!(mgr.place(request, 1, now, &mut |c| cap.0.push(c)), "chase placed");
+        assert!(mgr.place(request, 1, None, now, &mut |c| cap.0.push(c)), "chase placed");
     }
 
     /// A column range, for tests that build attempts directly.
@@ -1236,7 +1245,7 @@ mod tests {
             scope: Scope::Root([3; 32]),
             columns: 0,
         };
-        assert!(mgr.place(request, request_id, now, &mut |c| cap.0.push(c)), "chase placed");
+        assert!(mgr.place(request, request_id, None, now, &mut |c| cap.0.push(c)), "chase placed");
         assert_eq!(mgr.outbound_attempts.len(), 1, "tracked like a range");
     }
 
@@ -1306,9 +1315,30 @@ mod tests {
             scope: Scope::Range { start, count },
             columns: 0,
         };
-        assert!(mgr.place(request, request_id, now, &mut |c| cap.0.push(c)), "range placed");
+        assert!(mgr.place(request, request_id, None, now, &mut |c| cap.0.push(c)), "range placed");
         assert_eq!(mgr.outbound_attempts.len(), 1);
         assert_eq!(mgr.outbound_attempts[0].request_id, request_id);
+    }
+
+    #[test]
+    fn excluded_peer_is_not_given_the_range() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        let request = SyncRequest {
+            kind: DataKind::Block,
+            origin: Origin::Backfill,
+            scope: Scope::Range { start: 20, count: 3 },
+            columns: 0,
+        };
+        assert!(!mgr.place(request, 1, Some(1), now, &mut |c| cap.0.push(c)), "only peer excluded");
+        assert!(mgr.outbound_attempts.is_empty());
+        assert!(mgr.place(request, 1, None, now, &mut |c| cap.0.push(c)), "placed without it");
     }
 
     #[test]

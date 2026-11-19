@@ -267,7 +267,7 @@ fn offer(need: &mut Need, root: [u8; 32], next_id: &mut u64, now: Instant) -> Sy
             "by-root need unanswered; still escalating"
         );
     }
-    SyncAction::Request { request_id, request: need.request(root) }
+    SyncAction::Request { request_id, request: need.request(root), exclude: None }
 }
 
 #[cfg(test)]
@@ -305,7 +305,7 @@ mod tests {
     ) -> Vec<u64> {
         let mut out = Vec::new();
         needs.drive(next_id, now, claim_covers, &mut |a| {
-            if let SyncAction::Request { request_id, request } = a {
+            if let SyncAction::Request { request_id, request, .. } = a {
                 assert!(matches!(request.scope, Scope::Root(_)), "chased by root, never by range");
                 out.push(if request.kind == DataKind::Columns { request_id } else { 0 });
             }

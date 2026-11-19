@@ -987,8 +987,8 @@ fn handle_sync_action(
     emit: &mut impl FnMut(PeerControl),
 ) -> bool {
     match action {
-        SyncAction::Request { request_id, request } => {
-            peer_manager.place(request, request_id, now, emit)
+        SyncAction::Request { request_id, request, exclude } => {
+            peer_manager.place(request, request_id, exclude, now, emit)
         }
         SyncAction::DiscoverPeers => {
             emit(PeerControl::DiscoverNodes);

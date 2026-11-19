@@ -87,21 +87,17 @@ impl Syncing {
         delivered: bool,
         now: Instant,
     ) {
-        let Some(d) = self.ranges.on_terminator(request_id, delivered, now) else {
-            return;
-        };
         // Silence across a span the peer holds is the one emptiness proof
         // beacon state cannot supply: with no block above the run, no
         // `parent_slot` ever spans it, and the tail would owe these slots
         // forever. Which *delivered* slots settle is beacon state's call, not
         // the wire's — a block it has not reported may still be in its hands.
-        if d.kind == DataKind::Block &&
-            d.served == 0 &&
-            ctx.peers.claims_span(peer, d.span.0..=d.span.1)
-        {
-            for slot in d.span.0..=d.span.1 {
-                window.mark_empty(slot);
-            }
+        let Some(span) = self.ranges.on_terminator(&ctx.peers, request_id, peer, delivered, now)
+        else {
+            return;
+        };
+        for slot in span.0..=span.1 {
+            window.mark_empty(slot);
         }
     }
 
