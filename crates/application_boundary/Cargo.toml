@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 flux.workspace = true
+mio = { workspace = true, optional = true }
 silver_beacon_api.workspace = true
 silver_beacon_state_data.workspace = true
 silver_common.workspace = true
@@ -22,6 +23,9 @@ hex.workspace = true
 serde_json.workspace = true
 silver_engine_api = { workspace = true, features = ["test-el"] }
 ureq.workspace = true
+
+[features]
+thread_park = ["flux/park", "dep:mio"]
 
 [lints]
 workspace = true

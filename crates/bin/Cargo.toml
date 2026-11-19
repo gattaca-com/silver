@@ -52,6 +52,7 @@ crypto_simd = ["silver_beacon_state/crypto_simd"]
 perf = ["silver_common/perf"]
 thread_park = [
     "flux/park",
+    "silver_application_boundary/thread_park",
     "silver_common/thread_park",
     "silver_network/thread_park",
     "silver_storage/thread_park",
