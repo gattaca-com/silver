@@ -555,7 +555,7 @@ fn assert_column_publication(origin: ColumnOrigin) {
     .unwrap();
     receiver.open_tcaches().unwrap();
     let mut receiver_adapter = SpineAdapter::connect_tile(&Observer, &mut capture._spine);
-    receiver.spin(&mut receiver_adapter, None);
+    receiver.spin(&mut receiver_adapter, None, &mut |_, _, _| {});
     let stream = P2pStreamId::new(2, 0, StreamProtocol::GossipSub, true);
     let mut message = None;
     let mut encoded = Vec::new();
@@ -566,7 +566,7 @@ fn assert_column_publication(origin: ColumnOrigin) {
         packet.extend_from_slice(&frame[offset..]);
         let tcache = write_bytes(&mut capture.incoming, &packet);
         capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
-        receiver.spin(&mut receiver_adapter, None);
+        receiver.spin(&mut receiver_adapter, None, &mut |_, _, _| {});
         while let Some(event) = receiver.pop_event() {
             match event {
                 GossipHandlerEvent::NewGossip(received) => {
@@ -674,7 +674,7 @@ fn publish_spam_is_dropped_and_reported_once() {
     .unwrap();
     receiver.open_tcaches().unwrap();
     let mut receiver_adapter = SpineAdapter::connect_tile(&Observer, &mut capture._spine);
-    receiver.spin(&mut receiver_adapter, None);
+    receiver.spin(&mut receiver_adapter, None, &mut |_, _, _| {});
 
     // Empty publish entries: one field each, so a frame stays in the field
     // budget. Four frames fit a slot's 64 Ki entries; the fifth does not.
@@ -685,7 +685,7 @@ fn publish_spam_is_dropped_and_reported_once() {
     for _ in 0..6 {
         let tcache = write_bytes(&mut incoming, &packet);
         capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
-        receiver.spin(&mut receiver_adapter, None);
+        receiver.spin(&mut receiver_adapter, None, &mut |_, _, _| {});
         let mut reported = 0;
         while let Some(event) = receiver.pop_event() {
             if let GossipHandlerEvent::PeerEvent(PeerEvent::RpcMisbehaviour {

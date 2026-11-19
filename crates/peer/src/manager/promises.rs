@@ -52,47 +52,49 @@ impl RecentDelivery {
 }
 
 impl PeerManager {
-    pub(super) fn on_ihave(
+    /// One IHAVE frame: `received` counts its ids, seen or not; `wanted` holds
+    /// the ones we have not seen. Trims `wanted` to what we IWANT and records
+    /// a promise for each id kept.
+    ///
+    /// Over-cap ids are ignored without penalty, as in reference gossipsub: P7
+    /// for gossip abuse comes from broken promises. Below the gossip threshold
+    /// nothing is asked: `on_outbound_iwant` would drop the frame, and a
+    /// promise without a sent IWANT can only expire.
+    pub fn on_ihave(
         &mut self,
         conn: usize,
-        hash: MessageId,
-        already_seen: bool,
+        received: usize,
+        wanted: &mut Vec<MessageId>,
         now: Instant,
     ) {
-        // Always count, regardless of dedup state — the rate cap treats
-        // a peer IHAVEing thousands of ids we already have just as badly as
-        // ids we don't.
-        let should_iwant = {
-            let Some(peer) = self.peers.get_mut(&conn) else {
-                return;
-            };
-            peer.ihaves_received = peer.ihaves_received.saturating_add(1);
-            // Only send an IWANT (and thus track a promise) if:
-            //  - we don't already have the message,
-            //  - we haven't exceeded the per-heartbeat IWANT budget,
-            //  - the peer hasn't saturated the IHAVE rate cap — excess ids are ignored
-            //    without penalty (matching reference gossipsub; P7 for gossip abuse comes
-            //    from broken promises),
-            //  - the peer clears the gossip threshold (`on_outbound_iwant` drops the frame
-            //    below it — a promise without a sent IWANT can only ever expire).
-            let should_iwant = !already_seen &&
-                peer.ihaves_received <= self.params.max_ihave_length &&
-                peer.gossip_gate_score() >= self.params.gossip_threshold &&
-                peer.iwant_ids_sent < self.params.max_ihave_length;
-            if should_iwant {
-                peer.iwant_ids_sent = peer.iwant_ids_sent.saturating_add(1);
-            }
-            should_iwant
-        };
-        if !should_iwant {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            wanted.clear();
             return;
-        }
-        // Record the promise globally. Dedupe: same peer IHAVEing the same
-        // id twice is one outstanding promise, not two.
+        };
+        let max_ids = self.params.max_ihave_length;
+        let ihaves_before = peer.ihaves_received;
+        peer.ihave_frames_received = peer.ihave_frames_received.saturating_add(1);
+        peer.ihaves_received =
+            peer.ihaves_received.saturating_add(u16::try_from(received).unwrap_or(u16::MAX));
+
+        let budget = match peer.ihave_frames_received > self.params.max_ihave_messages ||
+            peer.gossip_gate_score() < self.params.gossip_threshold
+        {
+            true => 0,
+            false => max_ids
+                .saturating_sub(ihaves_before)
+                .min(max_ids.saturating_sub(peer.iwant_ids_sent)),
+        };
+        wanted.truncate(usize::from(budget));
+        peer.iwant_ids_sent = peer.iwant_ids_sent.saturating_add(wanted.len() as u16);
+
+        // Same peer IHAVEing the same id twice is one outstanding promise.
         let deadline = now + self.params.iwant_followup;
-        let entry = self.promises.entry(hash).or_default();
-        if !entry.iter().any(|(c, _)| *c == conn) {
-            entry.push((conn, deadline));
+        for &hash in wanted.iter() {
+            let entry = self.promises.entry(hash).or_default();
+            if !entry.iter().any(|(c, _)| *c == conn) {
+                entry.push((conn, deadline));
+            }
         }
     }
 
@@ -546,17 +548,44 @@ mod tests {
         mgr.peers.get_mut(&1).unwrap().cached_score = mgr.params.gossip_threshold - 1.0;
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(1, 1, &mut vec![hash], now);
         assert!(mgr.promises.is_empty());
+    }
+
+    #[test]
+    fn ihave_frame_is_trimmed_to_the_iwant_budget() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_ihave_length = 3;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        let ids =
+            |from: u8| (from..from + 5).map(|i| MessageId { id: [i; 20] }).collect::<Vec<_>>();
+        let mut wanted = ids(0);
+        mgr.on_ihave(1, 5, &mut wanted, now);
+        assert_eq!(wanted[..], ids(0)[..3], "asked up to the budget");
+        assert_eq!(mgr.promises.len(), 3);
+
+        let mut wanted = ids(10);
+        mgr.on_ihave(1, 5, &mut wanted, now);
+        assert!(wanted.is_empty(), "the heartbeat's budget is spent");
+        assert_eq!(mgr.promises.len(), 3);
+    }
+
+    #[test]
+    fn ihave_frames_over_the_heartbeat_cap_are_not_asked() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_ihave_messages = 2;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        for frame in 0..3u8 {
+            let mut wanted = vec![MessageId { id: [frame; 20] }];
+            mgr.on_ihave(1, 1, &mut wanted, now);
+            assert_eq!(wanted.len(), usize::from(frame < 2), "frame {frame}");
+        }
     }
 
     #[test]
@@ -567,16 +596,7 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(1, 1, &mut vec![hash], now);
         assert_eq!(mgr.promises.len(), 1);
 
         mgr.handle_event(
@@ -602,16 +622,7 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(1, 1, &mut vec![hash], now);
 
         now += Duration::from_secs(4);
         mgr.run_tick(now, &mut |c| cap.0.push(c));
@@ -632,17 +643,8 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
-        for i in 0..8u8 {
-            mgr.handle_event(
-                PeerEvent::P2pGossipHave {
-                    p2p_peer: 1,
-                    topic: GossipTopic::BeaconBlock,
-                    hash: silver_common::MessageId { id: [i; 20] },
-                    already_seen: true,
-                },
-                now,
-                &mut |c| cap.0.push(c),
-            );
+        for _ in 0..8 {
+            mgr.on_ihave(1, 1, &mut vec![], now);
         }
         mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         let s = mgr.score(1).unwrap();
@@ -658,17 +660,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
-        let hash = silver_common::MessageId { id: [77u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: true,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(1, 1, &mut vec![], now);
 
         now += Duration::from_secs(5);
         mgr.run_tick(now, &mut |c| cap.0.push(c));
@@ -750,16 +742,7 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(1, 1, &mut vec![hash], now);
 
         now += Duration::from_secs(1);
         mgr.handle_event(
@@ -780,16 +763,7 @@ mod tests {
 
         connect(&mut mgr, &mut cap, 2, 2, now);
         let other = silver_common::MessageId { id: [8u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 2,
-                topic: GossipTopic::BeaconBlock,
-                hash: other,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(2, 1, &mut vec![other], now);
         now += Duration::from_secs(5);
         mgr.run_tick(now, &mut |c| cap.0.push(c));
         let score_broken = mgr.score(2).unwrap();
@@ -814,26 +788,8 @@ mod tests {
         connect(&mut mgr, &mut cap, 2, 2, now);
 
         let hash = silver_common::MessageId { id: [42u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 2,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(1, 1, &mut vec![hash], now);
+        mgr.on_ihave(2, 1, &mut vec![hash], now);
 
         now += Duration::from_secs(1);
         mgr.handle_event(
@@ -853,16 +809,7 @@ mod tests {
 
         connect(&mut mgr, &mut cap, 3, 3, now);
         let other = silver_common::MessageId { id: [99u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 3,
-                topic: GossipTopic::BeaconBlock,
-                hash: other,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
+        mgr.on_ihave(3, 1, &mut vec![other], now);
         now += Duration::from_secs(5);
         mgr.run_tick(now, &mut |c| cap.0.push(c));
 

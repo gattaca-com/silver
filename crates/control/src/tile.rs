@@ -845,7 +845,12 @@ impl Tile<SilverSpine> for Controller {
             SweepOutput::TopicScores(scores) => adapter.produce(PeerStats::Topic(scores)),
         });
 
-        if self.gossip_handler.spin_columns(adapter, self.cell_ingress.as_mut()) {
+        let peer_manager = &mut self.peer_manager;
+        if self.gossip_handler.spin_columns(
+            adapter,
+            self.cell_ingress.as_mut(),
+            &mut |peer, received, wanted| peer_manager.on_ihave(peer, received, wanted, now),
+        ) {
             adapter.mark_work();
         }
         while let Some(event) = self.gossip_handler.pop_event() {

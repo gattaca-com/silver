@@ -194,6 +194,8 @@ pub(super) fn handle_idontwants<'a>(
     }
 }
 
+/// `on_ihave` is handed the frame's id count and its unseen ids, and keeps
+/// those to IWANT.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_ihaves<'a>(
     stream_id: &P2pStreamId,
@@ -203,35 +205,31 @@ pub(super) fn handle_ihaves<'a>(
     dedup: &DedupCache,
     mcache_publish: &mut TProducer,
     emit: &mut impl FnMut(GossipHandlerEvent),
+    on_ihave: &mut impl FnMut(usize, usize, &mut Vec<MessageId>),
     scratch_buffer: &mut Vec<MessageId>,
 ) {
+    if haves.is_empty() {
+        return;
+    }
     scratch_buffer.clear();
+    let mut received = 0;
     for ihave in haves {
         if let Some(topic) = ihave.topic_id {
-            let Ok((topic, _digest)) = gossip_topic(topic, domains) else {
+            if gossip_topic(topic, domains).is_err() {
                 continue;
-            };
+            }
             for have in &ihave.message_ids {
                 let Some(hash) = message_id(have, stream_id, emit) else {
                     continue;
                 };
-                // Emit for every id, including ones we already have — the
-                // peer manager uses the total count for rate/flood scoring.
-                // `already_seen` tells it whether an IWANT is implied.
-                let already_seen = mcache.has(&hash) || dedup.has(&hash);
-                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipHave {
-                    p2p_peer: stream_id.peer(),
-                    hash,
-                    topic,
-                    already_seen,
-                }));
-
-                if !already_seen {
+                received += 1;
+                if !mcache.has(&hash) && !dedup.has(&hash) {
                     scratch_buffer.push(hash);
                 }
             }
         }
     }
+    on_ihave(stream_id.peer(), received, scratch_buffer);
     if scratch_buffer.is_empty() {
         return;
     }
@@ -676,6 +674,85 @@ mod tests {
 
         let read = copy_idontwants_to_protobuf_output(&mut producer, ids.iter()).unwrap();
         assert!(rpc_within_field_budget(&read_bytes(read, &producer)));
+    }
+
+    /// The IWANT carries only the ids `on_ihave` keeps; seen ids are counted
+    /// but never offered.
+    #[test]
+    fn iwant_carries_only_the_ids_kept() {
+        use buffa::Message;
+
+        use crate::generated::{ControlIHave, ControlMessage, RPC};
+
+        let domains = ActiveDomains::new(Some(GossipDomain::new(
+            [0x8c, 0x9f, 0x62, 0xfe],
+            silver_common::ForkName::Fulu,
+        )));
+        let ids: Vec<_> = (0..5u8).map(|i| MessageId { id: [i; MESSAGE_ID_LEN] }).collect();
+        let mut dedup = DedupCache::default();
+        dedup.insert(1, ids[0]);
+        let rpc = RPC {
+            control: buffa::MessageField::some(ControlMessage {
+                ihave: vec![ControlIHave {
+                    topic_id: Some("/eth2/8c9f62fe/beacon_block/ssz_snappy".into()),
+                    message_ids: ids.iter().map(|id| id.id.to_vec()).collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let view = RPCView::decode_view(&rpc).unwrap();
+        let ihave = &view.control.as_option().unwrap().ihave;
+        let stream_id = P2pStreamId::new(7, 0, silver_common::StreamProtocol::GossipSub, true);
+        let mut producer = TCache::producer(TCacheId::ControlGossip, 1 << 16);
+
+        let mut iwant = None;
+        handle_ihaves(
+            &stream_id,
+            ihave,
+            &domains,
+            &MessageCache::new(),
+            &dedup,
+            &mut producer,
+            &mut |event| {
+                if let GossipHandlerEvent::PeerEvent(PeerEvent::OutboundIWant {
+                    p2p_peer,
+                    iwant: read,
+                }) = event
+                {
+                    assert_eq!(p2p_peer, 7);
+                    iwant = Some(read);
+                }
+            },
+            &mut |peer, received, wanted| {
+                assert_eq!((peer, received), (7, 5));
+                assert_eq!(wanted[..], ids[1..], "the seen id is not offered");
+                wanted.truncate(2);
+            },
+            &mut Vec::new(),
+        );
+
+        let frame = read_bytes(iwant.expect("IWANT sent"), &producer);
+        let rpc = RPCView::decode_view(&frame).unwrap();
+        let sent = rpc.control.as_option().unwrap().iwant.iter().next().unwrap();
+        let sent: Vec<_> = sent.message_ids.iter().map(|id| id.to_vec()).collect();
+        assert_eq!(sent, [ids[1].id.to_vec(), ids[2].id.to_vec()]);
+
+        let mut events = 0;
+        handle_ihaves(
+            &stream_id,
+            ihave,
+            &domains,
+            &MessageCache::new(),
+            &dedup,
+            &mut producer,
+            &mut |_| events += 1,
+            &mut |_, _, wanted| wanted.clear(),
+            &mut Vec::new(),
+        );
+        assert_eq!(events, 0, "nothing kept, no IWANT");
     }
 
     /// Data-column subscriptions carry partial capability flags with the
