@@ -42,3 +42,5 @@ crates/beacon_state/tile/tests/sync_scenarios/gloas_fork_transition/fixtures/
 
 # KZG fixture vectors, fetched by `make -C crates/crypto_simd`
 crates/crypto_simd/cryptography-specs-tests/
+
+__pycache__/
