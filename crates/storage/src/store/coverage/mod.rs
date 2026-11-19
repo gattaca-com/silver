@@ -287,6 +287,7 @@ impl Coverage {
         start: u64,
         floors: Floors,
         finalized_slot: u64,
+        wanted_parent: B256,
     ) -> (Prefill, bool) {
         let complete = self.chain.bits(start);
         let held = blocks.held_bits(start);
@@ -314,8 +315,15 @@ impl Coverage {
             }
         }
 
-        let prefill =
-            Prefill { start, have_block, known_empty, columns_covered, envelopes, columns_missing };
+        let prefill = Prefill {
+            start,
+            have_block,
+            known_empty,
+            columns_covered,
+            envelopes,
+            columns_missing,
+            wanted_parent,
+        };
         let anything_missing = !known_empty & (!have_block | !columns_covered | !envelopes) != 0;
         (prefill, anything_missing)
     }
@@ -382,7 +390,7 @@ mod tests {
         finalized: u64,
     ) -> Option<(Prefill, bool)> {
         let end = coverage.next_window_end(floors, finalized)?;
-        Some(coverage.describe(blocks, window_start(end), floors, finalized))
+        Some(coverage.describe(blocks, window_start(end), floors, finalized, [0; 32]))
     }
 
     /// Absence from disk is not evidence either way.
@@ -392,7 +400,7 @@ mod tests {
         let mut coverage = Coverage::new(CUSTODY);
         land(&mut coverage, &mut blocks, &[996, 992], [0xAA; 32], 1000, NOTHING);
 
-        let (described, _) = coverage.describe(&blocks, 969, floors(), 1000);
+        let (described, _) = coverage.describe(&blocks, 969, floors(), 1000, [0; 32]);
         for held in [992, 996] {
             assert!(bit(&described, described.have_block, held), "slot {held} is held");
         }
@@ -430,7 +438,7 @@ mod tests {
             };
             coverage.note_block(Block::new(facts, NOTHING, 100, root(100)), &blocks);
         }
-        let (described, _) = coverage.describe(&blocks, 69, floors(), 100);
+        let (described, _) = coverage.describe(&blocks, 69, floors(), 100, [0; 32]);
         assert!(!bit(&described, described.known_empty, 100), "100 is not proven empty");
         assert!(!bit(&described, described.have_block, 100));
         for empty in [93, 94, 95] {
@@ -506,7 +514,7 @@ mod tests {
             let mut coverage = Coverage::new(CUSTODY);
             land(&mut coverage, &mut blocks, &[992], [0; 32], 992, needs);
 
-            let (described, _) = coverage.describe(&blocks, 992, floors(), 992);
+            let (described, _) = coverage.describe(&blocks, 992, floors(), 992, [0; 32]);
             assert_eq!(bit(&described, described.columns_covered, 992), covered);
             assert_eq!(described.columns_missing, if covered { 0 } else { CUSTODY });
             assert_eq!(coverage.is_complete(992), covered);
@@ -559,7 +567,7 @@ mod tests {
         land(&mut coverage, &mut blocks, &[992], [0; 32], 1000, needs);
         let floors = Floors { blocks: 1, columns: 4_000, envelopes: 4_000 };
 
-        let (described, needs) = coverage.describe(&blocks, 992, floors, 1000);
+        let (described, needs) = coverage.describe(&blocks, 992, floors, 1000, [0; 32]);
         assert!(bit(&described, described.columns_covered, 992), "below the column floor");
         assert_eq!(described.envelopes, u32::MAX, "below the fork: no envelope ever existed");
         assert_eq!(described.columns_missing, 0);
@@ -604,8 +612,8 @@ mod tests {
         assert_eq!(reloaded.columns_missing(996), 0b110);
         assert!(reloaded.envelope_missing(996));
         assert_eq!(
-            reloaded.describe(&blocks, 969, floors(), 1000),
-            coverage.describe(&blocks, 969, floors(), 1000)
+            reloaded.describe(&blocks, 969, floors(), 1000, [0; 32]),
+            coverage.describe(&blocks, 969, floors(), 1000, [0; 32])
         );
 
         let file = dir.join("coverage.bin");

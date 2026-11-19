@@ -104,13 +104,19 @@ impl Finalized {
         }
     }
 
+    /// The finalized block itself until history links down to it.
+    pub(super) fn wanted_root(&self, finalized_slot: u64, finalized_root: B256) -> B256 {
+        self.coverage.wanted_parent(finalized_slot).unwrap_or(finalized_root)
+    }
+
     pub(super) fn describe(
         &self,
         start: u64,
         floors: Floors,
         finalized_slot: u64,
+        wanted_parent: B256,
     ) -> (Prefill, bool) {
-        self.coverage.describe(&self.blocks, start, floors, finalized_slot)
+        self.coverage.describe(&self.blocks, start, floors, finalized_slot, wanted_parent)
     }
 
     pub(super) fn examine_next_group(

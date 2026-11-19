@@ -139,7 +139,8 @@ impl History {
             return;
         };
         let start = coverage::window_start(end);
-        let (prefill, needs) = finalized.describe(start, floors, head.finalized_slot);
+        let wanted = finalized.wanted_root(head.finalized_slot, head.finalized_root);
+        let (prefill, needs) = finalized.describe(start, floors, head.finalized_slot, wanted);
         // A window missing nothing is one whose entry a queued truncation is
         // about to prune.
         if !needs || self.published == Some(prefill) {
@@ -224,7 +225,10 @@ impl History {
             }
         };
         let Some(facts) = facts else { return };
+        // The block the chain wants may lie below the range, past empty slots.
+        let wanted = finalized.wanted_root(head.finalized_slot, head.finalized_root);
         if let Some(window) = self.published &&
+            facts.block_root != wanted &&
             !(window.start..window.start + PREFILL_SLOTS).contains(&facts.slot)
         {
             silver_log::debug!(
@@ -251,9 +255,9 @@ impl History {
         if write_queue.landing() != 0 || self.linker.buffered.is_empty() {
             return;
         }
-        let coverage = finalized.coverage();
-        let anchor = coverage.wanted_parent(head.finalized_slot).unwrap_or(head.finalized_root);
-        let mut child_payload = coverage
+        let anchor = finalized.wanted_root(head.finalized_slot, head.finalized_root);
+        let mut child_payload = finalized
+            .coverage()
             .child_payload(anchor)
             .or_else(|| unfinalized.child_payload_parent(head.slot, head.root, &anchor));
         let column_floor = self.floors(head.finalized_slot).columns;

@@ -931,6 +931,32 @@ fn failed_finalized_promote_leaves_its_slot_unknown() {
     let _ = std::fs::remove_dir_all(&store_path);
 }
 
+#[test]
+fn wanted_parent_below_the_window_is_written() {
+    let parent = bare_block(300, [0x31; 32]);
+    let root_parent = block_root_fulu(&parent);
+    let top = bare_block(400, root_parent);
+    let root_top = block_root_fulu(&top);
+    // Before the store: its in-flight writes point into the staged reads.
+    let mut staged_parent = stage("wanted_parent", &parent, 1);
+    let mut staged_top = stage("wanted_top", &top, 1);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+
+    store.sync_update(SyncUpdate::Following);
+    store.add_block(root_top, staged_top.consumer.acquire(staged_top.reads[0]), 400, root_parent);
+    store.update_head(400, root_top, PayloadResolution::Full, 400, root_top);
+    let prefill = first_prefill(&mut store);
+    assert_eq!(prefill.start + 31, 399, "the range right below the chain");
+    assert_eq!(prefill.wanted_parent, root_parent, "and the root it wants, far below");
+
+    store.backfill_block(staged_parent.consumer.acquire(staged_parent.reads[0]));
+    let prefill = first_prefill(&mut store);
+    assert!(store.finalized.holds(300), "taken by root though outside the range");
+    assert_eq!(prefill.start + 31, 299, "the chain now reaches 300");
+    assert_eq!(prefill.wanted_parent, [0x31; 32]);
+}
+
 /// Bytes staged twice, for a block that is handed to the store twice.
 struct Staged {
     reads: Vec<silver_common::TCacheRead>,
