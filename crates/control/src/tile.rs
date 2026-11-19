@@ -616,6 +616,9 @@ impl Tile<SilverSpine> for Controller {
 
         let wall_slot =
             self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());
+        if let Some(wall_slot) = wall_slot {
+            self.sync_engine.set_clock_slot(wall_slot);
+        }
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {
             BeaconApiRequest::LocalGossip { request_id, topic, ssz, validation, .. } => {

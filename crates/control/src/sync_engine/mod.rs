@@ -139,6 +139,9 @@ struct Ctx {
     spec: Arc<SpecConfig>,
     next_request_id: u64,
     local: LocalView,
+    /// The slot clock, where there is one: the local Status only moves with
+    /// the head.
+    clock_slot: Option<u64>,
     peers: PeerView,
     backfill: Backfill,
     root_requests: ByRootRequests,
@@ -275,6 +278,7 @@ impl SyncEngine {
                 spec,
                 next_request_id: 0,
                 local: LocalView::default(),
+                clock_slot: None,
                 peers: PeerView::new(cfg.rejected_cap),
                 cfg,
                 backfill: Backfill::new(),
@@ -323,6 +327,10 @@ impl SyncEngine {
 
     pub fn take_just_synced(&mut self) -> bool {
         std::mem::take(&mut self.just_synced)
+    }
+
+    pub fn set_clock_slot(&mut self, slot: u64) {
+        self.ctx.clock_slot = Some(slot);
     }
 
     pub fn on_peer_event(&mut self, event: PeerEvent, fork_digest: Option<[u8; 4]>) {
@@ -429,7 +437,9 @@ impl SyncEngine {
         if self.ctx.peers.is_rejected(&finalized_root) {
             return;
         }
-        if self.ctx.peers.upsert(peer, status) {
+        let wall_slot =
+            self.ctx.local.have_status.then_some(self.ctx.local.wall_slot).max(self.ctx.clock_slot);
+        if self.ctx.peers.upsert(peer, status, wall_slot, &self.ctx.cfg) {
             self.ctx.peers.retry_chains_backed_by(peer);
         }
         self.mark_dirty();
