@@ -329,6 +329,7 @@ impl PartialExchange {
             // availability, cells or headers reached this peer. No quota refund.
             exchange.sent = 0;
             exchange.advertised = None;
+            exchange.advertised_requests = 0;
             exchange.retry_at = now + RETRY;
             if !exchange.scheduled {
                 exchange.scheduled = true;
@@ -470,6 +471,9 @@ impl PartialExchange {
             exchange.advertised = Some(column.available);
             ControlCounters::PartialCellsRequestedOutbound
                 .add((requests & !exchange.advertised_requests).count_ones() as u64);
+            if requests & !exchange.advertised_requests != 0 {
+                exchange.requests_sent_at = now;
+            }
             exchange.advertised_requests = requests;
             exchange.frames_sent += 1;
             if header {

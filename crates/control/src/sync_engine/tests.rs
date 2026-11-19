@@ -779,6 +779,34 @@ fn silence_is_confirmed_by_a_second_peer() {
     assert_eq!(tail(&e), count, "a second peer's silence is");
 }
 
+/// A confirming request that fails keeps the first silence: the range stays
+/// away from the silent peer, and a later silence still confirms.
+#[test]
+fn failed_confirmation_keeps_the_first_silence() {
+    let now = Instant::now();
+    const FAILING: usize = 5;
+    let mut e = engine();
+    let (rid, _, count) = issue_one(&mut e, 200, 0, now);
+    let excluded = |e: &mut SyncEngine| {
+        actions(e, now, true).into_iter().find_map(|a| match a {
+            SyncAction::Request { request_id, exclude, .. } if request_id == rid => exclude,
+            _ => None,
+        })
+    };
+
+    e.on_terminator(rid, PEER, true, now);
+    assert_eq!(excluded(&mut e), Some(PEER));
+
+    e.on_terminator(rid, FAILING, false, now);
+    assert_eq!(excluded(&mut e), Some(PEER), "still kept from the silent peer");
+    assert_eq!(tail(&e), 0);
+
+    peer_status(&mut e, WITNESS, HEAD_ROOT, 200);
+    e.on_terminator(rid, WITNESS, true, now);
+    drive(&mut e, now);
+    assert_eq!(tail(&e), count, "the first silence still counts");
+}
+
 /// A peer answering silently over blocks it holds skips nothing: the peer
 /// asked to confirm serves them.
 #[test]
