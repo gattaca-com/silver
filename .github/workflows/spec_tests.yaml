@@ -18,11 +18,23 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 120
     strategy:
       fail-fast: true
+      # Generation is pure-Python state handling at mainnet scale, about 4.5 h
+      # for gloas on one 4-core runner, so each fork is split across runners.
       matrix:
-        fork: [fulu, gloas]
+        include:
+          - { fork: fulu, shard: 0, shards: 2 }
+          - { fork: fulu, shard: 1, shards: 2 }
+          - { fork: gloas, shard: 0, shards: 8 }
+          - { fork: gloas, shard: 1, shards: 8 }
+          - { fork: gloas, shard: 2, shards: 8 }
+          - { fork: gloas, shard: 3, shards: 8 }
+          - { fork: gloas, shard: 4, shards: 8 }
+          - { fork: gloas, shard: 5, shards: 8 }
+          - { fork: gloas, shard: 6, shards: 8 }
+          - { fork: gloas, shard: 7, shards: 8 }
 
     steps:
       - name: Check commit hash
@@ -33,6 +45,12 @@ jobs:
             echo "::error::expected a full 40-character commit hash, got '$COMMIT'"
             exit 1
           fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: .github/spec_tests
+          path: silver
+          persist-credentials: false
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -47,16 +65,38 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
-      - name: Generate ${{ matrix.fork }} vectors
+      - name: Build pyspec
         working-directory: consensus-specs
-        run: make test preset=mainnet fork=${{ matrix.fork }} reftests=true
+        run: make build
+
+      # Upstream's `make test reftests=true` invocation, restricted to one shard.
+      - name: Generate ${{ matrix.fork }} vectors, shard ${{ matrix.shard }} of ${{ matrix.shards }}
+        working-directory: consensus-specs
+        env:
+          PYTHONPATH: ${{ github.workspace }}/silver/.github/spec_tests
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_COUNT: ${{ matrix.shards }}
+        run: |
+          uv run pytest -p pytest_shard -n logical --dist=worksteal --capture=no \
+            --fork=${{ matrix.fork }} --preset=mainnet \
+            --junitxml=test-results.xml --reftests --reftests-output="$PWD/reftests" \
+            tests/core/pyspec/eth_consensus_specs
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: reftests-${{ matrix.fork }}
+          name: reftests-${{ matrix.fork }}-${{ matrix.shard }}
           path: consensus-specs/reftests/mainnet
           if-no-files-found: error
           retention-days: 1
+
+      # Per-test durations, for rebalancing the shard counts.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: timings-${{ matrix.fork }}-${{ matrix.shard }}
+          path: consensus-specs/test-results.xml
+          if-no-files-found: ignore
+          retention-days: 14
 
   publish:
     needs: generate
