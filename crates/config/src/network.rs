@@ -114,11 +114,19 @@ impl Network {
     }
 
     /// Devnets often share a `CONFIG_NAME` (ethpandaops' are all `testnet`),
-    /// so a devnet is named after its root instead.
-    pub fn data_dir_name(&self, spec: &SpecConfig, genesis_validators_root: &[u8; 32]) -> String {
-        match self {
-            Self::Devnet(_) => format!("devnet-{}", hex::encode(&genesis_validators_root[..4])),
-            _ => spec.network_name(),
+    /// and two devnets from one mnemonic share a root, so a devnet is named
+    /// after its root and genesis time instead.
+    pub fn data_dir_name(
+        &self,
+        spec: &SpecConfig,
+        genesis_validators_root: &[u8; 32],
+        genesis_unix_secs: Option<u64>,
+    ) -> String {
+        let Self::Devnet(_) = self else { return spec.network_name() };
+        let root = hex::encode(&genesis_validators_root[..4]);
+        match genesis_unix_secs {
+            Some(unix_secs) => format!("devnet-{root}-{unix_secs}"),
+            None => format!("devnet-{root}"),
         }
     }
 
@@ -131,21 +139,27 @@ impl Network {
         Ok(public.unwrap_or_else(|| self.clone()))
     }
 
-    /// Every state of the chain carries it. A devnet can reuse its
-    /// `CONFIG_NAME` and fork versions across re-genesis, so its
-    /// `genesis.ssz` decides.
+    /// A devnet can reuse its `CONFIG_NAME`, fork versions and validators
+    /// across re-genesis, so its `genesis.ssz` decides. `None` for a public
+    /// network, whose bundled root alone identifies it.
+    pub fn devnet_genesis(&self) -> Result<Option<Genesis>, Error> {
+        let Self::Devnet(dir) = self.boots_as()? else { return Ok(None) };
+        let genesis = dir.join("genesis.ssz");
+        if !genesis.exists() {
+            return Err(Error::ConfigError(format!("{} has no genesis.ssz", dir.display())));
+        }
+        Ok(Some(Genesis::from_state_file(&genesis)?))
+    }
+
     pub fn genesis_validators_root(&self) -> Result<[u8; 32], Error> {
+        if let Some(genesis) = self.devnet_genesis()? {
+            return Ok(genesis.validators_root);
+        }
         let root = match self.boots_as()? {
             Self::Mainnet => MAINNET_GENESIS_VALIDATORS_ROOT,
             Self::Hoodi => HOODI_GENESIS_VALIDATORS_ROOT,
             Self::Sepolia => SEPOLIA_GENESIS_VALIDATORS_ROOT,
-            Self::Devnet(dir) => {
-                let genesis = dir.join("genesis.ssz");
-                if !genesis.exists() {
-                    return Err(Error::ConfigError(format!("{} has no genesis.ssz", dir.display())));
-                }
-                return Ok(Genesis::from_state_file(&genesis)?.validators_root);
-            }
+            Self::Devnet(_) => unreachable!("a devnet's root comes from its genesis.ssz"),
         };
         let mut bytes = [0; 32];
         hex::decode_to_slice(root, &mut bytes).expect("bundled genesis_validators_root");
@@ -178,7 +192,7 @@ impl Network {
             Self::Hoodi => &HOODI_CHECKPOINT_SYNC_URLS,
             Self::Sepolia => &SEPOLIA_CHECKPOINT_SYNC_URLS,
             Self::Devnet(dir) => {
-                return Ok(BootSource::File { ssz: dir.join("genesis.ssz"), pubkeys: None });
+                return Ok(BootSource::Genesis(dir.join("genesis.ssz")));
             }
         };
         Ok(BootSource::Providers(urls.iter().map(|url| url.to_string()).collect()))

@@ -7,6 +7,9 @@ A high-performance Ethereum consensus client.
 
 Silver runs Fulu and Gloas. Prebuilt binaries are linux-x86_64 only.
 
+Storage uses io_uring, so Silver needs Linux 5.15 or newer. It does not start
+where io_uring is blocked, such as under gVisor.
+
 ## Quick start (mainnet)
 
 Silver works with any execution client (EL) that supports the engine API. This
@@ -84,11 +87,11 @@ Silver reads only these files from it:
 | File | Use |
 |---|---|
 | `config.yaml` | The spec. Missing keys default to mainnet values. |
-| `genesis.ssz` | The boot state, read on every start. Required. |
+| `genesis.ssz` | The boot state until a checkpoint is persisted, then the chain's identity. Required. |
 | `bootstrap_nodes.yaml` | The bootnodes, as a list of ENRs. Optional. |
 
-Its data lives in a `~/.local/silver/devnet-<id>` subdirectory. Silver logs the
-path at startup.
+Its data lives in a `~/.local/silver/devnet-<root>-<genesis time>` subdirectory.
+Silver logs the path at startup.
 
 ## Flags
 
@@ -165,6 +168,8 @@ docker pull ghcr.io/gattaca-com/silver:latest
 `latest` follows the newest release. Pin a release tag, such as `v0.1.0-alpha.17`, to stay on one version.
 
 Images contain the same Linux amd64 `silver` and `silver_surfer` binaries attached to the corresponding release.
+Recent Docker releases block io_uring in their default seccomp profile. Run Silver with a profile that allows
+`io_uring_setup`, `io_uring_enter` and `io_uring_register`.
 Each release links to its image tag and digest. Set `LOG_STDOUT=1` and `RUST_LOG` to configure container logs.
 
 Open Surfer inside a running Silver container:

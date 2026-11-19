@@ -1,12 +1,14 @@
 use std::{
-    collections::VecDeque,
+    collections::{VecDeque, hash_map::Entry},
     io::Error,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
 };
 
+use flux_disk::{DiskConfig, DiskIo};
 use flux_profiler::timed;
+use fxhash::{FxHashMap, FxHashSet};
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PayloadResolution, PeerEvent,
@@ -29,17 +31,24 @@ mod backfill;
 mod block_index;
 mod checkpoint;
 mod coverage;
+mod file_reader;
+mod file_writer;
 mod finalized;
 mod history;
 mod io;
+mod remover;
 mod unfinalized;
 
 use backfill::{BlockFacts, PayloadFacts, VerifiedColumns};
+use block_index::Record;
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
 use coverage::Block;
+use file_reader::FileReader;
+use file_writer::FileWriter;
 use finalized::Finalized;
 use history::History;
+use remover::DirectoryRemover;
 use unfinalized::{PayloadKey, UnfinalizedBlocks, UnfinalizedColumns, UnfinalizedEnvelopes};
 
 /// `DataColumnSidecarsByRange` is bounded by
@@ -64,7 +73,10 @@ const SLOTS_PER_DIR: u64 = 128;
 
 const PEERS_DIR: &str = "peers";
 
-const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
+/// Kernel workers creating files in one directory contend: per stored
+/// column, 4 workers cost ~2× the CPU of a sync write, 2 ~1.25×, 1 about the
+/// same. Two, so a checkpoint fsync never holds the only one.
+const IO_WORKERS: u32 = 2;
 
 const ALL_PAYLOADS: [Payload; 3] = [Payload::Block, Payload::Column, Payload::Envelope];
 
@@ -97,7 +109,7 @@ impl Payload {
             Payload::Block | Payload::Envelope => {
                 spec.min_epochs_for_block_requests(epoch) * SLOTS_PER_EPOCH
             }
-            Payload::Column => COLUMN_SLOTS_RETAINED,
+            Payload::Column => spec.min_epochs_for_data_column_sidecars_requests * SLOTS_PER_EPOCH,
         }
     }
 
@@ -181,9 +193,50 @@ enum PendingWrite {
         enr: Enr,
     },
     LoadPeers,
+    /// Encoded records for `dir`'s index file, appended in one write: a torn
+    /// append misaligns every fixed-width record after it when retried.
+    IndexBlock {
+        dir: PathBuf,
+        records: Vec<u8>,
+    },
+    /// The encoded coverage at `version`, into the staged file.
+    Coverage {
+        version: u64,
+        bytes: Vec<u8>,
+    },
+    /// The fully written staged file, renamed over the live one.
+    CommitCoverage {
+        version: u64,
+    },
 }
 
 impl PendingWrite {
+    /// Truncation removes groups that earlier writes may still be filling.
+    fn waits_for_earlier_writes(&self) -> bool {
+        matches!(self, PendingWrite::TruncateHistory { .. })
+    }
+
+    /// The slot whose finalized file this write moves into place.
+    fn promoted_slot(&self) -> Option<u64> {
+        match self {
+            PendingWrite::PromoteBlock { block } => Some(block.facts.slot),
+            PendingWrite::PromoteColumn { slot, .. } |
+            PendingWrite::PromoteEnvelope { slot, .. } => Some(*slot),
+            _ => None,
+        }
+    }
+
+    /// Finalized history from peers, which can arrive after its slot fell
+    /// below retention.
+    fn backfilled(&self) -> Option<(Payload, u64)> {
+        match self {
+            PendingWrite::Column { slot, .. } => Some((Payload::Column, *slot)),
+            PendingWrite::BackfillEnvelope { slot, .. } => Some((Payload::Envelope, *slot)),
+            PendingWrite::BackfillBlock { block, .. } => Some((Payload::Block, block.facts.slot)),
+            _ => None,
+        }
+    }
+
     fn lands(&self) -> bool {
         match self {
             PendingWrite::Column { .. } |
@@ -196,29 +249,69 @@ impl PendingWrite {
             PendingWrite::Prune { .. } |
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::PersistPeer { .. } |
-            PendingWrite::LoadPeers => false,
+            PendingWrite::LoadPeers |
+            PendingWrite::IndexBlock { .. } |
+            PendingWrite::Coverage { .. } |
+            PendingWrite::CommitCoverage { .. } => false,
         }
     }
 }
 
-/// The coverage is mid-change while writes that land are queued, so nothing
-/// is published or linked from it until `landing` is zero.
+/// The coverage is mid-change while writes that land are queued or in
+/// flight, so nothing is published or linked from it until `landing` is
+/// zero. A write counts from its push until it lands. Index appends do not
+/// land: nothing waits for them.
 #[derive(Default)]
 struct WriteQueue {
     queue: VecDeque<PendingWrite>,
     landing: usize,
+    // Per slot, promotions pushed and not yet landed: its finalized files
+    // are not all in place.
+    promoting: FxHashMap<u64, u32>,
 }
 
 impl WriteQueue {
     fn push_back(&mut self, write: PendingWrite) {
         self.landing += usize::from(write.lands());
+        if let Some(slot) = write.promoted_slot() {
+            *self.promoting.entry(slot).or_default() += 1;
+        }
         self.queue.push_back(write);
     }
 
-    fn pop_front(&mut self) -> Option<PendingWrite> {
-        let write = self.queue.pop_front()?;
+    /// Joins a burst of landed blocks into the append already queued last.
+    fn push_index_record(&mut self, dir: PathBuf, record: Record) {
+        if let Some(PendingWrite::IndexBlock { dir: queued, records }) = self.queue.back_mut() &&
+            *queued == dir
+        {
+            records.extend_from_slice(&record.encode());
+            return;
+        }
+        self.push_back(PendingWrite::IndexBlock { dir, records: record.encode().to_vec() });
+    }
+
+    fn insert(&mut self, index: usize, write: PendingWrite) {
+        self.queue.insert(index, write);
+    }
+
+    fn remove(&mut self, index: usize) -> Option<PendingWrite> {
+        self.queue.remove(index)
+    }
+
+    fn landed(&mut self, write: &PendingWrite) {
         self.landing -= usize::from(write.lands());
-        Some(write)
+        if let Some(slot) = write.promoted_slot() &&
+            let Entry::Occupied(mut pending) = self.promoting.entry(slot)
+        {
+            *pending.get_mut() -= 1;
+            if *pending.get() == 0 {
+                pending.remove();
+            }
+        }
+    }
+
+    fn promoting(&self, slot: u64) -> bool {
+        self.promoting.contains_key(&slot)
     }
 
     fn landing(&self) -> usize {
@@ -260,6 +353,13 @@ impl QueryUnit {
 
     fn is_envelope(&self) -> bool {
         matches!(self, QueryUnit::Envelope { .. } | QueryUnit::UnfinalizedEnvelope { .. })
+    }
+
+    fn is_finalized(&self) -> bool {
+        matches!(
+            self,
+            QueryUnit::Block { .. } | QueryUnit::Column { .. } | QueryUnit::Envelope { .. }
+        )
     }
 }
 
@@ -394,6 +494,16 @@ impl PendingQuery {
     }
 }
 
+fn disk_ring() -> Result<DiskIo, Error> {
+    let unavailable = |e: Error| {
+        let needs = "needs Linux 5.15+ and a seccomp profile that allows io_uring";
+        Error::new(e.kind(), format!("io_uring unavailable ({needs}): {e}"))
+    };
+    let mut disk = DiskIo::new(DiskConfig::default()).map_err(unavailable)?;
+    disk.limit_io_workers(IO_WORKERS, 0).map_err(unavailable)?;
+    Ok(disk)
+}
+
 /// Truncation removes whole slot groups, so the group holding `earliest_slot`
 /// stays and everything below it goes.
 pub(super) fn first_retained_slot(earliest_slot: u64) -> u64 {
@@ -441,11 +551,21 @@ pub(super) struct Store {
     history: History,
     // Slot of the newest finalized-state checkpoint committed to disk.
     last_persisted_finalized_slot: u64,
-    // In-flight streamed checkpoint, advanced one section per `file_io` turn.
+    // In-flight streamed checkpoint, advanced one chunk or commit stage per
+    // `file_io` turn.
     checkpoint: Option<CheckpointWriter>,
+    remover: DirectoryRemover,
+    // Per payload, the history floor already handed to `remover`.
+    history_floors: [Option<u64>; ALL_PAYLOADS.len()],
 
     write_queue: WriteQueue,
+    writer: FileWriter<PendingWrite>,
+    coverage_bytes: Vec<u8>,
+    coverage_retry_at: Option<Instant>,
+    // Group directories known to exist, so each is created once.
+    known_dirs: FxHashSet<PathBuf>,
     query_queue: VecDeque<PendingQuery>,
+    reader: FileReader<(PendingQuery, QueryUnit)>,
 }
 
 impl Store {
@@ -473,6 +593,8 @@ impl Store {
         // Finalized-state checkpoints: drop incomplete dirs, prune to the
         // newest N, and anchor `last_persisted` at the newest committed slot.
         let last_persisted_finalized_slot = checkpoint::init_checkpoints_dir(&store_dir)?;
+        let remover = DirectoryRemover::new(&store_dir)?;
+        let writer = FileWriter::new(&store_dir)?;
 
         Ok(Self {
             history: History::new(spec.clone()),
@@ -486,8 +608,15 @@ impl Store {
             sync_target: SyncUpdate::default(),
             last_persisted_finalized_slot,
             checkpoint: None,
+            remover,
+            history_floors: [None; ALL_PAYLOADS.len()],
             write_queue: Default::default(),
+            writer,
+            coverage_bytes: Vec::new(),
+            coverage_retry_at: None,
+            known_dirs: FxHashSet::default(),
             query_queue: Default::default(),
+            reader: FileReader::new()?,
         })
     }
 
@@ -746,13 +875,12 @@ impl Store {
         // drains straight to a rate-limited error. A `Complete` would read as
         // "nothing stored" and get us penalised.
         let peer = stream_id.peer();
-        let of_peer = self
-            .query_queue
-            .iter()
+        let queries = self.query_queue.iter().chain(self.reader.tags().map(|(query, _)| query));
+        let of_peer = queries
             .filter(|q| matches!(q.source, RequestSource::Peer(id) if id.peer() == peer))
             .count();
         if of_peer >= MAX_INFLIGHT_QUERIES_PER_PEER ||
-            self.query_queue.len() >= MAX_INFLIGHT_QUERIES
+            self.query_queue.len() + self.reader.in_flight() >= MAX_INFLIGHT_QUERIES
         {
             silver_log::warn!(?stream_id, of_peer, "queries at capacity");
             self.query_queue.push_back(PendingQuery::rate_limited(RequestSource::Peer(stream_id)));
@@ -990,7 +1118,14 @@ impl Store {
         let canonical =
             self.unfinalized.canonical_chain_in_range(self.head.root, self.head.slot, start, end);
         for slot in start..end {
-            push(slot, canonical.get(&slot).copied());
+            match canonical.get(&slot) {
+                Some(&roots) => push(slot, Some(roots)),
+                None if slot <= self.head.finalized_slot && !self.finalized.skipped(slot) => {
+                    push(slot, None)
+                }
+                // Skipped, or above the head.
+                None => {}
+            }
         }
     }
 
