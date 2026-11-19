@@ -3,7 +3,8 @@ use std::{io::Write, time::Instant};
 use flux::spine::SpineProducers;
 use fxhash::FxHashMap;
 use silver_common::{
-    ForkName, GossipTopic, PeerEvent, SilverSpineProducers, TCacheProducer, TCacheRead, TProducer,
+    ForkName, GossipTopic, Nanos, PeerEvent, SilverSpineProducers, TCacheProducer, TCacheRead,
+    TProducer,
     cell_store::{
         CellKey, CellOrigin, CellStoreConfig, CellStoreEvent, CellValidationRequest,
         CommitmentContext, DataColumnCounters, HeaderValidationRequest, MAX_CONTEXT_BYTES,
@@ -80,6 +81,51 @@ impl PartialBudget {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Claim {
+    context: CommitmentContext,
+    peer: usize,
+    column: u64,
+    received: Nanos,
+}
+
+/// The context the first sender gave each provisional root. A trusted context
+/// that contradicts it convicts that sender.
+pub(super) struct ProvisionalClaims {
+    claims: FxHashMap<[u8; 32], Claim>,
+}
+
+impl ProvisionalClaims {
+    pub(super) fn new(config: &CellStoreConfig) -> Self {
+        Self {
+            claims: FxHashMap::with_capacity_and_hasher(config.live_blocks(), Default::default()),
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.claims.clear();
+    }
+
+    pub(super) fn forget(&mut self, root: &[u8; 32]) {
+        self.claims.remove(root);
+    }
+
+    fn claim(&mut self, claim: Claim) {
+        self.claims.entry(claim.context.block_root).or_insert(claim);
+    }
+
+    pub(super) fn contradicted(&mut self, trusted: &CommitmentContext) -> Option<PeerEvent> {
+        let claim = self.claims.remove(&trusted.block_root)?;
+        (claim.context != *trusted).then_some(PeerEvent::ColumnVerdict {
+            p2p_peer: claim.peer,
+            block_root: trusted.block_root,
+            column: claim.column,
+            recv_ts: claim.received,
+            accepted: false,
+        })
+    }
+}
+
 impl ColumnIngress for CellIngress {
     fn producer_mut(&mut self) -> &mut TProducer {
         self.producer_mut()
@@ -136,6 +182,14 @@ impl ColumnIngress for CellIngress {
         };
         if self.allocator.optimistic(context, group.domain, header, peer).is_err() {
             return;
+        }
+        if self.allocator.trusted_context(&group.block_root).is_none() {
+            self.provisional_claims.claim(Claim {
+                context,
+                peer,
+                column: group.column,
+                received: message.received,
+            });
         }
         self.stage_cells(&parsed, group, slot, peer, origin, deadline, now, producers);
     }

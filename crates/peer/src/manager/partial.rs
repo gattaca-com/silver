@@ -5,6 +5,8 @@ use silver_common::{GossipTopic, Nanos, PeerId};
 use super::PeerManager;
 use crate::PeerCounters;
 
+const MAX_COLUMN_DELIVERIES: usize = 8192;
+
 struct DeliveryCredit {
     credited: bool,
     last_invalid: Option<Nanos>,
@@ -17,7 +19,7 @@ pub(super) struct ColumnDeliveries {
 
 impl ColumnDeliveries {
     pub(super) fn new() -> Self {
-        Self { entries: HashMap::with_capacity(8192) }
+        Self { entries: HashMap::with_capacity(MAX_COLUMN_DELIVERIES) }
     }
     pub(super) fn expire(&mut self, now: Instant) {
         self.entries.retain(|_, credit| now < credit.expires);
@@ -46,9 +48,18 @@ impl PeerManager {
         }
         let Some(peer) = self.peers.get(&conn) else { return };
         let key = (peer.peer_id, root, column);
-        if self.column_deliveries.entries.len() >= 8192 &&
+        let topic = GossipTopic::DataColumnSidecar(column);
+        // Rejections cost a sender nothing to produce, so they may only fill
+        // half the table; credits keep the rest. Without an entry a rejection
+        // still penalises, only without the per-frame dedup.
+        let limit = if accepted { MAX_COLUMN_DELIVERIES } else { MAX_COLUMN_DELIVERIES / 2 };
+        if self.column_deliveries.entries.len() >= limit &&
             !self.column_deliveries.entries.contains_key(&key)
         {
+            if !accepted {
+                PeerCounters::GossipInvalidMsg.inc();
+                self.add_invalid_delivery(conn, topic);
+            }
             return;
         }
         let credit = self.column_deliveries.entries.entry(key).or_insert(DeliveryCredit {
@@ -56,7 +67,6 @@ impl PeerManager {
             last_invalid: None,
             expires: now + self.params.score_decay_interval * 2,
         });
-        let topic = GossipTopic::DataColumnSidecar(column);
         if accepted {
             if credit.credited {
                 return;
@@ -115,6 +125,12 @@ impl PeerManager {
             .filter_map(move |&peer| self.partial_peer(peer, topic, digest))
     }
 
+    /// The peer offered cells for a partial request and did not send them in
+    /// time. As a broken IHAVE promise, P7 absorbs the occasional honest miss.
+    pub fn on_broken_partial_offer(&mut self, conn: usize) {
+        self.add_behaviour_penalty(conn, 1.0, "partial offer not delivered");
+    }
+
     pub fn lazy_gossip_limit(&self) -> usize {
         self.params.d_lazy as usize
     }
@@ -156,5 +172,34 @@ mod tests {
         assert_eq!(manager.peers[&1].topic_stats[&topic].first_deliveries, 2.0);
         manager.column_deliveries.expire(now + manager.params.score_decay_interval * 2);
         assert!(manager.column_deliveries.entries.is_empty());
+    }
+
+    #[test]
+    fn rejections_cannot_crowd_out_credit_or_escape_penalty() {
+        let topic = GossipTopic::DataColumnSidecar(3);
+        let now = Instant::now();
+        let mut params = silver_config::ScoreParams::default();
+        params.graylist_threshold = f64::MIN;
+        let (mut manager, mut captured) = fixture(vec![topic], params);
+        connect(&mut manager, &mut captured, 1, 1, now);
+        connect(&mut manager, &mut captured, 2, 2, now);
+
+        let root = |i: usize| {
+            let mut root = [0; 32];
+            root[..8].copy_from_slice(&i.to_le_bytes());
+            root
+        };
+        let flood = MAX_COLUMN_DELIVERIES;
+        for i in 0..flood {
+            manager.on_column_verdict(1, root(i), 3, Nanos(1), false, now);
+        }
+        assert_eq!(manager.column_deliveries.entries.len(), MAX_COLUMN_DELIVERIES / 2);
+        assert_eq!(
+            manager.peers[&1].topic_stats[&topic].invalid_deliveries, flood as f64,
+            "rejections past the table still penalise"
+        );
+
+        manager.on_column_verdict(2, root(flood), 3, Nanos(1), true, now);
+        assert_eq!(manager.peers[&2].topic_stats[&topic].first_deliveries, 1.0);
     }
 }
