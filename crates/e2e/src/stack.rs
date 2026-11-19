@@ -8,6 +8,7 @@ use std::{
     io,
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     sync::{Arc, atomic::AtomicUsize},
+    time::Duration,
 };
 
 use flux::{spine::SpineAdapter, tile::Tile};
@@ -318,7 +319,14 @@ impl PublisherStack {
                 [0u8; METADATA_SIZE],
                 0,
             ),
-            GossipHandler::new(gossip_tcaches, ssz_producer, protobuf_producer, None).unwrap(),
+            GossipHandler::new(
+                gossip_tcaches,
+                ssz_producer,
+                protobuf_producer,
+                None,
+                Duration::from_secs(12),
+            )
+            .unwrap(),
             control_rpc_producer,
             controller_tcaches,
             cluster_out_producer,
@@ -447,9 +455,14 @@ impl EchoStack {
             .map_err(std::io::Error::other)?;
         network.open_tcaches().map_err(std::io::Error::other)?;
 
-        let compression =
-            GossipHandler::new(gossip_tcaches, ssz_producer, protobuf_producer, boot_domain)
-                .map_err(std::io::Error::other)?;
+        let compression = GossipHandler::new(
+            gossip_tcaches,
+            ssz_producer,
+            protobuf_producer,
+            boot_domain,
+            Duration::from_secs(12),
+        )
+        .map_err(std::io::Error::other)?;
 
         let mut controller = Controller::new(
             PeerManager::new(

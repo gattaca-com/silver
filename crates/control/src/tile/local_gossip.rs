@@ -194,6 +194,7 @@ pub(super) mod tests {
                 TCache::producer(TCacheId::ControlProcessing, 1 << 12),
                 protobuf,
                 Some(silver_common::GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
+                Duration::from_secs(12),
             )
             .unwrap();
             gossip.open_tcaches().unwrap();

@@ -1074,6 +1074,7 @@ pub enum RpcOffence {
     InboundStreamRateLimit,
     InboundGossipRateLimit,
     GossipBodySlow,
+    GossipPublishSpam,
 }
 
 impl RpcOffence {
@@ -1089,6 +1090,7 @@ impl RpcOffence {
             Self::InboundStreamRateLimit => "inbound stream rate limit exceeded",
             Self::InboundGossipRateLimit => "inbound gossip rate limit exceeded",
             Self::GossipBodySlow => "inbound gossip body behind its minimum rate",
+            Self::GossipPublishSpam => "gossip publish budget exceeded",
         }
     }
 }

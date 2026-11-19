@@ -291,6 +291,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         control_processing_producer,
         control_gossip_producer,
         Some(silver_common::GossipDomain::new(fork_digest, spec.fork_at_slot(boot_wall_slot))),
+        Duration::from_millis(spec.slot_duration_ms()),
     )?;
 
     let mut control_tile = Controller::new(

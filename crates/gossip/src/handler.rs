@@ -1,13 +1,19 @@
-use std::{collections::VecDeque, io::Write, str, time::Instant};
+use std::{
+    collections::VecDeque,
+    io::Write,
+    str,
+    time::{Duration, Instant},
+};
 
 use buffa::MessageView;
 use flux::spine::SpineAdapter;
 use silver_common::{
     BroadcastValidation, Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn,
     GossipMsgOut, GossipTopic, GossipTraffic, GossipTrafficBytes, LOCAL_GOSSIP_STREAM_ID,
-    MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent, SelfBuiltGossip,
-    SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
-    TCacheTable, TProducer, TReadMode, TileId, cell_store::PartialColumnsMode, msg_id_valid_snappy,
+    MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent, RpcOffence, RpcSeverity,
+    SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer,
+    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    cell_store::PartialColumnsMode, msg_id_valid_snappy,
 };
 
 use crate::{
@@ -22,6 +28,7 @@ use crate::{
     generated::RPCView,
     mcache::MessageCache,
     message::{copy_compressed_to_protobuf_output, handle_incoming},
+    publish_budget::{Admission, PublishBudget},
 };
 
 /// Reads all incoming gossip protobuf messages (sequential consumer):
@@ -50,6 +57,7 @@ pub struct GossipHandler {
     snap_scratch: Vec<u8>,
 
     extensions: ExtensionTracker,
+    publish_budget: PublishBudget,
     partial_columns: PartialColumnsMode,
 
     /// Our `(topic, digest)` subscriptions, and the SUBSCRIBE frame announcing
@@ -69,6 +77,7 @@ impl GossipHandler {
         ssz_gossip_publish: TProducer,
         protobuf_gossip_publish: TProducer,
         domain: Option<GossipDomain>,
+        slot_duration: Duration,
     ) -> Result<Self, Error> {
         let mcache = MessageCache::new();
 
@@ -79,6 +88,7 @@ impl GossipHandler {
             mcache_publish: protobuf_gossip_publish,
             mcache,
             extensions: ExtensionTracker::default(),
+            publish_budget: PublishBudget::new(slot_duration),
             partial_columns: PartialColumnsMode::Off,
             subscriptions: Vec::new(),
             subscriptions_frame: Vec::new(),
@@ -553,7 +563,30 @@ impl GossipHandler {
                     );
                 }
 
-                for gossip_msg in &gossip_proto.publish {
+                let publish = &gossip_proto.publish;
+                let admission = match publish.is_empty() {
+                    true => Admission::Admitted,
+                    false => self.publish_budget.admit(stream_id.peer(), publish.len(), now),
+                };
+                let publish = match admission {
+                    Admission::Admitted => &publish[..],
+                    Admission::Dropped { first } => {
+                        if first {
+                            silver_log::warn!(
+                                ?stream_id,
+                                entries = publish.len(),
+                                "gossip publish budget exceeded"
+                            );
+                            emit(GossipHandlerEvent::PeerEvent(PeerEvent::RpcMisbehaviour {
+                                p2p_peer: stream_id.peer(),
+                                severity: RpcSeverity::Fatal,
+                                offence: RpcOffence::GossipPublishSpam,
+                            }));
+                        }
+                        &[]
+                    }
+                };
+                for gossip_msg in publish {
                     if gossip_msg.key.is_some() ||
                         gossip_msg.signature.is_some() ||
                         gossip_msg.seqno.is_some() ||
@@ -729,6 +762,7 @@ mod tests {
             TCache::producer(TCacheId::ControlProcessing, 1 << 16),
             protobuf,
             Some(old),
+            Duration::from_secs(12),
         )
         .unwrap();
         handler.open_tcaches().unwrap();
@@ -765,6 +799,7 @@ mod tests {
             TCache::producer(TCacheId::ControlProcessing, 1 << 16),
             protobuf,
             None,
+            Duration::from_secs(12),
         )
         .unwrap();
         handler.open_tcaches().unwrap();
@@ -856,6 +891,7 @@ mod tests {
             ssz_producer,
             protobuf_producer,
             Some(GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
+            Duration::from_secs(12),
         )
         .expect("gossip handler");
         handler.open_tcaches().unwrap();
