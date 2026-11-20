@@ -4,7 +4,6 @@ use silver_common::{DataKind, Origin, PREFILL_SLOTS, Prefill};
 
 use super::{
     BACKFILL_BATCH, BACKFILL_SETTLE_TIMEOUT, SyncAction,
-    by_root::ByRootRequests,
     peers::PeerView,
     ranges::Ranges,
     sync_window::{BlockState, Coverage, Needs, Slot, SyncWindow},
@@ -13,10 +12,7 @@ use super::{
 pub(super) struct Backfill {
     window: SyncWindow,
     ranges: Ranges,
-    prefill: Option<Prefill>,
-    // When the range last had nothing left to ask.
-    finished_at: Option<Instant>,
-    chased: Option<[u8; 32]>,
+    start: Option<Slot>,
 }
 
 impl Backfill {
@@ -24,9 +20,7 @@ impl Backfill {
         Self {
             window: SyncWindow::new(),
             ranges: Ranges::new(Origin::Backfill, BACKFILL_BATCH, 0, BACKFILL_SETTLE_TIMEOUT),
-            prefill: None,
-            finished_at: None,
-            chased: None,
+            start: None,
         }
     }
 
@@ -36,25 +30,15 @@ impl Backfill {
         Needs { data_availability_floor: 0, custodies_columns: custody != 0, gloas_fork_slot: 0 }
     }
 
-    pub(super) fn on_prefill(&mut self, prefill: Prefill, root_requests: &mut ByRootRequests) {
-        // Storage wants another root once the chased one landed.
-        if let Some(root) = self.chased.take_if(|root| *root != prefill.wanted_parent) {
-            root_requests.retire(&root, DataKind::Block);
-        }
-        let new_range = self.prefill.is_none_or(|last| last.start != prefill.start);
-        self.seed(prefill, new_range);
-    }
-
-    fn seed(&mut self, prefill: Prefill, new_range: bool) {
+    pub(super) fn on_prefill(&mut self, prefill: Prefill) {
         let tail = prefill.start.saturating_sub(1);
-        if new_range {
-            // The ring keeps nothing from the last range, and the requests
-            // that were out for it name slots no longer owed.
+        if self.start != Some(prefill.start) {
+            // A new range. The ring keeps nothing from the last one, and the
+            // requests that were out for it name slots no longer owed.
             self.window.drop_above(tail);
             self.ranges.reset();
+            self.start = Some(prefill.start);
         }
-        self.prefill = Some(prefill);
-        self.finished_at = None;
 
         self.window.set_tail(tail);
         self.ranges.set_columns(prefill.columns_missing);
@@ -101,7 +85,6 @@ impl Backfill {
     pub(super) fn on_terminator(
         &mut self,
         peers: &PeerView,
-        root_requests: &mut ByRootRequests,
         request_id: u64,
         peer: usize,
         delivered: bool,
@@ -116,13 +99,6 @@ impl Backfill {
         for slot in span.0..=span.1 {
             self.window.mark_empty(slot);
         }
-        // Storage links only from a block, so a range holding none can
-        // move it only through the block below, reached by root.
-        if let Some(prefill) = self.prefill {
-            let root = prefill.wanted_parent;
-            root_requests.want(root, DataKind::Block, 0, Origin::Backfill, prefill.start, now);
-            self.chased = Some(root);
-        }
     }
 
     pub(super) fn drive(
@@ -132,20 +108,11 @@ impl Backfill {
         now: Instant,
         emit: &mut impl FnMut(SyncAction) -> bool,
     ) {
-        let Some(prefill) = self.prefill else { return };
-        let end = prefill.start.saturating_add(PREFILL_SLOTS - 1);
+        let Some(start) = self.start else { return };
+        let end = start.saturating_add(PREFILL_SLOTS - 1);
         let needs = Self::needs(custody);
         self.ranges.reoffer_unplaced(now, emit);
         self.window.advance_tail(end, needs);
-        if self.window.tail() >= end {
-            // Storage moves on once the range is on disk. Standing still
-            // means what this side took as done never reached it, such as a
-            // peer's silence: start the range over.
-            let finished_at = *self.finished_at.get_or_insert(now);
-            if now.saturating_duration_since(finished_at) >= BACKFILL_SETTLE_TIMEOUT {
-                self.seed(prefill, true);
-            }
-        }
         self.ranges.retire_overtaken(self.window.tail());
         self.ranges.issue(&self.window, end, needs, next_id, now, emit);
     }

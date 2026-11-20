@@ -32,10 +32,6 @@ impl BootCheckpoint {
         let data_dir = &chain_config.data_dir;
         match &chain_config.boot {
             BootSource::File { ssz, pubkeys } => Self::from_file(ssz, pubkeys.as_deref()),
-            BootSource::Genesis(ssz) => match latest_local_checkpoint(data_dir) {
-                Some(local) => Self::persisted(Some(local), data_dir),
-                None => Self::from_file(ssz, None),
-            },
             BootSource::Providers(urls) => {
                 let local = latest_local_checkpoint(data_dir);
                 let local_head =
@@ -58,16 +54,6 @@ impl BootCheckpoint {
                 hex::encode(genesis.validators_root),
                 chain_config.spec.network_name(),
                 hex::encode(expected)
-            )));
-        }
-        if let Some(expected) = chain_config.genesis_unix_secs &&
-            genesis.unix_secs != expected
-        {
-            return Err(io::Error::other(format!(
-                "boot state has genesis time {}, but {}'s is {expected}: it is from another chain \
-                 with the same validators",
-                genesis.unix_secs,
-                chain_config.spec.network_name(),
             )));
         }
         Ok(())
@@ -203,63 +189,5 @@ mod tests {
         let hoodi = Network::Hoodi.genesis_validators_root().unwrap();
         let err = mainnet_boot_from(dir.path(), hoodi).err().unwrap();
         assert!(err.to_string().contains("another chain"), "{err}");
-    }
-
-    const DEVNET_GENESIS: u64 = 1_700_000_000;
-
-    fn state_head(unix_secs: u64) -> Vec<u8> {
-        let mut head = unix_secs.to_le_bytes().to_vec();
-        head.extend_from_slice(&[0xab; 32]);
-        head
-    }
-
-    /// A devnet metadata directory under `dir`, with `checkpoint_file` set
-    /// when given.
-    fn devnet_chain(dir: &Path, checkpoint_file: Option<&Path>) -> ChainConfig {
-        let network = dir.join("network");
-        std::fs::create_dir_all(&network).unwrap();
-        std::fs::write(network.join("config.yaml"), "GENESIS_FORK_VERSION: 0x10000038\n").unwrap();
-        std::fs::write(network.join("genesis.ssz"), state_head(DEVNET_GENESIS)).unwrap();
-        let mut toml = format!(
-            "network = \"{}\"\ndata_storage_dir = \"{}\"\n",
-            network.display(),
-            dir.join("data").display()
-        );
-        if let Some(ssz) = checkpoint_file {
-            toml += &format!("[chain_config]\ncheckpoint_file = \"{}\"\n", ssz.display());
-        }
-        let path = dir.join("silver.toml");
-        std::fs::write(&path, toml).unwrap();
-        Config::load(path.to_str(), Overrides::default()).unwrap().chain().unwrap()
-    }
-
-    /// Two devnets from one mnemonic share a root; the genesis time tells
-    /// them apart.
-    #[test]
-    fn devnet_boot_state_with_the_same_root_but_another_genesis_refused() {
-        let dir = TempDir::new().unwrap();
-        let ssz = dir.path().join("state.ssz");
-        let chain_config = devnet_chain(dir.path(), Some(&ssz));
-
-        std::fs::write(&ssz, state_head(DEVNET_GENESIS)).unwrap();
-        assert!(BootCheckpoint::load(&chain_config).is_ok());
-
-        std::fs::write(&ssz, state_head(DEVNET_GENESIS + 600)).unwrap();
-        let err = BootCheckpoint::load(&chain_config).err().unwrap();
-        assert!(err.to_string().contains("same validators"), "{err}");
-    }
-
-    #[test]
-    fn devnet_restart_boots_from_the_persisted_checkpoint() {
-        let dir = TempDir::new().unwrap();
-        let chain_config = devnet_chain(dir.path(), None);
-        let genesis = state_head(DEVNET_GENESIS);
-        assert_eq!(BootCheckpoint::load(&chain_config).unwrap().ssz(), genesis);
-
-        let slot_dir = Path::new(&chain_config.data_dir).join("finalized_checkpoints/64");
-        std::fs::create_dir_all(&slot_dir).unwrap();
-        let persisted = [genesis, vec![0x64]].concat();
-        std::fs::write(slot_dir.join("64.ssz"), &persisted).unwrap();
-        assert_eq!(BootCheckpoint::load(&chain_config).unwrap().ssz(), persisted);
     }
 }

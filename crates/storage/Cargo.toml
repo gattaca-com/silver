@@ -8,18 +8,12 @@ version.workspace = true
 [dependencies]
 blst.workspace = true
 flux.workspace = true
-flux-disk.workspace = true
 flux-profiler.workspace = true
 fxhash.workspace = true
 hex.workspace = true
-libc.workspace = true
-mio = { workspace = true, optional = true }
 silver_beacon_state_data.workspace = true
 silver_common.workspace = true
 silver_log.workspace = true
-
-[features]
-thread_park = ["flux/park", "dep:mio"]
 
 [lints]
 workspace = true

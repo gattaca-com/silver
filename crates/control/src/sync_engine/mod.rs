@@ -399,9 +399,7 @@ impl SyncEngine {
                     self.ctx.custody_columns,
                 );
             }
-            SyncNeed::BackfillPrefill(prefill) => {
-                self.ctx.backfill.on_prefill(prefill, &mut self.ctx.root_requests)
-            }
+            SyncNeed::BackfillPrefill(prefill) => self.ctx.backfill.on_prefill(prefill),
         }
     }
 
@@ -484,14 +482,7 @@ impl SyncEngine {
     }
 
     pub fn on_terminator(&mut self, request_id: u64, peer: usize, delivered: bool, now: Instant) {
-        self.ctx.backfill.on_terminator(
-            &self.ctx.peers,
-            &mut self.ctx.root_requests,
-            request_id,
-            peer,
-            delivered,
-            now,
-        );
+        self.ctx.backfill.on_terminator(&self.ctx.peers, request_id, peer, delivered, now);
         self.phase.on_terminator(&mut self.ctx, &mut self.window, request_id, peer, delivered, now);
     }
 

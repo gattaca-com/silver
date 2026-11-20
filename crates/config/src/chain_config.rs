@@ -23,10 +23,9 @@ pub struct ChainOverrides {
 /// Where the node takes the state it boots on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootSource {
-    /// `checkpoint_file`, booted from on every start.
+    /// A state file, booted from on every start: `checkpoint_file`, else a
+    /// devnet's `genesis.ssz`.
     File { ssz: PathBuf, pubkeys: Option<PathBuf> },
-    /// A devnet's `genesis.ssz`, booted from until a checkpoint is persisted.
-    Genesis(PathBuf),
     /// The persisted checkpoint, downloaded from these Beacon API bases (e.g.
     /// checkpointz instances) when missing or far behind.
     Providers(Vec<String>),
@@ -39,8 +38,6 @@ pub struct ChainConfig {
     pub bootstrap_enrs: Vec<Enr>,
     pub spec: SpecConfig,
     pub genesis_validators_root: [u8; 32],
-    /// Known for a devnet only, from its `genesis.ssz`.
-    pub genesis_unix_secs: Option<u64>,
     pub data_dir: String,
 }
 
@@ -65,14 +62,9 @@ impl ChainConfig {
         };
         let spec = network.spec()?;
         let genesis_validators_root = network.genesis_validators_root()?;
-        let genesis_unix_secs = network.devnet_genesis()?.map(|genesis| genesis.unix_secs);
         let data_dir = match data_dir {
             Some(dir) => dir.to_owned(),
-            None => default_data_dir(&network.data_dir_name(
-                &spec,
-                &genesis_validators_root,
-                genesis_unix_secs,
-            )),
+            None => default_data_dir(&network.data_dir_name(&spec, &genesis_validators_root)),
         };
         Ok(Self {
             prepare_payload_lookahead_millis: overrides
@@ -82,7 +74,6 @@ impl ChainConfig {
             bootstrap_enrs,
             spec,
             genesis_validators_root,
-            genesis_unix_secs,
             data_dir,
         })
     }
