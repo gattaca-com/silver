@@ -142,9 +142,11 @@ fn expected_gas_limit(parent: u64, target: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use blst::min_pk::SecretKey;
+    use silver_httpcore::ClientResponse;
     use silver_ssz::ssz_view::{BUILDER_BID_FULU_FIXED, EXECUTION_PAYLOAD_HEADER_FIXED};
 
     use super::*;
+    use crate::json_bid::JsonBid;
 
     const FULU: Option<&[u8]> = Some(b"fulu");
     const PARENT_HASH: B256 = [0x11; 32];
@@ -211,6 +213,296 @@ mod tests {
         let root = hash_concat(&hash_builder_bid_fulu(&ssz[100..]), &domain());
         ssz[4..100].copy_from_slice(&key.sign(&root, DST, &[]).to_bytes());
         ssz
+    }
+
+    fn signed_json(bid: &[u8]) -> Vec<u8> {
+        let hex = |bytes: &[u8]| format!("0x{}", hex::encode(bytes));
+        serde_json::to_vec(&serde_json::json!({
+            "version": "fulu",
+            "data": {
+                "message": {
+                    "header": {
+                        "parent_hash": hex(&PARENT_HASH),
+                        "fee_recipient": hex(&[0; 20]),
+                        "state_root": hex(&[0; 32]),
+                        "receipts_root": hex(&[0; 32]),
+                        "logs_bloom": hex(&[0; 256]),
+                        "prev_randao": hex(&PREV_RANDAO),
+                        "block_number": BLOCK_NUMBER.to_string(),
+                        "gas_limit": PARENT_GAS_LIMIT.to_string(),
+                        "gas_used": "0",
+                        "timestamp": TIMESTAMP.to_string(),
+                        "extra_data": "0x",
+                        "base_fee_per_gas": "0",
+                        "block_hash": hex(&[0; 32]),
+                        "transactions_root": hex(&[0; 32]),
+                        "withdrawals_root": hex(&WITHDRAWALS_ROOT),
+                        "blob_gas_used": "0",
+                        "excess_blob_gas": "0"
+                    },
+                    "blob_kzg_commitments": [],
+                    "execution_requests": {"deposits": [], "withdrawals": [], "consolidations": []},
+                    "value": "7",
+                    "pubkey": hex(BuilderBidFuluView::pubkey(&bid[100..]))
+                },
+                "signature": hex(SignedBuilderBidFuluView::signature(bid))
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn signed_response_ssz_control() {
+        let expected = signed(unsigned_bid());
+        let mut body = expected.clone();
+        let response = ClientResponse {
+            status: 200,
+            headers: b"HTTP/1.1 200 OK\r\nEth-Consensus-Version: fulu\r\n\r\n",
+            body: &mut body,
+        };
+        let mut decoder = JsonBid::new();
+        let decoded = decoder.ssz_bid(response);
+        assert_eq!(decoded.bytes, expected);
+        request().check(decoded.bytes, decoded.version, &domain()).unwrap();
+    }
+
+    #[test]
+    fn signed_response_headerless_json() {
+        let expected = signed(unsigned_bid());
+        let mut body = signed_json(&expected);
+        let response = ClientResponse {
+            status: 200,
+            headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            body: &mut body,
+        };
+        let mut decoder = JsonBid::new();
+        let decoded = decoder.ssz_bid(response);
+        assert_eq!(decoded.bytes, expected);
+        request().check(decoded.bytes, decoded.version, &domain()).unwrap();
+    }
+
+    #[test]
+    fn signed_json_http_version_is_authoritative() {
+        let expected = signed(unsigned_bid());
+        let json = String::from_utf8(signed_json(&expected)).unwrap();
+        let mut decoder = JsonBid::new();
+        for (http, json_version, accepted) in [
+            ("fulu", r#""fulu""#, true),
+            ("fulu", r#""gloas""#, true),
+            ("gloas", r#""fulu""#, false),
+            ("electra", r#""fulu""#, false),
+            ("", r#""fulu""#, false),
+            ("fulu", "null", true),
+            ("fulu", r#"{},"version":42"#, true),
+        ] {
+            let mut body = json
+                .replace(r#""version":"fulu""#, &format!(r#""version":{json_version}"#))
+                .into_bytes();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nEth-Consensus-Version: {http}\r\n\r\n"
+            );
+            let decoded = decoder.ssz_bid(ClientResponse {
+                status: 200,
+                headers: headers.as_bytes(),
+                body: &mut body,
+            });
+            assert_eq!(decoded.bytes, expected);
+            assert_eq!(decoded.version, Some(http.as_bytes()));
+            let checked = request().check(decoded.bytes, decoded.version, &domain());
+            if accepted {
+                checked.unwrap();
+            } else {
+                assert!(matches!(checked, Err(BidRefusal::Fork)));
+            }
+        }
+    }
+
+    #[test]
+    fn signed_json_metadata_and_decoder_reuse() {
+        let expected = signed(unsigned_bid());
+        let json = String::from_utf8(signed_json(&expected)).unwrap();
+        let data = serde_json::from_str::<serde_json::Value>(&json).unwrap()["data"].to_string();
+        let mut decoder = JsonBid::new();
+        for valid in [
+            json.clone(),
+            format!(r#"{{"version":"fulu","data":{data}}}"#),
+            format!(r#"{{"data":{data},"version":"f\u0075lu"}}"#),
+        ] {
+            let mut body = valid.into_bytes();
+            let decoded = decoder.ssz_bid(ClientResponse {
+                status: 200,
+                headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+                body: &mut body,
+            });
+            assert_eq!(decoded.bytes, expected);
+            request().check(decoded.bytes, decoded.version, &domain()).unwrap();
+        }
+        for metadata in [
+            "",
+            r#","version":"""#,
+            r#","version":"unknown""#,
+            r#","version":"electra""#,
+            r#","version":"gloas""#,
+            r#","version":null"#,
+            r#","version":42"#,
+            r#","version":{}"#,
+            r#","version":"fulu","version":"fulu""#,
+        ] {
+            let mut body = format!(r#"{{"data":{data}{metadata}}}"#).into_bytes();
+            let decoded = decoder.ssz_bid(ClientResponse {
+                status: 200,
+                headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+                body: &mut body,
+            });
+            assert!(matches!(
+                request().check(decoded.bytes, decoded.version, &domain()),
+                Err(BidRefusal::Fork)
+            ));
+        }
+        for invalid in [
+            r#"{"version":"fulu","data":{"message":{"header":{}}}}"#,
+            r#"{"version":"fulu","data":"#,
+        ] {
+            let mut body = invalid.as_bytes().to_vec();
+            let decoded = decoder.ssz_bid(ClientResponse {
+                status: 200,
+                headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+                body: &mut body,
+            });
+            assert!(decoded.bytes.is_empty());
+            assert!(decoded.version.is_none());
+        }
+        let mut body = signed_json(&expected);
+        let decoded = decoder.ssz_bid(ClientResponse {
+            status: 200,
+            headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            body: &mut body,
+        });
+        request().check(decoded.bytes, decoded.version, &domain()).unwrap();
+        let mut body = expected.clone();
+        let decoded = decoder.ssz_bid(ClientResponse {
+            status: 200,
+            headers: b"HTTP/1.1 200 OK\r\n\r\n",
+            body: &mut body,
+        });
+        assert_eq!(decoded.bytes, expected);
+        assert!(decoded.version.is_none());
+        assert!(matches!(
+            request().check(decoded.bytes, decoded.version, &domain()),
+            Err(BidRefusal::Fork)
+        ));
+    }
+
+    #[test]
+    fn signed_json_fallback_preserves_validation() {
+        let expected = signed(unsigned_bid());
+        let mut decoder = JsonBid::new();
+        let mut body = signed_json(&expected);
+        let decoded = decoder.ssz_bid(ClientResponse {
+            status: 200,
+            headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            body: &mut body,
+        });
+        let check = |request: BidRequest| request.check(decoded.bytes, decoded.version, &domain());
+        assert!(matches!(
+            check(BidRequest { parent_hash: [1; 32], ..request() }),
+            Err(BidRefusal::ParentHash)
+        ));
+        assert!(matches!(
+            check(BidRequest { timestamp: TIMESTAMP + 1, ..request() }),
+            Err(BidRefusal::Timestamp)
+        ));
+        assert!(matches!(
+            check(BidRequest { gas_limit: PARENT_GAS_LIMIT + 1, ..request() }),
+            Err(BidRefusal::GasLimit)
+        ));
+        assert!(matches!(
+            request().check(decoded.bytes, decoded.version, &builder_domain([1; 4])),
+            Err(BidRefusal::Signature)
+        ));
+        let mut altered = expected;
+        altered[4] ^= 1;
+        let mut body = signed_json(&altered);
+        let decoded = decoder.ssz_bid(ClientResponse {
+            status: 200,
+            headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            body: &mut body,
+        });
+        assert!(matches!(
+            request().check(decoded.bytes, decoded.version, &domain()),
+            Err(BidRefusal::Signature)
+        ));
+    }
+
+    #[test]
+    fn header_fetch_returns_signed_json_and_ssz() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            thread,
+            time::{Duration, Instant},
+        };
+
+        use silver_config::PbsConfig;
+        use silver_httpcore::{Readiness, TokenRange};
+
+        use crate::header_fetch::HeaderFetch;
+
+        let expected = signed(unsigned_bid());
+        for (body, metadata) in [
+            (signed_json(&expected), "Content-Type: application/json\r\n"),
+            (expected.clone(), "Eth-Consensus-Version: fulu\r\n"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let config = PbsConfig::new(format!("http://{}", listener.local_addr().unwrap()));
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                assert!(request.starts_with(b"GET /eth/v1/builder/header/1/"));
+                let head =
+                    format!("HTTP/1.1 200 OK\r\n{metadata}Content-Length: {}\r\n\r\n", body.len());
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&body).unwrap();
+            });
+            let spec = SpecConfig::mainnet();
+            let mut readiness = Readiness::new(16);
+            let mut fetch = HeaderFetch::new(
+                TokenRange::whole(),
+                &config,
+                &spec,
+                TIMESTAMP - spec.seconds_per_slot(),
+            );
+            let request = SidecarBidRequest {
+                slot: 1,
+                parent_hash: PARENT_HASH,
+                prev_randao: PREV_RANDAO,
+                withdrawals_root: WITHDRAWALS_ROOT,
+                block_number: BLOCK_NUMBER,
+                parent_gas_limit: PARENT_GAS_LIMIT,
+                proposer_pubkey: [0; 48],
+            };
+            assert!(fetch.fetch(&request, PARENT_GAS_LIMIT, readiness.registry()));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut answer = None;
+            while answer.is_none() {
+                assert!(Instant::now() < deadline, "no header response");
+                readiness.wait(Duration::from_millis(5));
+                fetch.spin(readiness.events(), readiness.registry(), &mut |request, bid| {
+                    assert_eq!(request.slot, 1);
+                    assert_eq!(request.parent_hash, PARENT_HASH);
+                    answer = Some(bid.unwrap().to_vec());
+                });
+            }
+            assert_eq!(answer.unwrap(), expected);
+            server.join().unwrap();
+        }
     }
 
     #[test]
