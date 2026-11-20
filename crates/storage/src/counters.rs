@@ -43,7 +43,7 @@ silver_common::declare_counters! {
         BackfillKzgBatchColumns,
         BackfillKzgBatchRejects,
         BackfillIncompleteExpired,
-        WriteQueueLength,
-        ReadQueueLength,
+        WriteQueueLength: gauge,
+        ReadQueueLength: gauge,
     }
 }

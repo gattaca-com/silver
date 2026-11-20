@@ -23,7 +23,7 @@ silver_common::declare_counters! {
         P2pGossipBytesSent,
         P2pRpcBytesRecv,
         P2pRpcBytesSent,
-        P2pConnections,
+        P2pConnections: gauge,
         // Connection-lifecycle diagnostics.
         DialAttempts,
         DialHandshakeOk,
@@ -58,7 +58,7 @@ silver_common::declare_counters! {
         GossipRateLimitDisconnect,
         InboundStreamRateLimited,
         // RPC codecs currently retained in the network-tile-wide free list.
-        RpcCodecPoolIdle,
+        RpcCodecPoolIdle: gauge,
         CacheSegmentedAdmitted,
         CacheSegmentedRejected,
         CacheSegmentedCapacity,
@@ -66,11 +66,11 @@ silver_common::declare_counters! {
         CacheSegmentedPeerCapacity,
         CacheSegmentedSegments,
         CacheSegmentedOwnerAllocations,
-        CacheSegmentedFrames,
+        CacheSegmentedFrames: gauge,
         // Reserved owner slots, including owners already held by Quinn.
-        CacheSegmentedOwners,
+        CacheSegmentedOwners: gauge,
         // Reserved ranges per recipient, including descriptors; not unique cache backing bytes.
-        CacheSegmentedRetainedBytes,
+        CacheSegmentedRetainedBytes: gauge,
         // Complete partial frames accepted by Quinn, not yet necessarily ACKed.
         PartialFramesWritten,
         PartialResponsesSent,

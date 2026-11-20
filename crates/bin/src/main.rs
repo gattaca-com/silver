@@ -12,7 +12,7 @@ use clap::Parser;
 use flux::{
     spine::ScopedSpine,
     tile::{Tile, TileConfig, TileName, tile_runner},
-    utils::ThreadNiceness,
+    utils::{ThreadNiceness, directories::shmem_dir_queues},
 };
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
@@ -80,7 +80,7 @@ const BUILD_INFO: &str = concat!(
 );
 
 fn publish_build_info() -> io::Result<()> {
-    let dir = flux::utils::directories::shmem_dir_queues(APP_NAME);
+    let dir = shmem_dir_queues(APP_NAME);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("build-info"), BUILD_INFO)
 }
@@ -113,6 +113,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     enable_profiler(APP_NAME);
 
     let config = args.config()?;
+    #[cfg(not(feature = "metrics"))]
+    if config.metrics.enabled {
+        return Err("metrics.enabled requires building silver with --features metrics".into());
+    }
     let chain_config = config.chain()?;
 
     let boot_checkpoint = BootCheckpoint::load(&chain_config)
@@ -383,6 +387,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         tcaches,
         boundary_processing_producer,
     );
+
+    #[cfg(feature = "metrics")]
+    let application_boundary_tile = {
+        let mut tile = application_boundary_tile;
+        if config.metrics.enabled {
+            let addr = tile.listen_metrics(config.metrics.bind, shmem_dir_queues(APP_NAME))?;
+            silver_log::info!(%addr, "Prometheus metrics listening");
+        }
+        tile
+    };
 
     // Spine
     let spine = SilverSpine::new(None);

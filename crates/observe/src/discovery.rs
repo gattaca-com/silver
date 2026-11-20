@@ -14,6 +14,34 @@
 
 use std::{collections::HashMap, fs, io, path::PathBuf};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    Counters,
+    Latency,
+    Processing,
+    Tile,
+    Build,
+}
+
+impl SourceKind {
+    pub fn parse(filename: &str) -> Option<(Self, &str)> {
+        if filename == "build-info" {
+            return Some((Self::Build, filename));
+        }
+        let (kind, name) = filename.split_once('-')?;
+        Some((
+            match kind {
+                "counters" => Self::Counters,
+                "latency" => Self::Latency,
+                "timing" => Self::Processing,
+                "tilemetrics" => Self::Tile,
+                _ => return None,
+            },
+            name,
+        ))
+    }
+}
+
 pub struct DiscoveredSources {
     pub counters: Vec<CounterFile>,
     pub tcaches: Vec<CounterFile>,
@@ -56,21 +84,26 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
         for entry in entries.flatten() {
             let path = entry.path();
             let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
-            if let Some(name) = fname.strip_prefix("counters-") {
-                let file = CounterFile { name: name.to_string(), path };
-                if file.name.starts_with("tcache-") {
-                    tcaches.push(file);
-                } else {
-                    counters.push(file);
+            match SourceKind::parse(fname) {
+                Some((SourceKind::Counters, name)) => {
+                    let file = CounterFile { name: name.to_string(), path };
+                    if file.name.starts_with("tcache-") {
+                        tcaches.push(file);
+                    } else {
+                        counters.push(file);
+                    }
                 }
-            } else if let Some(name) = fname.strip_prefix("latency-") {
-                timings.push(TimingFile { name: name.to_string(), path, processing_path: None });
-            } else if let Some(name) = fname.strip_prefix("timing-") {
-                processing.insert(name.to_string(), path);
-            } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
-                tilemetrics.push(TileMetricsFile { name: name.to_string(), path });
-            } else if fname == "build-info" {
-                build_info = fs::read_to_string(&path).ok();
+                Some((SourceKind::Latency, name)) => {
+                    timings.push(TimingFile { name: name.to_string(), path, processing_path: None })
+                }
+                Some((SourceKind::Processing, name)) => {
+                    processing.insert(name.to_string(), path);
+                }
+                Some((SourceKind::Tile, name)) => {
+                    tilemetrics.push(TileMetricsFile { name: name.to_string(), path })
+                }
+                Some((SourceKind::Build, _)) => build_info = fs::read_to_string(path).ok(),
+                None => {}
             }
         }
     }

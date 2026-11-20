@@ -1,4 +1,9 @@
+#[cfg(feature = "metrics")]
+mod metrics;
+
 use std::time::Duration;
+#[cfg(feature = "metrics")]
+use std::{io, net::SocketAddr, path::PathBuf};
 
 use flux::{
     spine::{SpineAdapter, SpineProducers},
@@ -6,6 +11,8 @@ use flux::{
 };
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
+#[cfg(feature = "metrics")]
+use silver_common::SLOTS_PER_EPOCH;
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, BuilderBidsRequest, BuilderBidsResponse, DataColumnsEvent,
     EngineResp, Enr, Identify, Keypair, PeerEvent, SidecarBidRequest, SidecarBidResponse,
@@ -18,7 +25,7 @@ use silver_pbs::{BuilderBids, BuilderEvent, PbsClient, SidecarEvent};
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
-const TENANTS: usize = 6;
+const TENANTS: usize = 6 + cfg!(feature = "metrics") as usize;
 const BEACON_TOKENS: TokenRange = TokenRange::share(0, TENANTS);
 const ENGINE_TOKENS: TokenRange = TokenRange::share(1, TENANTS);
 const PBS_TOKENS: TokenRange = TokenRange::share(2, TENANTS);
@@ -38,6 +45,8 @@ const IDLE_WAIT: Duration = Duration::ZERO;
 
 pub struct ApplicationBoundaryTile {
     readiness: Readiness,
+    #[cfg(feature = "metrics")]
+    metrics: Option<metrics::MetricsEndpoint>,
     pub beacon: BeaconApi,
     engine: EngineApi,
     pbs: Option<PbsClient>,
@@ -124,6 +133,8 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
             },
             &mut |request_id, body| builder_bids.submit_preferences(request_id, body),
         );
+        #[cfg(feature = "metrics")]
+        let did_work = self.metrics.as_mut().is_some_and(|m| m.pump(readiness)) || did_work;
         if did_work {
             adapter.mark_work();
         }
@@ -156,6 +167,8 @@ impl ApplicationBoundaryTile {
             EngineApi::max_sockets(engine_config.max_connections) +
             PbsClient::MAX_SOCKETS +
             BuilderBids::MAX_SOCKETS;
+        #[cfg(feature = "metrics")]
+        let sockets = sockets + metrics::SOCKETS;
 
         let readiness = Readiness::new(sockets);
         let has_sidecar = pbs.is_some();
@@ -196,7 +209,26 @@ impl ApplicationBoundaryTile {
         );
         let builder_bids =
             BuilderBids::new(readiness.registry(), BUILDER_TOKENS, builder_bid_timeout);
-        Self { readiness, beacon, engine, pbs, builder_bids, processing, worked: false }
+        Self {
+            #[cfg(feature = "metrics")]
+            metrics: None,
+            readiness,
+            beacon,
+            engine,
+            pbs,
+            builder_bids,
+            processing,
+            worked: false,
+        }
+    }
+
+    #[cfg(feature = "metrics")]
+    pub fn listen_metrics(&mut self, bind: SocketAddr, sources: PathBuf) -> io::Result<SocketAddr> {
+        let endpoint = metrics::MetricsEndpoint::bind(bind, sources, self.readiness.registry())
+            .map_err(|e| io::Error::new(e.kind(), format!("metrics listener {bind}: {e}")))?;
+        let addr = endpoint.local_addr()?;
+        self.metrics = Some(endpoint);
+        Ok(addr)
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
@@ -205,9 +237,26 @@ impl ApplicationBoundaryTile {
     }
 
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let Self { beacon, engine, pbs, builder_bids, processing, .. } = self;
+        let Self {
+            beacon,
+            engine,
+            pbs,
+            builder_bids,
+            processing,
+            #[cfg(feature = "metrics")]
+            metrics,
+            ..
+        } = self;
 
-        adapter.consume(|event: BeaconStateEvent, _| beacon.handle_beacon_state_event(event));
+        adapter.consume(|event: BeaconStateEvent, _| {
+            #[cfg(feature = "metrics")]
+            if let (BeaconStateEvent::Status { wall_slot, .. }, Some(metrics)) =
+                (&event, metrics.as_mut())
+            {
+                metrics.discover_sources(wall_slot / SLOTS_PER_EPOCH);
+            }
+            beacon.handle_beacon_state_event(event)
+        });
         adapter.consume(|request: SidecarBidRequest, producers| {
             if !pbs.as_mut().is_some_and(|pbs| pbs.request_bid(&request)) {
                 let SidecarBidRequest { slot, parent_hash, .. } = request;

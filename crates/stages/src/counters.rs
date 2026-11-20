@@ -10,15 +10,19 @@ use silver_storage::StorageCounters;
 
 /// Variant names of a `counters-{group}` file, keyed by its `{group}` suffix.
 pub fn counter_names(group: &str) -> Option<&'static [&'static str]> {
+    counter_schema(group).map(|(names, _)| names)
+}
+
+pub fn counter_schema(group: &str) -> Option<(&'static [&'static str], &'static [bool])> {
     match group {
-        "beacon_state" => Some(BeaconStateCounters::NAMES),
-        "cluster" => Some(ClusterCounters::NAMES),
-        "control" => Some(ControlCounters::NAMES),
-        "storage" => Some(StorageCounters::NAMES),
-        "columns" => Some(DataColumnCounters::NAMES),
-        "network" => Some(NetworkCounters::NAMES),
-        "peer" => Some(PeerCounters::NAMES),
-        "tcache" => Some(TCacheCounters::NAMES),
+        "beacon_state" => Some((BeaconStateCounters::NAMES, BeaconStateCounters::GAUGES)),
+        "cluster" => Some((ClusterCounters::NAMES, ClusterCounters::GAUGES)),
+        "control" => Some((ControlCounters::NAMES, ControlCounters::GAUGES)),
+        "storage" => Some((StorageCounters::NAMES, StorageCounters::GAUGES)),
+        "columns" => Some((DataColumnCounters::NAMES, DataColumnCounters::GAUGES)),
+        "network" => Some((NetworkCounters::NAMES, NetworkCounters::GAUGES)),
+        "peer" => Some((PeerCounters::NAMES, PeerCounters::GAUGES)),
+        "tcache" => Some((TCacheCounters::NAMES, TCacheCounters::GAUGES)),
         _ => None,
     }
 }

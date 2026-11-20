@@ -29,12 +29,8 @@ use crate::{
         },
     },
     config::{deposit_contract, fork_schedule, spec},
-    ctx::ApiCtx,
     events::events,
-    http::{
-        response::Response,
-        router::{Handler, Method, Request},
-    },
+    http::router::{Handler, Method},
     node::{
         identity::identity,
         peers::{peer_count, peers},
@@ -63,8 +59,6 @@ use crate::{
     },
 };
 
-const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
-
 /// What a node answers before it follows the chain: its own status, the
 /// chain's configuration, and event streams.
 pub(crate) const SERVED_WHILE_SYNCING: &[&str] = &[
@@ -79,7 +73,6 @@ pub(crate) const SERVED_WHILE_SYNCING: &[&str] = &[
     "/eth/v1/node/peers",
     "/eth/v1/node/syncing",
     "/eth/v1/node/version",
-    "/metrics",
 ];
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
@@ -173,12 +166,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/execution_payload_envelopes/{slot}/{beacon_block_root}",
         execution_payload_envelope,
     ),
-    (Method::Get, "/metrics", metrics),
 ];
-
-fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
-    resp.empty(METRICS_CONTENT_TYPE);
-}
 
 #[cfg(test)]
 mod tests {
@@ -186,7 +174,7 @@ mod tests {
     use crate::{
         ctx::anchor_ctx,
         http::router::Method,
-        testing::{answer, body, dispatch, posting, request},
+        testing::{answer, dispatch, posting, request},
     };
 
     fn concrete(pattern: &str) -> String {
@@ -224,11 +212,9 @@ mod tests {
     }
 
     #[test]
-    fn metrics_response_valid_prometheus_format() {
+    fn metrics_is_on_a_separate_listener() {
         let resp = answer(&anchor_ctx(), &request("GET", "/metrics"));
         let s = std::str::from_utf8(&resp).unwrap();
-        assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(s.contains("text/plain; version=0.0.4; charset=utf-8"));
-        assert_eq!(body(&resp), b"");
+        assert!(s.starts_with("HTTP/1.1 404"));
     }
 }

@@ -127,10 +127,12 @@ service:
     # -- RPC Service session affinity configuration.
     sessionAffinityConfig: {}
   metrics:
-    # -- Metrics Service type. Targets the Beacon API listener.
+    # -- Enable the dedicated Prometheus listener and Service. ServiceMonitor also enables them.
+    enabled: false
+    # -- Metrics Service type.
     type: ClusterIP
-    # -- Metrics Service port. Silver exposes /metrics on its Beacon API.
-    port: 5051
+    # -- Dedicated metrics listener and Service port.
+    port: 5054
     # -- Metrics Service annotations.
     annotations: {}
     # -- Additional metrics Service labels.

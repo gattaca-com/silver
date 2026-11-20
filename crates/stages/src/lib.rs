@@ -6,7 +6,7 @@
 //! `ColumnRecv`) use the ingestion clock, everything else the publish clock.
 
 pub use clock::SlotClock;
-pub use counters::{CounterValues, counter_names};
+pub use counters::{CounterValues, counter_names, counter_schema};
 pub use event::{Stage, StageEvent};
 pub use reader::StageReader;
 

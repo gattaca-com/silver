@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+silver_observe = { workspace = true, optional = true }
 flux.workspace = true
 mio = { workspace = true, optional = true }
 silver_beacon_api.workspace = true
@@ -25,6 +26,7 @@ silver_engine_api = { workspace = true, features = ["test-el"] }
 ureq.workspace = true
 
 [features]
+metrics = ["dep:mio", "dep:silver_observe"]
 thread_park = ["flux/park", "dep:mio"]
 
 [lints]

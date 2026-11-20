@@ -76,7 +76,7 @@ jobs:
           toolchain: 1.91.0
 
       - name: Build
-        run: cargo build --profile release-prod --locked --bin silver --bin silver_surfer --bin silver_telemetry
+        run: cargo build --profile release-prod --locked --features silver/metrics --bin silver --bin silver_surfer --bin silver_telemetry
 
       - name: Package
         env:

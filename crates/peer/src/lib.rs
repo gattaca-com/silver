@@ -10,7 +10,7 @@ pub use silver_config::SyncingConfig;
 silver_common::declare_counters! {
     pub PeerCounters => "peer" {
         // Live connected-peer count (set each tick).
-        PeersConnected,
+        PeersConnected: gauge,
         // Local drops.
         PeersEvicted,
         PeersBanned,
@@ -36,7 +36,7 @@ silver_common::declare_counters! {
         MeshGraftBackoffViolation,
         // Subnets still below `d` after a mesh sweep — peers covering these
         // dial past the ordinary caps.
-        MeshSubnetDeficits,
+        MeshSubnetDeficits: gauge,
         // Long-connected peer holding no mesh slot and no score, shed while
         // over the priority cap.
         IdlePeerGoodbye,

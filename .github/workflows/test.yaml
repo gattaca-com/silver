@@ -31,4 +31,4 @@ jobs:
         run: make -C crates/beacon_state/tile
 
       - name: Run tests
-        run: cargo test --locked --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --no-fail-fast
+        run: cargo test --locked --features "silver_beacon_state/ef_tests,silver_e2e/lh-client,silver/metrics" --no-fail-fast

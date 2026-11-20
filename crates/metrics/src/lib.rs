@@ -148,10 +148,12 @@ pub fn map_counters(
 /// ```
 #[macro_export]
 macro_rules! declare_counters {
+    (@gauge $variant:ident) => { false };
+    (@gauge $variant:ident: gauge) => { true };
     (
         $(#[$meta:meta])*
         $vis:vis $name:ident => $file:literal {
-            $( $variant:ident ),+ $(,)?
+            $( $variant:ident $( : $kind:ident )? ),+ $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -166,9 +168,12 @@ macro_rules! declare_counters {
 
         impl $name {
             /// Number of counters (excludes the `_Count` sentinel).
-            pub const COUNT: usize = Self::_Count as usize;
+            pub const COUNT: usize = Self::GAUGES.len();
             /// Variant names in declaration order.
             pub const NAMES: &'static [&'static str] = &[ $( stringify!($variant), )+ ];
+
+            /// Absolute-value slots, annotated with `: gauge` in the declaration.
+            pub const GAUGES: &'static [bool] = &[ $( $crate::declare_counters!(@gauge $variant $(: $kind)?) ),+ ];
 
             const BYTES: usize =
                 Self::COUNT * ::core::mem::size_of::<::core::sync::atomic::AtomicU64>();

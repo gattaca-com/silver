@@ -21,43 +21,64 @@ fn is_gossip_per_topic(file_name: &str) -> bool {
     matches!(file_name, "gossip_topics" | "gossip_flow")
 }
 
-/// `{topic}_{kind}` for slot `i` of a per-topic file of `kinds.len()` slots
-/// per `GossipTopic::counter_slot`.
-fn per_topic_names(slot_count: usize, kinds: &[&str]) -> Vec<String> {
-    (0..slot_count)
-        .map(|i| match silver_common::gossip_topic_for_counter_slot(i / kinds.len()) {
-            Some(topic) => format!("{topic}_{}", kinds[i % kinds.len()]),
-            None => format!("slot_{i}"),
-        })
-        .collect()
+pub fn slot_name(group: &str, slot: usize) -> String {
+    if let Some(name) = counter_names(group).and_then(|names| names.get(slot)) {
+        return (*name).to_owned();
+    }
+    let kinds: &[&str] = match group {
+        "gossip_topics" => &["sent", "recv", "mesh", "subs"],
+        "gossip_flow" => &["duplicate", "accepted", "published", "rejected", "iwant_served"],
+        _ => &[],
+    };
+    if !kinds.is_empty() &&
+        let Some(topic) = silver_common::gossip_topic_for_counter_slot(slot / kinds.len())
+    {
+        return format!("{topic}_{}", kinds[slot % kinds.len()]);
+    }
+    if is_gossip_traffic(group) {
+        return GossipTraffic::label(slot);
+    }
+    if group.starts_with("tcache-") {
+        return match slot {
+            0 => "capacity".to_owned(),
+            1 => "head_seq".to_owned(),
+            _ => format!("tail_{}", slot - 2),
+        };
+    }
+    format!("slot_{slot}")
 }
 
-/// `lookup` with a positional fallback. Returns `(names, registered)`
-/// — `registered = false` means surfer is displaying positional
-/// labels because no schema was wired up for this file.
-pub fn names_for(file_name: &str, slot_count: usize) -> (Vec<String>, bool) {
-    if let Some(arr) = counter_names(file_name) {
-        return (arr.iter().map(|s| s.to_string()).collect(), true);
+pub fn names_for(group: &str, slot_count: usize) -> (Vec<String>, bool) {
+    if let Some(names) = counter_names(group) {
+        return (names.iter().map(|s| s.to_string()).collect(), true);
     }
-    // Per-topic gossip counters: arithmetic layouts shared with
-    // `GossipTopicCounters` and `GossipFlowCounters`.
-    if file_name == "gossip_topics" {
-        return (per_topic_names(slot_count, &["sent", "recv", "mesh", "subs"]), true);
+    if group.starts_with("tcache-") && slot_count < 2 {
+        return ((0..slot_count).map(|slot| format!("slot_{slot}")).collect(), false);
     }
-    if file_name == "gossip_flow" {
-        let kinds = ["duplicate", "accepted", "published", "rejected", "iwant_served"];
-        return (per_topic_names(slot_count, &kinds), true);
+    let registered =
+        is_gossip_per_topic(group) || is_gossip_traffic(group) || group.starts_with("tcache-");
+    ((0..slot_count).map(|slot| slot_name(group, slot)).collect(), registered)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SlotKind {
+    Counter,
+    Gauge,
+    Untyped,
+}
+
+pub fn slot_kind(group: &str, slot: usize) -> SlotKind {
+    if group == "gossip_topics" && slot % 4 >= 2 {
+        return SlotKind::Gauge;
     }
-    if is_gossip_traffic(file_name) {
-        return ((0..slot_count).map(GossipTraffic::label).collect(), true);
+    if let Some((_, gauges)) = silver_stages::counter_schema(group) &&
+        let Some(&gauge) = gauges.get(slot)
+    {
+        return if gauge { SlotKind::Gauge } else { SlotKind::Counter };
     }
-    // TCache files have a fixed semantic layout decoded from slot count.
-    if file_name.starts_with("tcache-") && slot_count >= 2 {
-        let mut names = vec!["capacity".to_string(), "head_seq".to_string()];
-        for i in 0..(slot_count - 2) {
-            names.push(format!("tail_{i}"));
-        }
-        return (names, true);
+    if is_gossip_per_topic(group) || is_gossip_traffic(group) || group == "log" {
+        SlotKind::Counter
+    } else {
+        SlotKind::Untyped
     }
-    ((0..slot_count).map(|i| format!("slot_{i}")).collect(), false)
 }

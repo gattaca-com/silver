@@ -41,6 +41,7 @@ tempfile = "3"
 workspace = true
 
 [features]
+metrics = ["silver_application_boundary/metrics"]
 default = ["crypto_simd", "thread_park"]
 alloc-profile = ["silver_common/alloc-profile"]
 # AVX-512 IFMA BLS kernels on CPUs that have them. Without it, every point goes
