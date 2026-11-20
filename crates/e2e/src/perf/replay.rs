@@ -130,7 +130,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
 
         harness.pump_bs();
         for b in &blocks[injected as usize..(injected + want) as usize] {
-            harness.inject_block(start, b);
+            harness.inject_block(request_id, b);
         }
         harness.inject_response_complete(request_id);
         harness.pump_ctl();

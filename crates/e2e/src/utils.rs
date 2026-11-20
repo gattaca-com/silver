@@ -268,8 +268,22 @@ impl PmBsHarness {
     }
 
     /// Next `BlocksByRange` request on `p2p_send` as `(start_slot, count,
-    /// peer)`; panics if none was emitted.
+    /// peer, request_id)`. Control holds the next range until beacon state
+    /// reports the previous range's blocks, so both tiles are pumped until it
+    /// appears.
     pub fn next_range_request(&mut self) -> (u64, u64, usize, u64) {
+        const MAX_PASSES: usize = 1024;
+        for _ in 0..MAX_PASSES {
+            if let Some(request) = self.take_range_request() {
+                return request;
+            }
+            self.pump_bs();
+            self.pump_ctl();
+        }
+        panic!("expected a BlocksByRange request on p2p_send");
+    }
+
+    fn take_range_request(&mut self) -> Option<(u64, u64, usize, u64)> {
         let mut hit = None;
         self.inj_a.consume::<P2pSend, _>(|ev, _| {
             if hit.is_none() &&
@@ -287,14 +301,14 @@ impl PmBsHarness {
                 ));
             }
         });
-        hit.expect("expected a BlocksByRange request on p2p_send")
+        hit
     }
 
-    /// Feed one block response from the peer, tagged for request `start_slot`.
-    pub fn inject_block(&mut self, start_slot: u64, block: &[u8]) {
+    /// Feed one block response from the peer to request `request_id`.
+    pub fn inject_block(&mut self, request_id: u64, block: &[u8]) {
         let ssz = tcache_write(&mut self.rpc_p, block);
         self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
-            application_id: start_slot,
+            application_id: request_id,
             stream_id: P2pStreamId::new(
                 SYNTH_PEER_CONN_ID,
                 0,
@@ -325,7 +339,7 @@ impl PmBsHarness {
     /// Assert the next `BlocksByRange` request matches `expected = (start,
     /// count)`, mark data columns available, feed all `blocks`, and pump BS.
     pub fn drive_batch(&mut self, expected: (u64, u64), blocks: &[Vec<u8>]) {
-        let (start, count, peer, _request_id) = self.next_range_request();
+        let (start, count, peer, request_id) = self.next_range_request();
         assert_eq!((start, count, peer), (expected.0, expected.1, SYNTH_PEER_CONN_ID));
         // DA events first so blob-carrying blocks import on arrival instead
         // of staging (same ordering as perf::replay).
@@ -334,12 +348,12 @@ impl PmBsHarness {
         }
         self.pump_bs();
         for b in blocks {
-            self.inject_block(start, b);
+            self.inject_block(request_id, b);
         }
         // Stream terminator: SyncReq completion is terminator-driven, so PM
         // won't issue the next batch without it.
         self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
-            application_id: start,
+            application_id: request_id,
             stream_id: P2pStreamId::new(
                 SYNTH_PEER_CONN_ID,
                 0,
