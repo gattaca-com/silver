@@ -13,6 +13,9 @@ use crate::{
 };
 
 pub const PROTOCOL_VERSION: &str = "eth2/1.0.0";
+#[cfg(target_arch = "aarch64")]
+pub const AGENT_VERSION: &str = concat!("silver/v", env!("CARGO_PKG_VERSION"), "/aarch64-linux");
+#[cfg(not(target_arch = "aarch64"))]
 pub const AGENT_VERSION: &str = concat!("silver/v", env!("CARGO_PKG_VERSION"), "/x86_64-linux");
 
 /// libp2p signed-envelope domain string for peer records.

@@ -14,7 +14,12 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, platform: linux/amd64, runner: ubuntu-latest }
+          - { arch: aarch64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -27,12 +32,14 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           tags: silver:source
           build-args: SILVER_BUILD_COMMIT=${{ github.sha }}
 
       - name: Smoke-test and extract binaries
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           docker run --rm --network none silver:source --version
           docker run --rm --network none silver:source --help
@@ -41,7 +48,7 @@ jobs:
           container=$(docker create silver:source)
           trap 'docker rm "$container" > /dev/null' EXIT
           for bin in silver silver_surfer; do
-            docker cp "$container:/usr/local/bin/$bin" "dist/$bin-linux-x86_64"
+            docker cp "$container:/usr/local/bin/$bin" "dist/$bin-linux-$ARCH"
           done
 
       - name: Package release image
@@ -50,11 +57,14 @@ jobs:
           context: dist
           file: Dockerfile
           target: release
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
+          build-args: BIN_ARCH=${{ matrix.arch }}
           tags: silver:release
 
       - name: Smoke-test release image
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           docker run --rm --network none silver:release --version
           docker run --rm --network none silver:release --help
@@ -63,5 +73,5 @@ jobs:
           trap 'docker rm "$container" > /dev/null' EXIT
           for bin in silver silver_surfer; do
             docker cp "$container:/usr/local/bin/$bin" "packaged-$bin"
-            cmp "dist/$bin-linux-x86_64" "packaged-$bin"
+            cmp "dist/$bin-linux-$ARCH" "packaged-$bin"
           done

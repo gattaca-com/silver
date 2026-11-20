@@ -53,11 +53,16 @@ jobs:
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
           fi
 
-  linux-x86_64:
+  linux:
     needs: unreleased-version
     if: needs.unreleased-version.outputs.tag != '' && needs.unreleased-version.outputs.existing != 'true'
-    # The oldest supported runner: its glibc sets the floor for users' distros.
-    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm }
+    # The oldest supported runners: their glibc sets the floor for users' distros.
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -74,26 +79,28 @@ jobs:
         run: cargo build --profile release-prod --locked --bin silver --bin silver_surfer --bin silver_telemetry
 
       - name: Package
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           mkdir dist && cd dist
           for bin in silver silver_surfer silver_telemetry; do
-            cp ../target/release-prod/$bin $bin-linux-x86_64
-            sha256sum $bin-linux-x86_64 > $bin-linux-x86_64.sha256
+            cp "../target/release-prod/$bin" "$bin-linux-$ARCH"
+            sha256sum "$bin-linux-$ARCH" > "$bin-linux-$ARCH.sha256"
           done
-          ./silver-linux-x86_64 --version
-          ./silver_telemetry-linux-x86_64 --help > /dev/null
+          "./silver-linux-$ARCH" --version
+          "./silver_telemetry-linux-$ARCH" --help > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-x86_64
+          name: linux-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
 
   image:
-    needs: [unreleased-version, linux-x86_64]
+    needs: [unreleased-version, linux]
     if: >-
       !cancelled() && needs.unreleased-version.outputs.tag != '' &&
-      (needs.linux-x86_64.result == 'success' || needs.unreleased-version.outputs.existing == 'true')
+      (needs.linux.result == 'success' || needs.unreleased-version.outputs.existing == 'true')
     runs-on: [self-hosted, silver]
     timeout-minutes: 15
     permissions:
@@ -114,46 +121,75 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.unreleased-version.outputs.existing != 'true'
         with:
-          name: linux-x86_64
+          pattern: linux-*
+          merge-multiple: true
           path: dist/
 
+      # Releases before aarch64 builds carry x86_64 assets only.
       - name: Download existing release binaries
         if: needs.unreleased-version.outputs.existing == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         # The checksums are release assets too, so only the attestation proves this workflow built the binaries.
         run: |
-          gh release download "$TAG" --dir dist --pattern '*-linux-x86_64' --pattern '*-linux-x86_64.sha256'
+          gh release download "$TAG" --dir dist --pattern '*-linux-x86_64*' --pattern '*-linux-aarch64*'
           cd dist
           sha256sum --check ./*.sha256
-          for bin in ./*-linux-x86_64; do
+          for bin in ./*-linux-x86_64 ./*-linux-aarch64; do
+            [ -e "$bin" ] || continue
             gh attestation verify "$bin" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yaml"
           done
 
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: hashFiles('dist/silver-linux-aarch64') != ''
+        with:
+          platforms: arm64
+
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Build release image
+      - name: Build amd64 release image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: dist
           file: Dockerfile
           target: release
           platforms: linux/amd64
+          build-args: BIN_ARCH=x86_64
           load: true
-          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}-amd64
           labels: org.opencontainers.image.version=${{ env.TAG }}
 
-      - name: Smoke-test image
+      - name: Build arm64 release image
+        if: hashFiles('dist/silver-linux-aarch64') != ''
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: dist
+          file: Dockerfile
+          target: release
+          platforms: linux/arm64
+          build-args: BIN_ARCH=aarch64
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}-arm64
+          labels: org.opencontainers.image.version=${{ env.TAG }}
+
+      # arm64 runs under QEMU.
+      - name: Smoke-test images
         run: |
-          docker run --rm --network none "$IMAGE:$TAG" --version
-          docker run --rm --network none "$IMAGE:$TAG" --help
-          docker run --rm --network none --entrypoint /usr/bin/test "$IMAGE:$TAG" -x /usr/local/bin/silver_surfer
-          container=$(docker create "$IMAGE:$TAG")
-          trap 'docker rm "$container" > /dev/null' EXIT
-          for bin in silver silver_surfer; do
-            docker cp "$container:/usr/local/bin/$bin" "packaged-$bin"
-            cmp "dist/$bin-linux-x86_64" "packaged-$bin"
+          for pair in amd64:x86_64 arm64:aarch64; do
+            platform=${pair%:*} arch=${pair#*:}
+            [ -e "dist/silver-linux-$arch" ] || continue
+            image="$IMAGE:$TAG-$platform"
+            run="docker run --rm --network none --platform linux/$platform"
+            $run "$image" --version
+            $run "$image" --help
+            $run --entrypoint /usr/bin/test "$image" -x /usr/local/bin/silver_surfer
+            container=$(docker create --platform "linux/$platform" "$image")
+            for bin in silver silver_surfer; do
+              docker cp "$container:/usr/local/bin/$bin" "packaged-$bin"
+              cmp "dist/$bin-linux-$arch" "packaged-$bin"
+            done
+            docker rm "$container" > /dev/null
           done
 
       - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -162,19 +198,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The per-platform tags are pushed so the index can reference them.
       # Only a new release moves `latest`; republishing an old one must not.
       - name: Publish tested image
         id: push
         env:
           EXISTING: ${{ needs.unreleased-version.outputs.existing }}
         run: |
-          docker push "$IMAGE:$TAG"
+          sources=()
+          for pair in amd64:x86_64 arm64:aarch64; do
+            platform=${pair%:*} arch=${pair#*:}
+            [ -e "dist/silver-linux-$arch" ] || continue
+            docker push "$IMAGE:$TAG-$platform"
+            sources+=("$IMAGE:$TAG-$platform")
+          done
+          tags=(--tag "$IMAGE:$TAG")
           if [ "$EXISTING" != true ]; then
-            docker tag "$IMAGE:$TAG" "$IMAGE:latest"
-            docker push "$IMAGE:latest"
+            tags+=(--tag "$IMAGE:latest")
           fi
-          repo_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
-          echo "digest=${repo_digest#*@}" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -215,7 +259,7 @@ jobs:
           helm push "$RUNNER_TEMP"/chart/silver-*.tgz oci://ghcr.io/gattaca-com/charts
 
   publish:
-    needs: [unreleased-version, linux-x86_64, image, chart]
+    needs: [unreleased-version, linux, image, chart]
     if: '!cancelled() && needs.chart.result == ''success'''
     runs-on: [self-hosted, silver]
     timeout-minutes: 15
@@ -231,14 +275,17 @@ jobs:
       - uses: actions/download-artifact@v4
         if: needs.unreleased-version.outputs.existing != 'true'
         with:
-          name: linux-x86_64
+          pattern: linux-*
+          merge-multiple: true
           path: dist/
 
       - name: Attest
         if: needs.unreleased-version.outputs.existing != 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: dist/*-linux-x86_64
+          subject-path: |
+            dist/*-linux-x86_64
+            dist/*-linux-aarch64
 
       # Creates the tag at this commit, so a failed build leaves no tag behind.
       - name: Publish
@@ -255,7 +302,7 @@ jobs:
             <!-- silver-container -->
             ## Container image
 
-            Linux amd64: `docker pull ghcr.io/gattaca-com/silver:${{ needs.unreleased-version.outputs.tag }}`
+            Linux amd64 and arm64: `docker pull ghcr.io/gattaca-com/silver:${{ needs.unreleased-version.outputs.tag }}`
 
             Digest: `${{ needs.image.outputs.digest }}`
 
