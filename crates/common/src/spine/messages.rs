@@ -110,6 +110,11 @@ pub enum BeaconApiRequest {
         lookup: BlockLookup,
         with_bytes: bool,
     },
+    /// Answered by `BeaconApiResponse::Block`, whose bytes are the envelope.
+    StoredEnvelope {
+        request_id: u64,
+        lookup: BlockLookup,
+    },
     BeaconCommitteeSubscriptions {
         subscriptions: TCacheRead,
     },

@@ -341,7 +341,7 @@ impl PendingQuery {
                 let block = Some(ServedBlock {
                     slot: unit.slot(),
                     root,
-                    finalized: matches!(unit, QueryUnit::Block { .. }),
+                    finalized: matches!(unit, QueryUnit::Block { .. } | QueryUnit::Envelope { .. }),
                     canonical,
                     ssz: Some(ssz),
                 });
@@ -898,17 +898,7 @@ impl Store {
                         let count = ExecutionPayloadEnvelopesByRootRequestView::count(buf);
                         for i in 0..count {
                             let root = ExecutionPayloadEnvelopesByRootRequestView::root(buf, i);
-                            // Serve a specific block's envelope regardless of
-                            // canonicity: unfinalized (by block_root) first, else
-                            // the finalized flat store.
-                            if let Some(slot) = self.unfinalized_envelopes.slot_of(root) {
-                                units.push_back(QueryUnit::UnfinalizedEnvelope {
-                                    slot,
-                                    block_root: *root,
-                                });
-                            } else if let Some(slot) = self.finalized.slot_of(root) {
-                                units.push_back(QueryUnit::Envelope { slot });
-                            }
+                            units.extend(self.envelope_file(root));
                         }
                     },
                 );
@@ -925,6 +915,23 @@ impl Store {
         let source = RequestSource::Api { request_id, root, canonical };
         let units = located.map(|l| l.file).into_iter().collect();
         self.query_queue.push_back(PendingQuery::new(source, units));
+    }
+
+    pub(super) fn queue_envelope_request(&mut self, request_id: u64, lookup: BlockLookup) {
+        let located = self.lookup(lookup);
+        let (root, canonical) = located.map_or(([0u8; 32], false), |l| (l.root, l.canonical));
+        let source = RequestSource::Api { request_id, root, canonical };
+        let units = located.and_then(|l| self.envelope_file(&l.root)).into_iter().collect();
+        self.query_queue.push_back(PendingQuery::new(source, units));
+    }
+
+    /// A block's envelope regardless of canonicity: unfinalized by block root
+    /// first, else the finalized flat store.
+    fn envelope_file(&self, block_root: &[u8; 32]) -> Option<QueryUnit> {
+        if let Some(slot) = self.unfinalized_envelopes.slot_of(block_root) {
+            return Some(QueryUnit::UnfinalizedEnvelope { slot, block_root: *block_root });
+        }
+        self.finalized.slot_of(block_root).map(|slot| QueryUnit::Envelope { slot })
     }
 
     pub(super) fn block_facts(&self, lookup: BlockLookup) -> Option<ServedBlock> {

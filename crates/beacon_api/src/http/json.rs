@@ -23,7 +23,7 @@ use silver_common::{
 
 use crate::{
     beacon::validators::ValidatorRecord,
-    events::HeadEvent,
+    events::{HeadEvent, finalized_checkpoint::FinalizedCheckpointEvent},
     node::peers::Peer,
     validator::{
         attestation_data::AttestationData, attester_duties::AttesterDuty,
@@ -270,6 +270,24 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn versioned_flagged_envelope(
+        &mut self,
+        version: &str,
+        flags: ReadFlags,
+        data: impl FnOnce(&mut Self),
+    ) {
+        self.begin_object();
+        self.key("version");
+        self.string(version);
+        self.key("execution_optimistic");
+        self.bool(flags.execution_optimistic);
+        self.key("finalized");
+        self.bool(flags.finalized);
+        self.key("data");
+        data(self);
+        self.end_object();
+    }
+
     pub(crate) fn flagged_envelope(&mut self, flags: ReadFlags, data: impl FnOnce(&mut Self)) {
         self.begin_flagged_envelope(flags);
         data(self);
@@ -308,10 +326,39 @@ impl Json<'_> {
         self.end_object();
     }
 
-    pub(crate) fn block_root(&mut self, root: &B256) {
+    pub(crate) fn root(&mut self, root: &B256) {
         self.begin_object();
         self.key("root");
         self.hex(root);
+        self.end_object();
+    }
+
+    pub(crate) fn randao(&mut self, mix: &B256) {
+        self.begin_object();
+        self.key("randao");
+        self.hex(mix);
+        self.end_object();
+    }
+
+    /// `validators` in committee order, which the subcommittees split evenly.
+    pub(crate) fn sync_committee_indices(&mut self, validators: &[u32], subcommittee_size: usize) {
+        self.begin_object();
+        self.key("validators");
+        self.begin_array();
+        for &index in validators {
+            self.quoted_u64(index.into());
+        }
+        self.end_array();
+        self.key("validator_aggregates");
+        self.begin_array();
+        for subcommittee in validators.chunks(subcommittee_size) {
+            self.begin_array();
+            for &index in subcommittee {
+                self.quoted_u64(index.into());
+            }
+            self.end_array();
+        }
+        self.end_array();
         self.end_object();
     }
 
@@ -562,6 +609,23 @@ impl Json<'_> {
         self.quoted_u64(slot);
         self.key("block");
         self.hex(block_root);
+        self.end_object();
+    }
+
+    pub(crate) fn finalized_checkpoint_event(
+        &mut self,
+        event: &FinalizedCheckpointEvent,
+        execution_optimistic: bool,
+    ) {
+        self.begin_object();
+        self.key("block");
+        self.hex(&event.block);
+        self.key("state");
+        self.hex(&event.state);
+        self.key("epoch");
+        self.quoted_u64(event.epoch);
+        self.key("execution_optimistic");
+        self.bool(execution_optimistic);
         self.end_object();
     }
 

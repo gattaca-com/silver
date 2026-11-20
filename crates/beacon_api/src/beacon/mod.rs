@@ -2,6 +2,7 @@ pub(crate) mod block_submission;
 pub(crate) mod blocks;
 pub(crate) mod builders;
 pub(crate) mod committees;
+pub(crate) mod debug_state;
 pub(crate) mod operations;
 pub(crate) mod payload_attestations;
 pub(crate) mod payload_submission;

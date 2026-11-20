@@ -9,7 +9,8 @@ use flux::communication::Seqlock;
 use flux_profiler::timed;
 
 use crate::{
-    BeaconState, ForkWriter, StateId, StateReadView, StateView, encode::GLOAS_VAR_LEN_SECTIONS,
+    BeaconState, ForkWriter, StateId, StateReadView, StateView,
+    encode::{GLOAS_VAR_LEN_SECTIONS, PERSIST_CHUNK_BYTES},
 };
 
 /// The shared `BeaconState` allocation. Lifetime rides the `Arc` (a reader
@@ -240,9 +241,15 @@ impl BeaconStateReader {
     /// writer publishes its first snapshot (nothing to persist). Feed the
     /// cursor to [`Self::checkpoint_chunk`] to pull the SSZ out part by part.
     pub fn begin_checkpoint(&self) -> Option<CheckpointCursor> {
+        self.begin_checkpoint_in(PERSIST_CHUNK_BYTES)
+    }
+
+    /// [`Self::begin_checkpoint`] with SSZ parts of at most `chunk_bytes`,
+    /// apart from the fixed part and the single-part sections.
+    pub fn begin_checkpoint_in(&self, chunk_bytes: usize) -> Option<CheckpointCursor> {
         let (control, _) = self.inner.read_copy().ok()?;
         control.state_id?;
-        let mut cursor = CheckpointCursor::default();
+        let mut cursor = CheckpointCursor { chunk_bytes, ..CheckpointCursor::default() };
         self.capture_checkpoint(&mut cursor);
         Some(cursor)
     }
@@ -280,6 +287,7 @@ impl BeaconStateReader {
                     state.checkpoint_sections()[cursor.section],
                     cursor.chunk,
                     &cursor.offsets,
+                    cursor.chunk_bytes,
                     buf,
                 )?
             };
@@ -331,6 +339,7 @@ impl BeaconStateReader {
                     section_count,
                     section: 0,
                     chunk: 0,
+                    chunk_bytes: cursor.chunk_bytes,
                     done: false,
                 };
                 return;
@@ -363,7 +372,7 @@ pub enum CheckpointChunk {
 /// comes next, and the finalize counter every produced byte must agree with.
 /// Plain data — all the synchronization lives in
 /// [`BeaconStateReader::checkpoint_chunk`].
-#[derive(Default)]
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct CheckpointCursor {
     version: u64,
     slot: u64,
@@ -371,8 +380,10 @@ pub struct CheckpointCursor {
     section_count: usize,
     // Section index; pubkeys stage once past `section_count`.
     section: usize,
-    // Chunk index within `section` — only validators/pubkeys span >1.
+    // Chunk index within `section` — only the per-validator lists and the
+    // pubkeys span >1.
     chunk: usize,
+    chunk_bytes: usize,
     done: bool,
 }
 

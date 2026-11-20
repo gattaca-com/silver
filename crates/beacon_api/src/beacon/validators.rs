@@ -10,7 +10,7 @@ use crate::{
     http::{
         ids::{each_body_entry, parse_pubkey},
         json::Json,
-        response::Response,
+        response::{Batch, JSON_CONTENT_TYPE, MAX_DOWNLOADS, Response},
         router::Request,
     },
 };
@@ -36,9 +36,6 @@ const _: () = assert!(
     VALIDATORS_PER_BATCH * MAX_VALIDATOR_JSON + BATCH_OVERHEAD <= ChunkedResponse::PENDING_MAX
 );
 
-/// Each open download renders a batch on every pump of the API tile.
-const MAX_REGISTRY_DOWNLOADS: usize = 2;
-
 pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     respond_validators(req, ctx, resp, Selection::from_query(req.query));
 }
@@ -61,11 +58,12 @@ fn respond_validators(
 ) {
     match selection {
         Ok(selection) if selection.ids.is_empty() && selection.statuses.filters() => {
-            if ctx.registry_downloads >= MAX_REGISTRY_DOWNLOADS {
-                return resp.error(503, "too many registry downloads in progress");
+            if ctx.downloads >= MAX_DOWNLOADS {
+                return resp.error(503, "too many downloads in progress");
             }
             if let Some(pin) = ctx.pin_state(req, resp) {
-                resp.begin_registry_download(RegistryStream::new(pin, selection.statuses));
+                let registry = RegistryStream::new(pin, selection.statuses);
+                resp.begin_download(JSON_CONTENT_TYPE, &[], registry);
             }
         }
         selection => respond_selection(req, ctx, resp, selection, Selection::render),
@@ -135,13 +133,6 @@ pub(crate) struct RegistryStream {
     statuses: StatusSet,
     next: usize,
     rendered_any: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Batch {
-    More,
-    Last,
-    Superseded,
 }
 
 impl RegistryStream {
@@ -722,15 +713,15 @@ mod tests {
     }
 
     #[test]
-    fn registry_downloads_are_capped() {
+    fn downloads_are_capped() {
         let mut ctx = ctx();
         let req = ParsedRequest {
             query: "status=active",
             ..request("GET", "/eth/v1/beacon/states/head/validators")
         };
-        ctx.registry_downloads = MAX_REGISTRY_DOWNLOADS - 1;
+        ctx.downloads = MAX_DOWNLOADS - 1;
         assert!(matches!(testing::dispatch(&ctx, &req).0, Outcome::Download(_)));
-        ctx.registry_downloads = MAX_REGISTRY_DOWNLOADS;
+        ctx.downloads = MAX_DOWNLOADS;
         assert_eq!(status_code(&testing::dispatch(&ctx, &req).1), "503");
     }
 

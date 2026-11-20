@@ -1,10 +1,18 @@
+use silver_beacon_state_data::{
+    B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_SIZE,
+};
+use silver_common::json_fields::parse_uint64;
+use silver_httpcore::Query;
+
 use crate::{
+    NodeStatus,
     ctx::ApiCtx,
     http::{
         json::{FinalityCheckpoints, GenesisData},
         response::Response,
         router::Request,
     },
+    validator::sync_duties::CommitteePeriod,
 };
 
 pub(crate) fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -31,6 +39,67 @@ pub(crate) fn state_finality_checkpoints(req: &Request<'_>, ctx: &ApiCtx, resp: 
     });
 }
 
+/// The head block's post-state root, which is the published state's while
+/// that state still sits at the block's slot. Slot processing advances the
+/// published state past it, to a root nothing computes.
+pub(crate) fn state_root(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let NodeStatus { head_root, head_state_root, .. } = ctx.node_status;
+    ctx.try_state_response(req, resp, |view, json| {
+        let slot = view.slot.state();
+        let known = head_state_root != B256::default() &&
+            slot.latest_block_root == head_root &&
+            slot.slot == slot.latest_block_header.slot;
+        if !known {
+            return Err((503, "head state root not yet known"));
+        }
+        json.root(&head_state_root);
+        Ok(())
+    });
+}
+
+pub(crate) fn state_randao(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let Ok(epoch) = epoch_query(req.query) else {
+        return resp.error(400, "invalid epoch");
+    };
+    ctx.try_state_response(req, resp, |view, json| {
+        let state_epoch = view.slot.current_epoch();
+        let epoch = epoch.unwrap_or(state_epoch);
+        let held =
+            epoch <= state_epoch && state_epoch - epoch < EPOCHS_PER_HISTORICAL_VECTOR as Epoch;
+        if !held {
+            return Err((400, "epoch is outside the state's randao mixes"));
+        }
+        json.randao(&view.randao_mixes.at_epoch(epoch));
+        Ok(())
+    });
+}
+
+pub(crate) fn state_sync_committees(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let Ok(epoch) = epoch_query(req.query) else {
+        return resp.error(400, "invalid epoch");
+    };
+    ctx.try_state_response(req, resp, |view, json| {
+        let state_epoch = view.slot.current_epoch();
+        let period = CommitteePeriod::serving(epoch.unwrap_or(state_epoch), state_epoch)
+            .ok_or((400, "the state holds no sync committee for this epoch"))?;
+        let mut validators = [0u32; SYNC_COMMITTEE_SIZE];
+        for (position, index) in validators.iter_mut().enumerate() {
+            *index = period
+                .validator_index(view, position)
+                .ok_or((500, "a sync committee member is not in the registry"))?;
+        }
+        json.sync_committee_indices(&validators, SYNC_SUBCOMMITTEE_SIZE);
+        Ok(())
+    });
+}
+
+fn epoch_query(query: &str) -> Result<Option<Epoch>, ()> {
+    Query::new(query)
+        .find(|(name, _)| name == "epoch")
+        .map(|(_, value)| parse_uint64(&value).ok_or(()))
+        .transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
@@ -39,6 +108,7 @@ mod tests {
         SpecConfig,
     };
     use silver_common::ELSyncStatus;
+    use silver_httpcore::ParsedRequest;
 
     use crate::{
         NodeStatus,
@@ -249,5 +319,90 @@ mod tests {
         for state_id in ["genesis", "0", &head_slot, &format!("0x{}", "ab".repeat(32))] {
             assert_state_not_found(&ctx, state_id);
         }
+    }
+
+    #[test]
+    fn state_root_answers_while_the_status_names_the_published_head() {
+        let mut ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        let path = "/eth/v1/beacon/states/head/root";
+        let resp = get(&ctx, path);
+        assert!(resp.starts_with(b"HTTP/1.1 503 "), "{}", String::from_utf8_lossy(&resp));
+
+        ctx.node_status.head_root = ctx.read_state(|view| view.slot.state().latest_block_root);
+        let body = state_body(&ctx, path);
+        let root = format!("0x{}", "12".repeat(32));
+        assert_eq!(
+            body,
+            format!(
+                r#"{{"execution_optimistic":false,"finalized":false,"data":{{"root":"{root}"}}}}"#
+            )
+        );
+    }
+
+    /// Past an empty slot the published state keeps the block's root but no
+    /// longer its post-state root.
+    #[test]
+    fn state_root_is_unknown_once_the_state_advances_past_its_block() {
+        let owner = BeaconStateOwner::published_empty_test(HEAD_SLOT);
+        let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
+        ctx.node_status = ready();
+        ctx.node_status.head_root = ctx.read_state(|view| view.slot.state().latest_block_root);
+        let resp = get(&ctx, "/eth/v1/beacon/states/head/root");
+        assert!(resp.starts_with(b"HTTP/1.1 503 "), "{}", String::from_utf8_lossy(&resp));
+    }
+
+    fn get_query(ctx: &ApiCtx, path: &str, query: &str) -> Vec<u8> {
+        answer(ctx, &ParsedRequest { query, ..request("GET", path) })
+    }
+
+    fn query_body(ctx: &ApiCtx, path: &str, query: &str) -> serde_json::Value {
+        let resp = get_query(ctx, path, query);
+        assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\n"), "{path}?{query}");
+        serde_json::from_slice(body(&resp)).unwrap()
+    }
+
+    /// The fixture's epoch is below `EPOCHS_PER_HISTORICAL_VECTOR`, so every
+    /// epoch up to it is held.
+    #[test]
+    fn randao_defaults_to_the_state_epoch_and_refuses_unheld_epochs() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        let path = "/eth/v1/beacon/states/head/randao";
+        let epoch = HEAD_SLOT / SLOTS_PER_EPOCH;
+        let zero = format!("0x{}", "00".repeat(32));
+        for query in [String::new(), format!("epoch={epoch}"), "epoch=0".to_string()] {
+            assert_eq!(query_body(&ctx, path, &query)["data"]["randao"], zero, "{query}");
+        }
+        for query in ["epoch=x".to_string(), format!("epoch={}", epoch + 1)] {
+            assert!(get_query(&ctx, path, &query).starts_with(b"HTTP/1.1 400 "), "{query}");
+        }
+    }
+
+    #[test]
+    fn sync_committees_list_the_period_members_and_their_subcommittees() {
+        use crate::validator::sync_duties::tests::{ctx, next_period_epoch, seat_holders};
+
+        let ctx = ctx();
+        let indices = |body: &serde_json::Value| -> Vec<u32> {
+            body["data"]["validators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|index| index.as_str().unwrap().parse().unwrap())
+                .collect()
+        };
+        let path = "/eth/v1/beacon/states/head/sync_committees";
+        let current = query_body(&ctx, path, "");
+        assert_eq!(indices(&current), seat_holders(0));
+        let aggregates = current["data"]["validator_aggregates"].as_array().unwrap();
+        assert_eq!(aggregates.len(), 4);
+        assert!(
+            aggregates.iter().all(|subcommittee| subcommittee.as_array().unwrap().len() == 128)
+        );
+
+        let next = query_body(&ctx, path, &format!("epoch={}", next_period_epoch()));
+        assert_eq!(indices(&next), seat_holders(1));
+
+        let past = get_query(&ctx, path, &format!("epoch={}", next_period_epoch() + 256));
+        assert!(past.starts_with(b"HTTP/1.1 400 "));
     }
 }

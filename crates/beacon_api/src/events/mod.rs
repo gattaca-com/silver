@@ -1,3 +1,4 @@
+pub(crate) mod finalized_checkpoint;
 pub(crate) mod head_verdict;
 
 use silver_beacon_state_data::B256;
@@ -26,6 +27,7 @@ pub(crate) enum Channel {
     ProposerPreferences,
     ExecutionPayloadAvailable,
     PayloadAttributes,
+    FinalizedCheckpoint,
 }
 
 /// `epoch_transition` compares this head with the publisher's previous
@@ -101,6 +103,7 @@ fn channel(topic: &str) -> Option<Channel> {
         "proposer_preferences" => Some(Channel::ProposerPreferences),
         "payload_attributes" => Some(Channel::PayloadAttributes),
         "execution_payload_available" => Some(Channel::ExecutionPayloadAvailable),
+        "finalized_checkpoint" => Some(Channel::FinalizedCheckpoint),
         _ => None,
     }
 }
@@ -189,8 +192,8 @@ mod tests {
     #[test]
     fn topic_silver_does_not_serve_refuses_the_whole_subscription_by_name() {
         let unknown = |topic: &str| Err(Refused::Unknown(topic.to_string()));
-        assert_eq!(topics("topics=finalized_checkpoint"), unknown("finalized_checkpoint"));
-        assert_eq!(topics("topics=block,finalized_checkpoint"), unknown("finalized_checkpoint"));
+        assert_eq!(topics("topics=chain_reorg"), unknown("chain_reorg"));
+        assert_eq!(topics("topics=block,chain_reorg"), unknown("chain_reorg"));
         assert_eq!(topics("topics=head_v2&topics=chain_reorg"), unknown("chain_reorg"));
     }
 
@@ -198,6 +201,13 @@ mod tests {
     fn execution_payload_available_can_be_subscribed_alongside_head() {
         let with_head = set(&[Channel::Head, Channel::ExecutionPayloadAvailable]);
         assert_eq!(topics("topics=head,execution_payload_available"), Ok(with_head));
+    }
+
+    /// Dora's subscription; one refused topic would refuse it whole.
+    #[test]
+    fn finalized_checkpoint_can_be_subscribed_alongside_block_and_head() {
+        let channels = set(&[Channel::Block, Channel::Head, Channel::FinalizedCheckpoint]);
+        assert_eq!(topics("topics=block,head,finalized_checkpoint"), Ok(channels));
     }
 
     #[test]

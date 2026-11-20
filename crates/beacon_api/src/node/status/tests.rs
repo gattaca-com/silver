@@ -30,6 +30,7 @@ pub(crate) fn ready() -> NodeStatus {
     NodeStatus {
         head: HeadStatus { slot: 100, optimistic: false },
         head_root: [0x11; 32],
+        head_state_root: [0x12; 32],
         head_payload: PayloadResolution::Full,
         head_ptc: Default::default(),
         build_on_full: true,

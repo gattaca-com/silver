@@ -13,7 +13,7 @@ use silver_common::{Enr, Identify, Keypair};
 use crate::{
     NodeStatus,
     beacon::{
-        block_submission::ProducedBody, pools::OperationPools,
+        block_submission::ProducedBody, blocks::GenesisBlock, pools::OperationPools,
         proposer_preferences::ProposerPreferences,
     },
     config::spec_body,
@@ -37,9 +37,10 @@ pub(crate) struct ApiCtx {
     pub(crate) has_sidecar: bool,
     pub(crate) pools: OperationPools,
     pub(crate) proposer_preferences: ProposerPreferences,
-    pub(crate) registry_downloads: usize,
+    pub(crate) downloads: usize,
     genesis_validators_root: B256,
     pub(crate) produced_body: ProducedBody,
+    pub(crate) genesis_block: Option<GenesisBlock>,
 }
 
 impl ApiCtx {
@@ -51,11 +52,11 @@ impl ApiCtx {
         state: BeaconStateReader,
         has_sidecar: bool,
     ) -> Self {
-        let (head_slot, anchor_root, anchor_epoch, genesis_validators_root) = state
+        let (anchor_header, anchor_root, anchor_epoch, genesis_validators_root) = state
             .read(|view: StateReadView<'_>| {
                 let slot = view.slot.state();
                 (
-                    slot.latest_block_header.slot,
+                    slot.latest_block_header,
                     slot.latest_block_root,
                     slot.slot / SLOTS_PER_EPOCH,
                     view.imm.genesis_validators_root,
@@ -66,15 +67,16 @@ impl ApiCtx {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             spec: spec.clone(),
             state,
-            node_status: NodeStatus::at_anchor(head_slot, anchor_root, anchor_epoch),
+            node_status: NodeStatus::at_anchor(anchor_header.slot, anchor_root, anchor_epoch),
             peers: PeerTable::new(),
             shufflings: PostedShufflings::default(),
             has_sidecar,
             pools: OperationPools::default(),
             proposer_preferences: ProposerPreferences::default(),
-            registry_downloads: 0,
+            downloads: 0,
             genesis_validators_root,
             produced_body: ProducedBody::default(),
+            genesis_block: GenesisBlock::at_anchor(anchor_root, anchor_header),
         }
     }
 

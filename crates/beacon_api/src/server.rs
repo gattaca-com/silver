@@ -24,17 +24,17 @@ use silver_pbs::{BuilderConfig, PreferenceFailures, PreferencesBody, SidecarCall
 
 use crate::{
     HeadStatus, NodeStatus,
-    beacon::{
-        blocks::Kind,
-        validators::{Batch, RegistryStream},
-    },
+    beacon::blocks::Kind,
     ctx::ApiCtx,
     entry_signatures::EntrySignatures,
-    events::{self, Channel, ChannelSet, HeadEvent, head_verdict::HeadVerdict},
+    events::{
+        self, Channel, ChannelSet, HeadEvent, finalized_checkpoint::FinalizedCheckpoints,
+        head_verdict::HeadVerdict,
+    },
     http::{
         allowed_hosts::AllowedHosts,
         json::Json,
-        response::Response,
+        response::{Batch, DownloadBody, Response},
         router::{Outcome, Router},
     },
     node::peers::Peer,
@@ -284,7 +284,7 @@ struct Subscription {
 /// client reading slowly holds back only its own body.
 struct Download {
     body: ChunkedResponse,
-    registry: RegistryStream,
+    source: DownloadBody,
     rendered_all: bool,
 }
 
@@ -321,12 +321,12 @@ impl Connection {
         Self { stream: self.stream, state: State::Subscription(Subscription { body, channels }) }
     }
 
-    fn downloading(self, registry: RegistryStream, now: Instant) -> Self {
+    fn downloading(self, source: DownloadBody, now: Instant) -> Self {
         let State::Requests(requests) = self.state else {
             unreachable!("only a request handler begins a download")
         };
         let body = requests.http.into_stream(now);
-        let download = Download { body, registry, rendered_all: false };
+        let download = Download { body, source, rendered_all: false };
         Self { stream: self.stream, state: State::Download(download) }
     }
 
@@ -590,7 +590,7 @@ impl Download {
             return Ok(false);
         }
         let mut batch = Batch::Superseded;
-        let fits = self.body.push_rendered(now, |out| batch = self.registry.render_next(ctx, out));
+        let fits = self.body.push_rendered(now, |out| batch = self.source.render_next(ctx, out));
         assert!(fits, "a batch fits the send cap");
         // The torn batch is never written: the connection closes first.
         if batch == Batch::Superseded {
@@ -672,6 +672,7 @@ pub struct BeaconApi {
     awaiting_import: Vec<Token>,
     recent_imports: RecentImports,
     entry_signatures: EntrySignatures,
+    finalized_checkpoints: FinalizedCheckpoints,
 }
 
 impl BeaconApi {
@@ -713,6 +714,9 @@ impl BeaconApi {
             })
             .collect::<Vec<_>>();
 
+        let finalized_checkpoints = state
+            .read(|view| FinalizedCheckpoints::at_anchor(&view))
+            .expect("beacon api needs the anchor state published");
         Self {
             registry,
             tokens,
@@ -738,6 +742,7 @@ impl BeaconApi {
             awaiting_import: Vec::new(),
             recent_imports: RecentImports::default(),
             entry_signatures: EntrySignatures::new(),
+            finalized_checkpoints,
         }
     }
 
@@ -805,12 +810,19 @@ impl BeaconApi {
                 let optimistic = head_optimistic && verdict.is_none();
                 self.ctx.node_status.head = HeadStatus { slot: latest_block_slot, optimistic };
                 self.ctx.node_status.head_root = block_root;
+                if let Some(roots) = head_roots {
+                    self.ctx.node_status.head_state_root = roots.state_root;
+                }
                 self.ctx.node_status.head_payload = head_payload;
                 self.ctx.node_status.head_ptc = head_ptc;
                 self.ctx.node_status.build_on_full = build_on_full;
                 self.ctx.node_status.wall_slot = wall_slot;
                 self.ctx.proposer_preferences.on_slot(wall_slot);
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
+                if let Some(genesis) = &mut self.ctx.genesis_block {
+                    genesis.learn_state_root(&self.ctx.state);
+                }
+                self.publish_finalized_checkpoint();
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
                     return;
                 }
@@ -1110,6 +1122,14 @@ impl BeaconApi {
     fn publish_head_v2(&mut self, head: &HeadEvent) {
         let fork_name = self.ctx.spec.fork_at_slot(head.slot).name();
         self.publish(Channel::HeadV2, "head_v2", |json| json.head_v2_event(head, fork_name));
+    }
+
+    fn publish_finalized_checkpoint(&mut self) {
+        let Some(event) = self.finalized_checkpoints.advance(&self.ctx.state) else { return };
+        let optimistic = self.ctx.node_status.execution_optimistic();
+        self.publish(Channel::FinalizedCheckpoint, "finalized_checkpoint", |json| {
+            json.finalized_checkpoint_event(&event, optimistic)
+        });
     }
 
     fn publish_execution_payload_available(&mut self, slot: u64, block_root: &B256) {
@@ -1429,7 +1449,7 @@ impl BeaconApi {
             }
             !finished
         });
-        ctx.registry_downloads = downloads.len();
+        ctx.downloads = downloads.len();
         rendered
     }
 
@@ -1509,15 +1529,15 @@ impl BeaconApi {
         match outcome {
             Ok(false) => match dispatched {
                 Outcome::Response(_) => {}
-                Outcome::Download(registry) => {
+                Outcome::Download(source) => {
                     let conn = self.connections.remove(&token).expect("looked up above");
-                    self.connections.insert(token, conn.downloading(registry, now));
+                    self.connections.insert(token, conn.downloading(source, now));
                     // A closed download's token may be reused before the pump
                     // prunes it.
                     if !self.downloads.contains(&token) {
                         self.downloads.push(token);
                     }
-                    self.ctx.registry_downloads = self.downloads.len();
+                    self.ctx.downloads = self.downloads.len();
                 }
                 Outcome::Stream(channels) => {
                     let conn = self.connections.remove(&token).expect("looked up above");
@@ -3536,6 +3556,7 @@ mod tests {
     fn request_id(request: &BeaconApiRequest) -> u64 {
         match request {
             BeaconApiRequest::Block { request_id, .. } |
+            BeaconApiRequest::StoredEnvelope { request_id, .. } |
             BeaconApiRequest::PublishPayloadEnvelope { request_id, .. } |
             BeaconApiRequest::LocalGossip { request_id, .. } |
             BeaconApiRequest::AggregateAttestation { request_id, .. } |
@@ -4097,6 +4118,49 @@ mod tests {
                 "00".repeat(96)
             )
         );
+    }
+
+    #[test]
+    fn block_attestations_render_the_list_in_the_served_body() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let client = connect(tcp_addr(&server));
+        get(&client, &format!("/eth/v2/beacon/blocks/{}/attestations", root_hex(0xcd)));
+        let BeaconApiRequest::Block { request_id, with_bytes: true, .. } =
+            deferred_request(&mut server)
+        else {
+            panic!("the attestations need the bytes");
+        };
+
+        // One attestation: offset, data, signature, committee bits, then a
+        // one-bit aggregation bitlist.
+        let mut attestation = 236u32.to_le_bytes().to_vec();
+        attestation.extend_from_slice(&[0u8; 128]);
+        attestation.extend_from_slice(&[0x55; 96]);
+        attestation.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]);
+        attestation.push(0x03);
+        let mut list = 4u32.to_le_bytes().to_vec();
+        list.extend_from_slice(&attestation);
+
+        let mut block = block_bytes(10, 0xef);
+        let at = SIGNED_BEACON_BLOCK_MIN;
+        let fixed = BEACON_BLOCK_BODY_FIXED as u32;
+        block[at + 208..at + 212].copy_from_slice(&fixed.to_le_bytes());
+        block[at + 212..at + 216].copy_from_slice(&(fixed + list.len() as u32).to_le_bytes());
+        block.extend_from_slice(&list);
+        server.serve_block(request_id, 10, [0xcd; 32], &block);
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "attestations response");
+
+        let text = std::str::from_utf8(&response).unwrap();
+        assert!(text.contains("Eth-Consensus-Version: phase0\r\n"), "{text}");
+        let json: serde_json::Value = serde_json::from_slice(body(&response)).unwrap();
+        assert_eq!(json["version"], "phase0");
+        assert_eq!(json["finalized"], true);
+        let data = json["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["aggregation_bits"], "0x03");
+        assert_eq!(data[0]["committee_bits"], "0x0100000000000000");
+        assert_eq!(data[0]["signature"], format!("0x{}", "55".repeat(96)));
     }
 
     /// `head` resolves in the API from the last `Status`; a slot is resolved
