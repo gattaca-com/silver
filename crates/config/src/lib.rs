@@ -778,7 +778,7 @@ mod tests {
         );
         let enr = Network::Mainnet.bootnodes().unwrap()[0].to_base64();
         write_file(dir.path(), "bootstrap_nodes.yaml", &format!("- \"{enr}\"\n"));
-        let mut genesis = 1_700_000_000u64.to_le_bytes().to_vec();
+        let mut genesis = vec![0u8; 8];
         genesis.extend_from_slice(&[0xab; 32]);
         std::fs::write(dir.path().join("genesis.ssz"), genesis).unwrap();
 
@@ -790,10 +790,10 @@ mod tests {
         let chain = cfg.chain().unwrap();
         assert_eq!(chain.spec.seconds_per_slot(), 6);
         assert_eq!(chain.bootstrap_enrs.len(), 1);
-        assert_eq!(chain.boot, BootSource::Genesis(dir.path().join("genesis.ssz")));
-        assert!(
-            chain.data_dir.ends_with("/devnet-abababab-1700000000"),
-            "named after the genesis root and time"
-        );
+        assert_eq!(chain.boot, BootSource::File {
+            ssz: dir.path().join("genesis.ssz"),
+            pubkeys: None
+        });
+        assert!(chain.data_dir.ends_with("/devnet-abababab"), "named after the genesis root");
     }
 }

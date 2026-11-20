@@ -151,9 +151,7 @@ impl DiscV5 {
                 .checked_sub(TABLE_LOG_INTERVAL)
                 .unwrap_or_else(Instant::now),
             ping_cursor: 0,
-            // An empty table is below target from the start; waiting out a
-            // first `lookup_interval` delays the node's first peers by it.
-            lookup_requested: true,
+            lookup_requested: false,
             metrics: Default::default(),
         };
 
@@ -1614,16 +1612,6 @@ mod tests {
         }
         // B drains its queue (NodeFound, etc.)
         collect_events(b);
-    }
-
-    #[test]
-    fn first_poll_probes_the_bootnodes() {
-        let (mut a, _) = make_node(19021);
-        let (b, b_addr) = make_node(19022);
-        a.add_enr(&b.local_enr, Instant::now());
-
-        let sends = collect_sends(&mut a);
-        assert!(sends.iter().any(|(to, _)| *to == b_addr), "no probe on the first poll");
     }
 
     #[test]

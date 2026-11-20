@@ -1,7 +1,8 @@
 //! Benchmark the canonical SSZ encode of a mainnet checkpoint state into a
 //! warm buffer — the CPU half of the streamed checkpoint persist.
 //! The durable-write half lives in `silver_storage`'s
-//! `checkpoint_persist_bench`, which drives the real streamed persist.
+//! `checkpoint_persist_bench`, which drives the real
+//! `Store::persist_finalized_checkpoint`.
 //!
 //! Needs the ~312 MiB mainnet fixture (gitignored):
 //!   make -C crates/e2e checkpoint-fixtures

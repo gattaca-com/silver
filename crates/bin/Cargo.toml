@@ -55,5 +55,4 @@ thread_park = [
     "silver_application_boundary/thread_park",
     "silver_common/thread_park",
     "silver_network/thread_park",
-    "silver_storage/thread_park",
 ]

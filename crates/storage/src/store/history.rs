@@ -8,7 +8,7 @@ use silver_common::{
 };
 
 use super::{
-    Head, Payload, PendingWrite, WriteQueue,
+    COLUMN_SLOTS_RETAINED, Head, Payload, PendingWrite, WriteQueue,
     backfill::{self, BlockFacts, Pending, VerifiedColumns},
     coverage::{self, Block, Floors},
     finalized::Finalized,
@@ -88,9 +88,7 @@ impl History {
             blocks: finalized_slot
                 .saturating_sub(Payload::Block.slots_retained(&self.spec, epoch))
                 .max(1),
-            columns: finalized_slot
-                .saturating_sub(Payload::Column.slots_retained(&self.spec, epoch))
-                .max(1),
+            columns: finalized_slot.saturating_sub(COLUMN_SLOTS_RETAINED).max(1),
             envelopes: self.spec.gloas_fork_slot(),
         }
     }
@@ -139,8 +137,7 @@ impl History {
             return;
         };
         let start = coverage::window_start(end);
-        let wanted = finalized.wanted_root(head.finalized_slot, head.finalized_root);
-        let (prefill, needs) = finalized.describe(start, floors, head.finalized_slot, wanted);
+        let (prefill, needs) = finalized.describe(start, floors, head.finalized_slot);
         // A window missing nothing is one whose entry a queued truncation is
         // about to prune.
         if !needs || self.published == Some(prefill) {
@@ -165,7 +162,7 @@ impl History {
         let epoch = finalized_slot / SLOTS_PER_EPOCH;
         let retained = match finalized.custody() {
             0 => Payload::Block.slots_retained(&self.spec, epoch),
-            _ => Payload::Column.slots_retained(&self.spec, epoch),
+            _ => COLUMN_SLOTS_RETAINED,
         };
         let floor = finalized_slot.saturating_sub(retained).max(1);
         let claim = finalized.coverage().claim(finalized_slot, floor, missing_from);
@@ -225,10 +222,7 @@ impl History {
             }
         };
         let Some(facts) = facts else { return };
-        // The block the chain wants may lie below the range, past empty slots.
-        let wanted = finalized.wanted_root(head.finalized_slot, head.finalized_root);
         if let Some(window) = self.published &&
-            facts.block_root != wanted &&
             !(window.start..window.start + PREFILL_SLOTS).contains(&facts.slot)
         {
             silver_log::debug!(
@@ -255,9 +249,9 @@ impl History {
         if write_queue.landing() != 0 || self.linker.buffered.is_empty() {
             return;
         }
-        let anchor = finalized.wanted_root(head.finalized_slot, head.finalized_root);
-        let mut child_payload = finalized
-            .coverage()
+        let coverage = finalized.coverage();
+        let anchor = coverage.wanted_parent(head.finalized_slot).unwrap_or(head.finalized_root);
+        let mut child_payload = coverage
             .child_payload(anchor)
             .or_else(|| unfinalized.child_payload_parent(head.slot, head.root, &anchor));
         let column_floor = self.floors(head.finalized_slot).columns;
