@@ -108,6 +108,9 @@ impl Section {
 /// validators section no longer dominates a `file_io` turn.
 const VALIDATORS_PER_CHUNK: usize = 1 << 17;
 
+/// The persist's chunk budget; other readers pass a smaller one.
+pub const PERSIST_CHUNK_BYTES: usize = VALIDATORS_PER_CHUNK * VALIDATOR_SSZ;
+
 #[inline]
 fn w_u64<W: Write>(w: &mut W, v: u64) -> io::Result<()> {
     w.write_all(&v.to_le_bytes())
@@ -320,29 +323,48 @@ impl BeaconState {
     }
 
     /// Write chunk `chunk` of `section` to `w`, returning `true` when the
-    /// section is complete. Every section is single-chunk except
-    /// [`Section::Validators`] (~265 MB), which is split into
-    /// `VALIDATORS_PER_CHUNK`-record chunks so the streamed persist emits a
-    /// bounded slice per turn.
+    /// section is complete. The per-validator lists split into chunks of at
+    /// most `chunk_bytes` (one record when a record is larger); every other
+    /// section is a single chunk.
     pub(crate) fn write_section_chunk<W: Write>(
         &self,
         section: Section,
         chunk: usize,
         offsets: &[u32],
+        chunk_bytes: usize,
         w: &mut W,
     ) -> io::Result<bool> {
-        if section == Section::Validators {
-            let v = self.validators.finalized();
-            let n = v.validator_count();
-            let start = chunk * VALIDATORS_PER_CHUNK;
-            let end = (start + VALIDATORS_PER_CHUNK).min(n);
-            v.write_ssz_range(start, end, w)?;
-            Ok(end >= n)
-        } else {
-            debug_assert_eq!(chunk, 0, "only the validators section is chunked");
-            self.write_section(section, offsets, w)?;
-            Ok(true)
+        // (records, record size, records per hashed leaf chunk)
+        let (count, record, align) = match section {
+            Section::Validators => {
+                (self.validators.finalized().validator_count(), VALIDATOR_SSZ, 1)
+            }
+            Section::Balances => (self.balances.finalized_len(), 8, 4),
+            Section::PreviousParticipation => (self.previous_participation.finalized_len(), 1, 32),
+            Section::CurrentParticipation => (self.current_participation.finalized_len(), 1, 32),
+            Section::InactivityScores => (self.inactivity.finalized_len(), 8, 4),
+            _ => {
+                debug_assert_eq!(chunk, 0, "only the per-validator lists are chunked");
+                self.write_section(section, offsets, w)?;
+                return Ok(true);
+            }
+        };
+        let per_chunk = (chunk_bytes / record / align).max(1) * align;
+        let start = chunk * per_chunk;
+        let end = (start + per_chunk).min(count);
+        match section {
+            Section::Validators => self.validators.finalized().write_ssz_range(start, end, w)?,
+            Section::Balances => self.balances.write_ssz_range(start, end, w)?,
+            Section::PreviousParticipation => {
+                self.previous_participation.write_ssz_range(start, end, w)?
+            }
+            Section::CurrentParticipation => {
+                self.current_participation.write_ssz_range(start, end, w)?
+            }
+            Section::InactivityScores => self.inactivity.write_ssz_range(start, end, w)?,
+            _ => unreachable!("matched above"),
         }
+        Ok(end >= count)
     }
 
     /// Fixed-part fields F0..F23 (genesis_time through next_sync_committee),
@@ -604,8 +626,9 @@ pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, Pubkeys
 #[cfg(test)]
 mod tests {
     use crate::{
-        BeaconState, EpochGroup, EpochStateFinalized, SpecConfig, decode_checkpoint_pubkeys,
-        encode::Section,
+        BeaconState, EpochGroup, EpochStateFinalized, SpecConfig, ValSeed,
+        decode_checkpoint_pubkeys,
+        encode::{PERSIST_CHUNK_BYTES, Section},
     };
 
     /// `encode → decompose → encode` must be a byte-exact fixed point, and the
@@ -629,11 +652,47 @@ mod tests {
         let mut streamed = Vec::with_capacity(bs.ssz_len());
         for section in Section::FULU {
             let mut chunk = 0;
-            while !bs.write_section_chunk(section, chunk, &offsets, &mut streamed).expect("chunk") {
+            while !bs
+                .write_section_chunk(section, chunk, &offsets, PERSIST_CHUNK_BYTES, &mut streamed)
+                .expect("chunk")
+            {
                 chunk += 1;
             }
         }
         assert_eq!(once, streamed, "chunk-streamed SSZ differs from one-pass");
+    }
+
+    /// Every chunk budget streams the same bytes as the one-pass encode, down
+    /// to one record per chunk and across hashed leaf chunk boundaries.
+    #[test]
+    fn per_validator_lists_stream_in_any_chunk_budget() {
+        let seeds: Vec<_> =
+            (0..301u64).map(|i| ValSeed { balance: i * 1_000 + 7, ..ValSeed::default() }).collect();
+        let bs = BeaconState::for_test(EpochStateFinalized::default(), &seeds, 0);
+        let mut once = Vec::with_capacity(bs.ssz_len());
+        bs.encode_ssz(&mut once).expect("encode");
+
+        let offsets = bs.checkpoint_offsets();
+        for chunk_bytes in [1, 31, 64, 1_000, PERSIST_CHUNK_BYTES] {
+            let mut streamed = Vec::with_capacity(bs.ssz_len());
+            let mut chunks = 0;
+            for section in Section::FULU {
+                let mut chunk = 0;
+                while !bs
+                    .write_section_chunk(section, chunk, &offsets, chunk_bytes, &mut streamed)
+                    .expect("chunk")
+                {
+                    chunk += 1;
+                }
+                chunks += chunk + 1;
+            }
+            assert_eq!(once, streamed, "chunk budget {chunk_bytes}");
+            if chunk_bytes == 64 {
+                // 301 validators one per chunk, balances and scores 8 per
+                // chunk, participation 64 per chunk, and 8 single sections.
+                assert_eq!(chunks, 301 + 2 * 301usize.div_ceil(8) + 2 * 301usize.div_ceil(64) + 8);
+            }
+        }
     }
 
     /// Gloas counterpart: an empty Gloas state (fork forced) must be a
@@ -668,7 +727,10 @@ mod tests {
         let mut streamed = Vec::with_capacity(bs.ssz_len());
         for section in Section::GLOAS {
             let mut chunk = 0;
-            while !bs.write_section_chunk(section, chunk, &offsets, &mut streamed).expect("chunk") {
+            while !bs
+                .write_section_chunk(section, chunk, &offsets, PERSIST_CHUNK_BYTES, &mut streamed)
+                .expect("chunk")
+            {
                 chunk += 1;
             }
         }

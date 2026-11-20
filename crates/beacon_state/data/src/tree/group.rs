@@ -148,4 +148,19 @@ impl<C: TreeSpec> TreeGroup<C> {
     pub fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.finalized.table().write_ssz::<C, W>(&self.pool, w)
     }
+
+    #[inline]
+    pub(crate) fn write_ssz_range<W: Write>(
+        &self,
+        start: usize,
+        end: usize,
+        w: &mut W,
+    ) -> io::Result<()> {
+        self.finalized.table().write_ssz_range::<C, W>(&self.pool, start, end, w)
+    }
+
+    #[inline]
+    pub(crate) fn finalized_len(&self) -> usize {
+        self.finalized.table().len()
+    }
 }

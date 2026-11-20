@@ -67,7 +67,7 @@ impl<C: TreeSpec> SharedList<C> {
     pub fn iter(&self) -> impl Iterator<Item = C::Val> + '_ {
         let (flat, paged) = match &self.flat {
             Some(flat) => (Some(flat.leaves()), None),
-            None => (None, Some(self.table.leaf_rows::<C, _>(&self.pool.pages))),
+            None => (None, Some(self.table.leaf_rows::<C, _>(&self.pool.pages, 0))),
         };
         let sz = size_of::<C::Val>();
         let mut remaining = self.len() * sz;

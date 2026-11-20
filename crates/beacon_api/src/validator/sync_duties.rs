@@ -43,7 +43,7 @@ pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
 
 /// Which of the two committees the head state holds answers for an epoch.
 #[derive(Clone, Copy)]
-enum CommitteePeriod {
+pub(crate) enum CommitteePeriod {
     Current,
     Next,
 }
@@ -51,12 +51,22 @@ enum CommitteePeriod {
 impl CommitteePeriod {
     /// `None` for a period the state holds no committee for, which is every
     /// period behind the head's and every one past the next.
-    fn serving(epoch: Epoch, state_epoch: Epoch) -> Option<Self> {
+    pub(crate) fn serving(epoch: Epoch, state_epoch: Epoch) -> Option<Self> {
         let period = |epoch: Epoch| epoch / EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
         match period(epoch).checked_sub(period(state_epoch))? {
             0 => Some(Self::Current),
             1 => Some(Self::Next),
             _ => None,
+        }
+    }
+
+    pub(crate) fn validator_index(self, view: &StateReadView<'_>, position: usize) -> Option<u32> {
+        let committees = view.longtail.sync_committees();
+        match self {
+            // The promoted committee travels with its registry indices; the
+            // one still ahead is pubkeys alone.
+            Self::Current => committees.index_at(position),
+            Self::Next => view.validators.find_by_pubkey(&committees.next().pubkeys[position]),
         }
     }
 }
@@ -78,19 +88,10 @@ struct Seat {
 
 impl Seats {
     fn read(view: &StateReadView<'_>, period: CommitteePeriod) -> Self {
-        let committees = view.longtail.sync_committees();
         let mut seats = [Seat::default(); SYNC_COMMITTEE_SIZE];
         let mut len = 0;
         for position in 0..SYNC_COMMITTEE_SIZE {
-            let validator_index = match period {
-                // The promoted committee travels with its registry indices;
-                // the one still ahead is pubkeys alone.
-                CommitteePeriod::Current => committees.index_at(position),
-                CommitteePeriod::Next => {
-                    view.validators.find_by_pubkey(&committees.next().pubkeys[position])
-                }
-            };
-            if let Some(validator_index) = validator_index {
+            if let Some(validator_index) = period.validator_index(view, position) {
                 seats[len] = Seat { validator_index, position: position as u32 };
                 len += 1;
             }
@@ -187,7 +188,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn seat_holders(offset: u64) -> [u32; SYNC_COMMITTEE_SIZE] {
+    pub(crate) fn seat_holders(offset: u64) -> [u32; SYNC_COMMITTEE_SIZE] {
         std::array::from_fn(|seat| ((seat as u64 + offset) % IN_COMMITTEE) as u32)
     }
 
@@ -222,7 +223,7 @@ pub(crate) mod tests {
         dispatch(ctx, &posting(&format!("/eth/v1/validator/duties/sync/{epoch}"), body)).1
     }
 
-    fn next_period_epoch() -> u64 {
+    pub(crate) fn next_period_epoch() -> u64 {
         (STATE_EPOCH / EPOCHS_PER_SYNC_COMMITTEE_PERIOD + 1) * EPOCHS_PER_SYNC_COMMITTEE_PERIOD
     }
 

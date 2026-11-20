@@ -9,7 +9,8 @@ use silver_httpcore::{ClientResponse, frame_chunked_head, frame_response_with_he
 use silver_pbs::{PreferenceFailures, SidecarCall};
 
 use crate::{
-    beacon::validators::RegistryStream,
+    beacon::{debug_state::StateStream, validators::RegistryStream},
+    ctx::ApiCtx,
     entry_signatures::{EntrySignatures, Refused, SignatureCheck},
     events::ChannelSet,
     http::{json::Json, router::Outcome},
@@ -19,7 +20,7 @@ use crate::{
     },
 };
 
-const JSON_CONTENT_TYPE: &str = "application/json";
+pub(crate) const JSON_CONTENT_TYPE: &str = "application/json";
 
 const CONTENT_LENGTH_WIDTH: usize = u64::MAX.ilog10() as usize + 1;
 
@@ -155,10 +156,15 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::Stream(channels);
     }
 
-    pub(crate) fn begin_registry_download(&mut self, registry: RegistryStream) {
+    pub(crate) fn begin_download(
+        &mut self,
+        content_type: &str,
+        headers: &[(&str, &str)],
+        body: impl Into<DownloadBody>,
+    ) {
         debug_assert!(self.out.is_empty(), "a stream head follows no other response");
-        frame_chunked_head(self.out, JSON_CONTENT_TYPE, &[]);
-        self.outcome = Outcome::Download(registry);
+        frame_chunked_head(self.out, content_type, headers);
+        self.outcome = Outcome::Download(body.into());
     }
 
     pub(crate) fn defer(&mut self, outcome: Outcome) {
@@ -256,6 +262,14 @@ impl<'a> Response<'a> {
     /// land once the body is rendered.
     pub(crate) fn json_body(&mut self, render: impl FnOnce(&mut Json<'_>)) {
         self.json_framed(200, &[], render);
+    }
+
+    pub(crate) fn json_body_with(
+        &mut self,
+        headers: &[(&str, &str)],
+        render: impl FnOnce(&mut Json<'_>),
+    ) {
+        self.json_framed(200, headers, render);
     }
 
     /// Discards the frame if rendering fails, including after a state-read
@@ -505,5 +519,46 @@ mod tests {
             assert_eq!(status.split(' ').next(), Some(code.to_string().as_str()), "{status}");
             assert!(status.len() > 4, "reason phrase missing from {status}");
         }
+    }
+}
+
+/// Concurrent downloads, across every body kind. Each open download renders a
+/// batch on every pump of the API tile.
+pub(crate) const MAX_DOWNLOADS: usize = 2;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Batch {
+    More,
+    Last,
+    Superseded,
+}
+
+/// A body too large to frame in one response, rendered a batch per pump.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DownloadBody {
+    Registry(RegistryStream),
+    State(StateStream),
+}
+
+impl DownloadBody {
+    /// `Superseded` means a finalize ended the state the body reads, and the
+    /// body can no longer be whole.
+    pub(crate) fn render_next(&mut self, ctx: &ApiCtx, out: &mut Vec<u8>) -> Batch {
+        match self {
+            Self::Registry(registry) => registry.render_next(ctx, out),
+            Self::State(state) => state.render_next(&ctx.state, out),
+        }
+    }
+}
+
+impl From<RegistryStream> for DownloadBody {
+    fn from(registry: RegistryStream) -> Self {
+        Self::Registry(registry)
+    }
+}
+
+impl From<StateStream> for DownloadBody {
+    fn from(state: StateStream) -> Self {
+        Self::State(state)
     }
 }

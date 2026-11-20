@@ -13,6 +13,8 @@ const DEFAULT_SYNCING_STATUS: u16 = 206;
 pub struct NodeStatus {
     pub head: HeadStatus,
     pub head_root: B256,
+    /// The head block's post-state root, zero until the first head with roots.
+    pub head_state_root: B256,
     pub head_payload: PayloadResolution,
     pub head_ptc: PtcObservation,
     pub build_on_full: bool,
@@ -36,6 +38,7 @@ impl NodeStatus {
         Self {
             head: HeadStatus { slot: head_slot, optimistic: false },
             head_root,
+            head_state_root: B256::default(),
             head_payload: PayloadResolution::Empty,
             head_ptc: PtcObservation::default(),
             build_on_full: false,

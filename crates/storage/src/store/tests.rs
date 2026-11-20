@@ -9,7 +9,8 @@ use std::{
 };
 
 use silver_common::{
-    PayloadResolution, Prefill, SyncNeed, SyncUpdate, TCacheId, TCacheReader, TReadMode,
+    BeaconApiResponse, BlockLookup, PayloadResolution, Prefill, ServedBlock, SyncNeed, SyncUpdate,
+    TCacheId, TCacheReader, TReadMode,
 };
 use tempfile::TempDir;
 
@@ -301,6 +302,37 @@ fn fork_tree_persist_serve_promote() {
     assert!(reloaded.unfinalized.is_empty());
 }
 
+/// Answers `lookups` as API envelope requests, in order, with each envelope's
+/// bytes.
+fn api_envelopes<const N: usize>(
+    store: &mut super::Store,
+    producer: &mut silver_common::TProducer,
+    lookups: &[BlockLookup; N],
+) -> [Option<(ServedBlock, Vec<u8>)>; N] {
+    use silver_common::TCacheProducer;
+
+    for (request_id, &lookup) in lookups.iter().enumerate() {
+        store.queue_envelope_request(request_id as u64, lookup);
+    }
+    let mut api = vec![];
+    serve(store, |_| [1, 2, 3, 4], producer, &mut |s| match s {
+        IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block }) => {
+            api.push((request_id, block))
+        }
+        other => panic!("api requests answer the api alone, got {other:?}"),
+    });
+    let mut reader =
+        TCacheReader::single(producer.cache_ref(), "api_envelopes", TReadMode::Sliding).unwrap();
+    std::array::from_fn(|i| {
+        let (_, block) =
+            api.iter().find(|(id, _)| *id == i as u64).expect("every request answered");
+        block.map(|block| {
+            let bytes = reader.acquire(block.ssz.unwrap()).buffer().unwrap().0.to_vec();
+            (block, bytes)
+        })
+    })
+}
+
 // Envelopes: persist unfinalized, promote the canonical one to the flat
 // store on finalization, prune the orphan, and rebuild the index on reload.
 #[test]
@@ -359,6 +391,20 @@ fn envelope_persist_promote_prune() {
     assert!(unf_a.exists());
     assert!(unf_b.exists());
 
+    // The API resolves the block, then reads its envelope.
+    let served = api_envelopes(&mut store, &mut producer, &[
+        BlockLookup::Root(root_b),
+        BlockLookup::Slot(slot),
+        BlockLookup::Root([0xEE; 32]),
+    ]);
+    let [Some(fork), Some(head), None] = served else {
+        panic!("expected two envelopes and a miss, got {served:?}");
+    };
+    assert_eq!((fork.0.root, fork.0.finalized, fork.0.canonical), (root_b, false, false));
+    assert_eq!(fork.1, env_b);
+    assert_eq!((head.0.root, head.0.canonical), (root_a, true));
+    assert_eq!(head.1, env_a);
+
     // Replay pairs each block with its envelope: a gloas child's precheck
     // only passes once the parent's payload is verified.
     let entries = store.replay_entries();
@@ -384,6 +430,12 @@ fn envelope_persist_promote_prune() {
         .join(format!("{slot}_envelope.ssz"));
     assert!(flat_a.exists(), "canonical envelope promoted to flat store");
     assert_eq!(std::fs::read(&flat_a).unwrap(), env_a);
+    let [Some(finalized)] = api_envelopes(&mut store, &mut producer, &[BlockLookup::Slot(slot)])
+    else {
+        panic!("the finalized envelope is served");
+    };
+    assert_eq!((finalized.0.root, finalized.0.finalized), (root_a, true));
+    assert_eq!(finalized.1, env_a);
     assert!(!unf_a.exists(), "promoted out of unfinalized");
     assert!(!unf_b.exists(), "orphan envelope pruned");
 

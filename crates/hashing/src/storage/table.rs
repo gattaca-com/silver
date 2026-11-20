@@ -71,8 +71,24 @@ impl PageTable {
         store: &impl PageStore,
         w: &mut W,
     ) -> io::Result<()> {
-        let mut bytes_left = self.count * size_of::<C::Val>();
-        for row in self.leaf_rows::<C, _>(store) {
+        self.write_ssz_range::<C, W>(store, 0, self.count, w)
+    }
+
+    /// Values `[start, end)`, clamped to the tree. `start` sits on a leaf
+    /// chunk boundary, so the range begins at a whole chunk.
+    pub fn write_ssz_range<C: TreeSpec, W: Write>(
+        &self,
+        store: &impl PageStore,
+        start: usize,
+        end: usize,
+        w: &mut W,
+    ) -> io::Result<()> {
+        debug_assert_eq!(start % C::VALS_PER_CHUNK, 0, "a range starts on a chunk boundary");
+        let mut bytes_left = end.min(self.count).saturating_sub(start) * size_of::<C::Val>();
+        for row in self.leaf_rows::<C, _>(store, start / C::VALS_PER_CHUNK) {
+            if bytes_left == 0 {
+                break;
+            }
             let bytes = row.as_flattened();
             let bytes = &bytes[..bytes.len().min(bytes_left)];
             w.write_all(bytes)?;
@@ -81,13 +97,15 @@ impl PageTable {
         Ok(())
     }
 
-    /// The leaf chunks in order, walking from the root once per leaf row.
+    /// The leaf chunks in order from `first_chunk`, walking from the root once
+    /// per leaf row.
     pub(crate) fn leaf_rows<'a, C: TreeSpec, Store: PageStore>(
         &'a self,
         store: &'a Store,
+        first_chunk: usize,
     ) -> impl Iterator<Item = &'a [B256]> {
         let chunks = self.count.div_ceil(C::VALS_PER_CHUNK);
-        let mut chunk = 0;
+        let mut chunk = first_chunk;
         iter::from_fn(move || {
             (chunk < chunks).then(|| {
                 let (id, slot) = self.page_of::<C>(store, self.format().leaf_pos::<C>(chunk));

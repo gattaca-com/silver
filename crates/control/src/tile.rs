@@ -648,6 +648,7 @@ impl Tile<SilverSpine> for Controller {
             BeaconApiRequest::AggregateAttestation { .. } |
             BeaconApiRequest::SyncCommitteeContribution { .. } |
             BeaconApiRequest::Block { .. } |
+            BeaconApiRequest::StoredEnvelope { .. } |
             BeaconApiRequest::ProposerPreparations { .. } |
             BeaconApiRequest::PayloadAttributesWanted(_) |
             BeaconApiRequest::ProduceBlock { .. } |

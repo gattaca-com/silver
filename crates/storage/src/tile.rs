@@ -367,16 +367,19 @@ impl Tile<SilverSpine> for StorageTile {
         self.reader.free();
         self.persist_reader.free();
 
-        adapter.consume(|request: BeaconApiRequest, producers| {
-            if let BeaconApiRequest::Block { request_id, lookup, with_bytes } = request {
-                if with_bytes {
-                    self.store.queue_block_request(request_id, lookup);
-                } else {
-                    let block = self.store.block_facts(lookup);
-                    let response = BeaconApiResponse::Block { request_id, block };
-                    producers.beacon_api_responses.produce(&response.into());
-                }
+        adapter.consume(|request: BeaconApiRequest, producers| match request {
+            BeaconApiRequest::Block { request_id, lookup, with_bytes: true } => {
+                self.store.queue_block_request(request_id, lookup)
             }
+            BeaconApiRequest::Block { request_id, lookup, with_bytes: false } => {
+                let block = self.store.block_facts(lookup);
+                let response = BeaconApiResponse::Block { request_id, block };
+                producers.beacon_api_responses.produce(&response.into());
+            }
+            BeaconApiRequest::StoredEnvelope { request_id, lookup } => {
+                self.store.queue_envelope_request(request_id, lookup)
+            }
+            _ => {}
         });
 
         // Check for data columns and incoming blocks via RPC.

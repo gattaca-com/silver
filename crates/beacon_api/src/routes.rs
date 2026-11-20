@@ -1,9 +1,12 @@
 use crate::{
     beacon::{
         block_submission::{post_blinded_block_v2, post_block_v2},
-        blocks::{block, block_header, block_root, head_headers},
+        blocks::{
+            block, block_attestations, block_header, block_root, head_headers, payload_envelope,
+        },
         builders::post_state_builders,
         committees::get_epoch_committees,
+        debug_state::debug_state,
         operations::{
             post_attestations, post_attester_slashing, post_bls_to_execution_changes,
             post_proposer_slashing, post_voluntary_exit,
@@ -15,7 +18,10 @@ use crate::{
             get_voluntary_exits,
         },
         proposer_preferences::get_proposer_preferences,
-        states::{genesis, state_finality_checkpoints, state_fork},
+        states::{
+            genesis, state_finality_checkpoints, state_fork, state_randao, state_root,
+            state_sync_committees,
+        },
         sync_committees::post_sync_committee_messages,
         validators::{
             get_state_validator_balances, get_state_validators, post_state_validator_balances,
@@ -78,6 +84,7 @@ pub(crate) const SERVED_WHILE_SYNCING: &[&str] = &[
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Post, "/eth/v1/beacon/execution_payload_envelopes", post_payload_envelope),
+    (Method::Get, "/eth/v1/beacon/execution_payload_envelopes/{block_id}", payload_envelope),
     (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", block_root),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
     (Method::Get, "/eth/v1/beacon/headers", head_headers),
@@ -99,6 +106,9 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         state_finality_checkpoints,
     ),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/randao", state_randao),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/root", state_root),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/sync_committees", state_sync_committees),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/validator_balances",
@@ -146,6 +156,8 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         post_sync_committee_subscriptions,
     ),
     (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
+    (Method::Get, "/eth/v2/beacon/blocks/{block_id}/attestations", block_attestations),
+    (Method::Get, "/eth/v2/debug/beacon/states/{state_id}", debug_state),
     (Method::Post, "/eth/v2/beacon/blinded_blocks", post_blinded_block_v2),
     (Method::Post, "/eth/v2/beacon/blocks", post_block_v2),
     (Method::Post, "/eth/v2/beacon/pool/attestations", post_attestations),
