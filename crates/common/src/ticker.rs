@@ -16,6 +16,11 @@ pub fn attestation_due_bps(is_gloas: bool) -> u64 {
     if is_gloas { ATTESTATION_DUE_BPS_GLOAS } else { ATTESTATION_DUE_BPS }
 }
 
+/// `get_slot_component_duration_ms`: rounded to the nearest millisecond.
+pub fn slot_component_ms(slot_ms: u64, basis_points: u64) -> u64 {
+    (basis_points * slot_ms + BASIS_POINTS / 2) / BASIS_POINTS
+}
+
 // slot/24 before next slot = 500ms on mainnet.
 const FORK_CHOICE_LOOKAHEAD_DIVISOR: u64 = 24;
 // slot/4 before next slot = 3s on mainnet, state advance fires at 3/4.
@@ -125,7 +130,7 @@ impl SlotTicker {
         match phase {
             Phase::SlotStart => 0,
             Phase::AnnouncePayload => {
-                slot_ms * attestation_due_bps(slot >= self.gloas_fork_slot) / BASIS_POINTS
+                slot_component_ms(slot_ms, attestation_due_bps(slot >= self.gloas_fork_slot))
             }
             Phase::PreparePayload => self.payload_off,
             Phase::StateAdvance => slot_ms - slot_ms / STATE_ADVANCE_DIVISOR,
@@ -204,7 +209,7 @@ impl SlotTicker {
     }
 
     pub fn is_before_attesting_interval(&self, is_gloas: bool) -> bool {
-        let due_ms = self.slot_ms * attestation_due_bps(is_gloas) / BASIS_POINTS;
+        let due_ms = slot_component_ms(self.slot_ms, attestation_due_bps(is_gloas));
         self.millis_since_genesis() % self.slot_ms < due_ms
     }
 
@@ -331,8 +336,8 @@ mod tests {
             t.tick()
         };
         assert_eq!(at(31 * 12_000), TickEvent::SlotStart(31));
-        assert_eq!(at(31 * 12_000 + 3_998), TickEvent::None);
-        assert_eq!(at(31 * 12_000 + 3_999), TickEvent::AnnouncePayload(31));
+        assert_eq!(at(31 * 12_000 + 3_999), TickEvent::None);
+        assert_eq!(at(31 * 12_000 + 4_000), TickEvent::AnnouncePayload(31));
         assert_eq!(at(31 * 12_000 + 8_000), TickEvent::PreparePayload(31));
 
         assert_eq!(at(32 * 12_000), TickEvent::SlotStart(32));

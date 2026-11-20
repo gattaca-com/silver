@@ -1,8 +1,11 @@
-use std::fmt::{self, Display};
+use std::{
+    cell::Cell,
+    fmt::{self, Display},
+};
 
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, BLSPubkey, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid,
+    B256, BidBuilderError, Builder, BuilderRegistry, Epoch, ExecutionPayloadBid,
     MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
     SYNC_SUBCOMMITTEE_SIZE, ShufflingId, Slot, StateId, StateReadView, SyncSubcommittee,
     bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
@@ -852,20 +855,36 @@ impl BeaconStateTile {
         if bid.execution_payment != 0 {
             return Feedback::reject("bid has execution payment");
         }
-        if let Err(feedback) = self.check_bid_on_parent(&bid, signature, |_| true) {
+        let count = self.payload_bids_pool.count(&bid);
+        let proposing = self.proposes_at(&bid);
+        let over_limit = Cell::new(false);
+        // Our own proposal still weighs a higher bid past the limit, else a
+        // builder could show us only its low bids.
+        let within_limit = |_: &Builder, bid_limit| {
+            over_limit.set(count >= bid_limit);
+            !over_limit.get() || proposing
+        };
+        if let Err(feedback) = self.check_bid_on_parent(&bid, signature, within_limit) {
             return feedback;
         }
         self.payload_bids_pool.add(bid, *signature);
-        Feedback::Accept
+        if over_limit.get() { Feedback::Ignore } else { Feedback::Accept }
+    }
+
+    fn proposes_at(&self, bid: &ExecutionPayloadBid) -> bool {
+        self.fork_choice
+            .shuffling_dependent_root(&bid.parent_block_root, bid.slot / SLOTS_PER_EPOCH)
+            .is_some_and(|root| self.seen_proposer_preferences.is_local(bid.slot, &root))
     }
 
     /// What a bid must pass however it arrived: its parent, its builder's
-    /// standing, then `accepts_builder`, then its signature.
+    /// standing, then `accepts_builder` given the builder's bid limit, then its
+    /// signature.
     pub(super) fn check_bid_on_parent(
         &mut self,
         bid: &ExecutionPayloadBid,
         signature: &[u8; 96],
-        accepts_builder: impl Fn(&BLSPubkey) -> bool,
+        accepts_builder: impl Fn(&Builder, u64) -> bool,
     ) -> Result<(), Feedback> {
         if bid.block_hash == bid.parent_block_hash {
             return Err(Feedback::reject("bid block hash equals parent"));
@@ -901,11 +920,8 @@ impl BeaconStateTile {
         let view = self.state.read_view(at_bid);
 
         let finalized_epoch = view.epoch.state().finalized_checkpoint.epoch;
-        let builder = match BuilderRegistry::of_reader(&view).check_bid(
-            finalized_epoch,
-            bid.builder_index,
-            bid.value,
-        ) {
+        let registry = BuilderRegistry::of_reader(&view);
+        let builder = match registry.check_bid(finalized_epoch, bid.builder_index, bid.value) {
             Ok(builder) => builder,
             Err(e @ BidBuilderError::InsufficientBalance { .. }) => {
                 silver_log::debug!(?e, "execution payload bid ignored");
@@ -927,7 +943,7 @@ impl BeaconStateTile {
                 return Err(Feedback::Ignore);
             }
         }
-        if !accepts_builder(&builder.pubkey) {
+        if !accepts_builder(builder, registry.bid_limit(bid.builder_index)) {
             return Err(Feedback::Ignore);
         }
 
@@ -1424,13 +1440,6 @@ impl BeaconStateTile {
         let rv = self.state.read_view(state_id);
         let slot = rv.slot.slot_number();
         self.envelope_arrivals.record(block_root, slot, self.ticker.millis_since_genesis());
-        if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
-            silver_log::error!(
-                block = hex32(&block_root),
-                "envelope withdrawals are not the expected ones"
-            );
-            return Feedback::Accept;
-        }
         let slot_state = rv.slot;
 
         let verified = self.fork_choice.is_payload_verified(&block_root);
@@ -1736,6 +1745,10 @@ impl BeaconStateTile {
                 silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
                 return Feedback::reject("exit invalid");
             }
+        }
+
+        if stf::get_pending_balance_to_withdraw(&view.pending, vi as u32) != 0 {
+            return Feedback::Ignore;
         }
 
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi);

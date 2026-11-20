@@ -242,7 +242,7 @@ fn stateless_publication_rejects_a_blob_count_different_from_the_bid() {
 }
 
 #[test]
-fn withdrawal_mismatch_is_only_broadcast_in_gossip_mode() {
+fn withdrawal_mismatch_is_never_broadcast() {
     let (mut rig, signed, frame) = ProductionRig::self_build_for_publication(0);
     let message = SignedExecutionPayloadEnvelopeView::message(&signed);
     let payload = ExecutionPayloadEnvelopeView::payload(message);
@@ -259,24 +259,7 @@ fn withdrawal_mismatch_is_only_broadcast_in_gossip_mode() {
     assert!(rig.submit_envelope(&body, true, BroadcastValidation::Consensus).is_empty());
     assert_eq!(rig.publication_result(), [Err(LocalGossipFailure::Invalid)]);
     assert!(rig.submit_envelope(&body, true, BroadcastValidation::Gossip).is_empty());
-    let mut broadcast_only = false;
-    rig.sink.consume(|response: BeaconApiResponse, _| {
-        if let BeaconApiResponse::PayloadEnvelopeValidation {
-            request_id: 42,
-            consensus_valid: false,
-        } = response
-        {
-            broadcast_only = true;
-        }
-    });
-    assert!(broadcast_only);
-    let mut released = 0;
-    rig.sink.consume(|request: BeaconApiRequest, _| {
-        if let BeaconApiRequest::LocalGossip { .. } = request {
-            released += 1;
-        }
-    });
-    assert_eq!(released, 1);
+    assert_eq!(rig.publication_result(), [Err(LocalGossipFailure::Invalid)]);
 }
 
 #[test]

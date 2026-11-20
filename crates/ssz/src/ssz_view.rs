@@ -2897,7 +2897,7 @@ impl ExecutionPayloadView {
         buf.len() >= EXECUTION_PAYLOAD_FIXED_GLOAS &&
             offsets_ok(buf, &OFFSETS, EXECUTION_PAYLOAD_FIXED_GLOAS) &&
             variable_field(buf, &OFFSETS, 0).len() <= MAX_EXTRA_DATA_BYTES &&
-            variable_list_ok(variable_field(buf, &OFFSETS, 1), usize::MAX, |_| true) &&
+            variable_list_ok(variable_field(buf, &OFFSETS, 1), usize::MAX, |tx| !tx.is_empty()) &&
             fixed_list_ok(
                 variable_field(buf, &OFFSETS, 2),
                 WITHDRAWAL_SIZE,
@@ -3055,5 +3055,45 @@ impl SignedBuilderBidFuluView {
         buf.len() >= 100 &&
             u32_le(buf, 0) as usize == 100 &&
             BuilderBidFuluView::check_canonical(Self::message(buf))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gloas_payload_with_transactions(transactions: &[&[u8]]) -> Vec<u8> {
+        let table_len = 4 * transactions.len();
+        let mut list = Vec::new();
+        let mut offset = table_len;
+        for tx in transactions {
+            list.extend_from_slice(&(offset as u32).to_le_bytes());
+            offset += tx.len();
+        }
+        for tx in transactions {
+            list.extend_from_slice(tx);
+        }
+
+        let mut buf = vec![0u8; EXECUTION_PAYLOAD_FIXED_GLOAS];
+        let transactions_end = (EXECUTION_PAYLOAD_FIXED_GLOAS + list.len()) as u32;
+        buf[436..440].copy_from_slice(&(EXECUTION_PAYLOAD_FIXED_GLOAS as u32).to_le_bytes());
+        buf[504..508].copy_from_slice(&(EXECUTION_PAYLOAD_FIXED_GLOAS as u32).to_le_bytes());
+        buf[508..512].copy_from_slice(&transactions_end.to_le_bytes());
+        buf[528..532].copy_from_slice(&transactions_end.to_le_bytes());
+        buf.extend_from_slice(&list);
+        buf
+    }
+
+    #[test]
+    fn gloas_payload_rejects_an_empty_transaction() {
+        assert!(ExecutionPayloadView::check_canonical_gloas(&gloas_payload_with_transactions(&[])));
+        assert!(ExecutionPayloadView::check_canonical_gloas(&gloas_payload_with_transactions(&[
+            &[0x02, 0x01],
+            &[0x01]
+        ])));
+        assert!(!ExecutionPayloadView::check_canonical_gloas(&gloas_payload_with_transactions(&[
+            &[0x02, 0x01],
+            &[]
+        ])));
     }
 }

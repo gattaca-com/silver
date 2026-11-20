@@ -241,10 +241,6 @@ pub enum BlockLookup {
 #[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {
-    PayloadEnvelopeValidation {
-        request_id: u64,
-        consensus_valid: bool,
-    },
     LocalGossipResponse {
         request_id: u64,
         #[type_hash(literal = "Result<(), LocalGossipFailure>")]
@@ -280,7 +276,6 @@ pub enum BeaconApiResponse {
 impl BeaconApiResponse {
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::PayloadEnvelopeValidation { request_id, .. } |
             Self::LocalGossipResponse { request_id, .. } |
             Self::AggregateAttestation { request_id, .. } |
             Self::SyncCommitteeContribution { request_id, .. } |

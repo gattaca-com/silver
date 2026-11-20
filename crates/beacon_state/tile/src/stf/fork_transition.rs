@@ -44,6 +44,10 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
         let s = view.slot.state_mut();
         s.latest_block_hash = placeholder_bid.block_hash;
         s.execution_payload_availability = [0xFF; EXECUTION_PAYLOAD_AVAILABILITY_BYTES];
+        // The previous slot's `process_slot` ran under Fulu rules, so it
+        // never cleared this slot's bit.
+        let slot = s.slot;
+        s.set_payload_available(slot, false);
         s.latest_execution_payload_bid.clone_from(&placeholder_bid);
         // The remaining Gloas slot fields (`next_withdrawal_builder_index`,
         // `builder_pending_payments`, `builder_pending_withdrawals`,
@@ -84,9 +88,9 @@ fn build_ptc_window(view: &StateWriterView) -> Box<[PtcCommittee; PTC_WINDOW_LEN
 }
 
 /// `onboard_builders_from_pending_deposits`: the one-time deposit path that
-/// seeds the builder registry at the fork. Rebuilds `pending_deposits`, keeping
-/// validator and non-onboarded deposits; the registry starts empty, so every
-/// builder is appended this pass (top-ups hit `add_balance`).
+/// seeds the builder registry at the fork. Only builder-credential deposits
+/// fund builders; every other deposit stays queued, even for a builder pubkey.
+/// The registry starts empty, so new builders are appended in queue order.
 fn onboard_builders_from_pending_deposits(view: &mut StateWriterView) {
     let count = view.pending.deposits.reader().len();
     let snapshot: Vec<PendingDeposit> =
@@ -94,25 +98,13 @@ fn onboard_builders_from_pending_deposits(view: &mut StateWriterView) {
     view.pending.deposits.drain(count);
 
     for d in snapshot {
-        // Deposits for existing validators stay in the queue.
-        if view.validators.find_by_pubkey(&d.pubkey).is_some() {
-            view.pending.deposits.push(d);
-            continue;
-        }
-        // Top up an already-onboarded builder (recomputed each iteration).
-        let existing = view.builders.reader().find_by_pubkey(&d.pubkey);
-        if let Some(bi) = existing {
-            view.builders.add_balance(bi, d.amount);
-            continue;
-        }
-        // New builder candidate: must carry a builder credential, must not be a
-        // pending validator, and must have a valid deposit signature.
         if !d.withdrawal_credentials.has_builder_credential() {
             view.pending.deposits.push(d);
             continue;
         }
-        if pending_deposit_has_valid_sig(view, &d.pubkey) {
-            view.pending.deposits.push(d);
+        let existing = view.builders.reader().find_by_pubkey(&d.pubkey);
+        if let Some(bi) = existing {
+            view.builders.add_balance(bi, d.amount);
             continue;
         }
         if !is_valid_deposit_signature(
@@ -122,6 +114,12 @@ fn onboard_builders_from_pending_deposits(view: &mut StateWriterView) {
             d.amount,
             &d.signature,
         ) {
+            // No builder can take it, but a validator top-up must survive.
+            if view.validators.find_by_pubkey(&d.pubkey).is_some() ||
+                pending_deposit_has_valid_sig(view, &d.pubkey)
+            {
+                view.pending.deposits.push(d);
+            }
             continue;
         }
         view.builders.push(Builder {

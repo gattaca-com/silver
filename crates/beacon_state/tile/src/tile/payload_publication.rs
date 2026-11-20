@@ -9,7 +9,7 @@ use silver_common::{
 };
 
 use super::{BeaconStateTile, Producers, gossip::EnvelopeCheck};
-use crate::{fork_choice::ExecutionStatus, stf};
+use crate::fork_choice::ExecutionStatus;
 
 impl BeaconStateTile {
     pub(super) fn publish_payload_envelope(
@@ -82,10 +82,6 @@ impl BeaconStateTile {
         };
         let view = self.state.read_view(state_id);
         let state = view.slot.state();
-        let consensus_valid = stf::envelope_withdrawals_match_expected(&view, signed);
-        if !consensus_valid && validation != BroadcastValidation::Gossip {
-            return Err(LocalGossipFailure::Invalid);
-        }
         if self.fork_choice.nodes.iter().any(|node| {
             node.block_root == block_root && node.execution_status == ExecutionStatus::Invalid
         }) {
@@ -125,8 +121,6 @@ impl BeaconStateTile {
             .events_producer
             .write_with(signed.len(), |out| out.copy_from_slice(signed))
             .ok_or(LocalGossipFailure::Internal)?;
-        producers
-            .produce(BeaconApiResponse::PayloadEnvelopeValidation { request_id, consensus_valid });
         if commitments.is_empty() {
             producers.produce(BeaconApiRequest::LocalGossip {
                 request_id,

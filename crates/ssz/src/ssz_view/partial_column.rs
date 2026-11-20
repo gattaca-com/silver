@@ -9,7 +9,8 @@ use super::{
 };
 use crate::merkle::bitlist_len;
 
-pub const PARTIAL_COLUMNS_VERSION_BYTE: u8 = 0x00;
+pub const FULU_GROUP_ID_VERSION: u8 = 0x00;
+pub const GLOAS_GROUP_ID_VERSION: u8 = 0x01;
 pub const FULU_GROUP_ID_SIZE: usize = 33;
 pub const GLOAS_GROUP_ID_SIZE: usize = 41;
 
@@ -35,13 +36,13 @@ pub const MAX_PARTIAL_DATA_COLUMN_SIDECAR_SIZE_FULU: usize = PARTIAL_SIDECAR_FIX
     MAX_BLOB_COMMITMENTS_PER_BLOCK * BYTES_PER_KZG_COMMITMENT;
 
 pub fn fulu_group_id(block_root: &[u8; 32]) -> [u8; FULU_GROUP_ID_SIZE] {
-    let mut id = [PARTIAL_COLUMNS_VERSION_BYTE; FULU_GROUP_ID_SIZE];
+    let mut id = [FULU_GROUP_ID_VERSION; FULU_GROUP_ID_SIZE];
     id[1..].copy_from_slice(block_root);
     id
 }
 
 pub fn gloas_group_id(block_root: &[u8; 32], slot: u64) -> [u8; GLOAS_GROUP_ID_SIZE] {
-    let mut id = [PARTIAL_COLUMNS_VERSION_BYTE; GLOAS_GROUP_ID_SIZE];
+    let mut id = [GLOAS_GROUP_ID_VERSION; GLOAS_GROUP_ID_SIZE];
     id[1..33].copy_from_slice(block_root);
     id[33..].copy_from_slice(&slot.to_le_bytes());
     id
@@ -421,7 +422,7 @@ mod tests {
         assert_eq!(fulu[0], 0);
         assert_eq!(&fulu[1..], &root);
         let gloas = gloas_group_id(&root, 0x0102_0304);
-        assert_eq!(gloas[0], 0);
+        assert_eq!(gloas[0], 1);
         assert_eq!(&gloas[1..33], &root);
         assert_eq!(gloas[33..], 0x0102_0304u64.to_le_bytes());
     }

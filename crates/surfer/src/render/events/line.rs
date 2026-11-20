@@ -361,8 +361,8 @@ mod tests {
         assert_eq!(strip.start, "300ms");
         assert_eq!(strip.end, "520ms");
         assert_eq!(strip.duration, "220ms", "rank → attestable");
-        assert_eq!(strip.margin, Some(Margin { delta: Nanos(3_479_600_000), made_it: true }));
-        assert_eq!(strip.margin_text(), format!("+{}", fmt_nanos(Nanos(3_479_600_000))));
+        assert_eq!(strip.margin, Some(Margin { delta: Nanos(3_480_000_000), made_it: true }));
+        assert_eq!(strip.margin_text(), format!("+{}", fmt_nanos(Nanos(3_480_000_000))));
 
         let el = cells_of(&cells, Node::Span(Span::El));
         assert_eq!(el.label, "    el", "a component of its own, not under stf");

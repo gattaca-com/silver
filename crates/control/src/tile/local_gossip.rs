@@ -224,7 +224,6 @@ pub(super) mod tests {
                 BeaconApiResponse::SyncCommitteeContribution { .. } |
                 BeaconApiResponse::Block { .. } => {}
                 BeaconApiResponse::ProducedBlock { .. } |
-                BeaconApiResponse::PayloadEnvelopeValidation { .. } |
                 BeaconApiResponse::ExecutionPayloadEnvelope { .. } => {}
             });
             responses
