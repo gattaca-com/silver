@@ -7,11 +7,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "metrics")]
+use flux::{Timer, utils::directories::shmem_dir_queues_with_base};
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde_json::{Value, json};
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
+#[cfg(feature = "metrics")]
+use silver_common::APP_NAME;
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource, BlockStage,
     ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineGetPayloadReq,
@@ -607,6 +611,24 @@ fn head_events_subscriber(
 /// once the response arrives.
 #[test]
 fn serves_beacon_api_while_engine_call_in_flight() {
+    concurrent_api_and_engine(false, 1);
+}
+
+#[cfg(feature = "metrics")]
+#[test]
+fn busy_metrics_source_and_slow_scraper_allow_engine_and_beacon_progress() {
+    concurrent_api_and_engine(true, 1);
+}
+
+#[cfg(feature = "metrics")]
+#[test]
+#[ignore = "local boundary latency measurement"]
+fn measure_metrics_boundary_latency() {
+    concurrent_api_and_engine(false, 500);
+    concurrent_api_and_engine(true, 500);
+}
+
+fn concurrent_api_and_engine(metrics_enabled: bool, requests: usize) {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
@@ -618,16 +640,41 @@ fn serves_beacon_api_while_engine_call_in_flight() {
         ..EngineConfig::default()
     };
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config);
+    #[cfg(feature = "metrics")]
+    let timer = (metrics_enabled || requests > 1)
+        .then(|| Timer::new_with_base_dir(base.path(), APP_NAME, "boundary-progress-test"));
+    #[cfg(feature = "metrics")]
+    let _stalled_client = metrics_enabled.then(|| {
+        let sources = shmem_dir_queues_with_base(base.path(), APP_NAME);
+        let addr = tile.listen_metrics(([127, 0, 0, 1], 0).into(), sources).unwrap();
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n").unwrap();
+        stream
+    });
+    #[cfg(not(feature = "metrics"))]
+    assert!(!metrics_enabled);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     inj.consume(|_: EngineResp, _| {});
+    if metrics_enabled {
+        inj.produce(status_event(1, 1, false));
+    }
 
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut spins = Vec::new();
     let mut crank = |tile: &mut ApplicationBoundaryTile, el: &mut FakeEl, msg: &str| {
         assert!(Instant::now() < deadline, "timeout: {msg}");
+        #[cfg(feature = "metrics")]
+        if let Some(timer) = &timer {
+            for _ in 0..256 {
+                timer.emit_latency_from_nanos_without_first(Nanos(1), Nanos(1025));
+            }
+        }
+        let started = Instant::now();
         tile.loop_body(&mut adapter);
+        spins.push(started.elapsed());
         el.pump();
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::yield_now();
     };
 
     // Crank until the startup healthcheck trio is on the wire: the tile's
@@ -648,12 +695,20 @@ fn serves_beacon_api_while_engine_call_in_flight() {
     // The FCU (and the startup healthcheck trio) sit unanswered on the EL;
     // the API request must be served anyway.
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
-    let client = identity_client(addr);
-    while !client.is_finished() {
-        crank(&mut tile, &mut el, "identity served while fcu in flight");
+    let mut latencies = Vec::new();
+    for _ in 0..requests {
+        let client = std::thread::spawn(move || {
+            let start = Instant::now();
+            let response = http_get(TcpStream::connect(addr).unwrap(), "/eth/v1/node/identity");
+            (response, start.elapsed())
+        });
+        while !client.is_finished() {
+            crank(&mut tile, &mut el, "identity served while fcu in flight");
+        }
+        let (response, elapsed) = client.join().unwrap();
+        assert_identity_ok(&response);
+        latencies.push(elapsed);
     }
-    assert_identity_ok(&client.join().unwrap());
-
     let mut completed = Vec::new();
     inj.consume(|resp: EngineResp, _| {
         if let EngineResp::Fcu(r) = resp {
@@ -670,6 +725,18 @@ fn serves_beacon_api_while_engine_call_in_flight() {
                 completed.push(r.block_root);
             }
         });
+    }
+    if requests > 1 {
+        latencies.sort_unstable();
+        spins.sort_unstable();
+        eprintln!(
+            "metrics={metrics_enabled}, {} requests: API p50 {:?}, p99 {:?}; tile p50 {:?}, p99 {:?}",
+            requests,
+            latencies[requests / 2],
+            latencies[requests * 99 / 100 - 1],
+            spins[spins.len() / 2],
+            spins[spins.len() * 99 / 100 - 1]
+        );
     }
     assert_eq!(completed, vec![[42u8; 32]]);
 }

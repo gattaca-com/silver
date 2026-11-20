@@ -1,3 +1,4 @@
+{{- if or .Values.service.metrics.enabled .Values.serviceMonitor.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,7 +19,8 @@ spec:
   ports:
     - port: {{ .Values.service.metrics.port }}
       name: metrics
-      targetPort: rpc
+      targetPort: metrics
       protocol: TCP
   selector:
     {{- include "silver.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -14,3 +14,11 @@ data:
     {{- with .Values.config }}
     {{- . | nindent 4 }}
     {{- end }}
+    {{- if or .Values.service.metrics.enabled .Values.serviceMonitor.enabled }}
+    {{- if regexMatch "(?m)^\\s*\\[metrics\\]" (.Values.config | default "") }}
+    {{- fail "config must not set [metrics] when service.metrics or serviceMonitor is enabled" }}
+    {{- end }}
+    [metrics]
+    enabled = true
+    bind = "0.0.0.0:{{ .Values.service.metrics.port }}"
+    {{- end }}

@@ -2173,7 +2173,7 @@ mod tests {
             &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(held);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                write!(stream, "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
                 let mut response = Vec::new();
                 let mut chunk = [0u8; 1024];
                 while !response.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -2197,7 +2197,7 @@ mod tests {
             &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(other);
-                let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+                let _ = write!(stream, "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n");
                 let mut chunk = [0u8; 1024];
                 stream.read(&mut chunk)
             }),
@@ -2391,7 +2391,7 @@ mod tests {
                 // cannot predate it, so the deadline it enforces is at least
                 // this long.
                 let sent_at = Instant::now();
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                write!(stream, "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
                 (read_to_eof(stream), sent_at.elapsed())
             }),
             "idle keep-alive connection reaped",
@@ -2416,7 +2416,7 @@ mod tests {
                 let mut stream = connect(addr);
                 let mut chunk = [0u8; 1024];
                 for i in 0..5 {
-                    write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                    write!(stream, "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
                     let n = stream.read(&mut chunk).unwrap();
                     assert!(n > 0, "server closed a connection that kept transferring (#{i})");
                     std::thread::sleep(idle_timeout / 4);
@@ -2492,7 +2492,7 @@ mod tests {
                 let mut stream = connect(addr);
                 let mut chunk = [0u8; 1024];
                 for i in 0..2 {
-                    write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                    write!(stream, "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
                     let n = stream.read(&mut chunk).unwrap();
                     assert!(chunk[..n].starts_with(b"HTTP/1.1 200 OK\r\n"), "request #{i}");
                     std::thread::sleep(Duration::from_millis(600));
@@ -2514,7 +2514,7 @@ mod tests {
 
         let hung = std::thread::spawn(move || {
             let mut stream = connect(addr);
-            write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n").unwrap();
+            write!(stream, "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n").unwrap();
             read_to_eof(stream)
         });
         pump_until(&mut server, "hung client holds the only slot", |server| {
@@ -2525,7 +2525,7 @@ mod tests {
             &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
-                let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+                let _ = write!(stream, "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n");
                 let mut chunk = [0u8; 1024];
                 stream.read(&mut chunk)
             }),
@@ -2542,8 +2542,11 @@ mod tests {
             &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-                    .unwrap();
+                write!(
+                    stream,
+                    "GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
                 let mut response = Vec::new();
                 stream.read_to_end(&mut response).unwrap();
                 response

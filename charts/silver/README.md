@@ -89,7 +89,7 @@ kubectl exec -it silver-0 -c silver -- silver_surfer /runtime silver
 Replace `silver-0` with your pod name. Surfer shares the node's runtime files and uses the same release version.
 
 The optional ServiceMonitor requires the Prometheus Operator CRDs.
-Silver exposes `/metrics` but returns no samples.
+Set `service.metrics.enabled=true` to expose Prometheus metrics on port 5054. Enabling the ServiceMonitor also enables this listener. The Beacon API no longer serves the old empty endpoint.
 
 ## Release the chart
 

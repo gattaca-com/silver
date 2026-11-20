@@ -316,10 +316,6 @@ impl<'a> Response<'a> {
         write!(digits, "{length:>CONTENT_LENGTH_WIDTH$}").unwrap();
     }
 
-    pub(crate) fn empty(&mut self, content_type: &str) {
-        self.send(200, Some(content_type), &[], &[]);
-    }
-
     /// The success of a schema that declares no content under its 200.
     pub(crate) fn ok(&mut self) {
         self.send(200, None, &[], &[]);

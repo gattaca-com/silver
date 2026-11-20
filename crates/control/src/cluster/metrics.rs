@@ -14,22 +14,22 @@ use super::{
 silver_common::declare_counters! {
     pub ClusterCounters => "cluster" {
         // 0 follower, 1 candidate or pre-candidate, 2 leader.
-        Role,
-        LeaderId,
-        Term,
-        CommitIndex,
-        AppliedIndex,
-        LastIndex,
-        PendingProposals,
-        Failed,
-        FailureKind,
-        FloorLatched,
-        StartupFloorSlot,
-        MinimumSlot,
-        LockedVotes,
-        BlockLocks,
-        EvictedSources,
-        SnapshotIndex,
+        Role: gauge,
+        LeaderId: gauge,
+        Term: gauge,
+        CommitIndex: gauge,
+        AppliedIndex: gauge,
+        LastIndex: gauge,
+        PendingProposals: gauge,
+        Failed: gauge,
+        FailureKind: gauge,
+        FloorLatched: gauge,
+        StartupFloorSlot: gauge,
+        MinimumSlot: gauge,
+        LockedVotes: gauge,
+        BlockLocks: gauge,
+        EvictedSources: gauge,
+        SnapshotIndex: gauge,
         ProposalsSubmitted,
         ProposalsCommitted,
         ProposalsTimedOut,
@@ -60,18 +60,18 @@ silver_common::declare_counters! {
         // Compactions skipped because the lock snapshot exceeded the transport limit.
         CompactionsSkipped,
         // Size of the last encoded lock snapshot.
-        SnapshotBytes,
+        SnapshotBytes: gauge,
         InboundInvalid,
         MessagesIn,
         MessagesOut,
         // Longest gap between two Control loop passes in the last second.
-        LoopGapMaxUs,
+        LoopGapMaxUs: gauge,
         // Journal bytes appended since the last compaction.
-        JournalBytes,
+        JournalBytes: gauge,
         // 1 when this run has a cluster configured; set at every start.
-        Clustered,
+        Clustered: gauge,
         // 1 once this node has applied its own removal from the cluster.
-        Removed,
+        Removed: gauge,
     }
 }
 

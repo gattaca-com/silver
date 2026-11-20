@@ -121,7 +121,22 @@ mod optional_address {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct MetricsConfig {
+    pub enabled: bool,
+    pub bind: SocketAddr,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self { enabled: false, bind: ([127, 0, 0, 1], 5054).into() }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     #[serde(default)]
     network: Network,
     #[serde(default)]
@@ -509,6 +524,8 @@ mod tests {
         assert_eq!(cfg.supported_protocols().unwrap().len(), 12);
         assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
         assert_eq!(cfg.gossip_topics().unwrap().len(), 7);
+        assert!(!cfg.metrics.enabled);
+        assert_eq!(cfg.metrics.bind.to_string(), "127.0.0.1:5054");
         assert_eq!(cfg.beacon_api_bind(), ["127.0.0.1:5051"]);
         assert!(cfg.beacon_api_allowed_hosts().is_empty());
         assert_eq!(cfg.beacon_api_max_connections(), 1024);

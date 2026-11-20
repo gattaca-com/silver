@@ -24,7 +24,7 @@ silver_common::declare_counters! {
         // the latest flush (gauge) and batch-verify failures that fell back
         // to per-message verifies (non-zero = someone is feeding us invalid
         // signatures).
-        VoteBatchSize,
+        VoteBatchSize: gauge,
         VoteBatchFallback,
         // Valid sync messages are still accepted and relayed when this is
         // full; only creation of a local contribution is skipped.

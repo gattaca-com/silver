@@ -87,6 +87,21 @@ class ChartTests(unittest.TestCase):
                 volumes = workload["spec"]["template"]["spec"]["volumes"]
                 self.assertIn({"name": "data", **expected}, volumes)
 
+    def test_metrics_listener(self):
+        for service, monitor in [(False, False), (True, False), (False, True)]:
+            with self.subTest(service=service, monitor=monitor):
+                docs = render({"service": {"metrics": {"enabled": service, "port": 6060}}, "serviceMonitor": {"enabled": monitor}})
+                services = [d for d in docs if d["kind"] == "Service" and d["metadata"]["name"].endswith("-metrics")]
+                ports = statefulset(docs)["spec"]["template"]["spec"]["containers"][0]["ports"]
+                config = next(d["data"]["config.toml"] for d in docs if d["kind"] == "ConfigMap" and "config.toml" in d["data"])
+                self.assertEqual(bool(services), service or monitor)
+                self.assertEqual("metrics" in tomllib.loads(config), service or monitor)
+                self.assertEqual(any(p["name"] == "metrics" for p in ports), service or monitor)
+                if services:
+                    self.assertEqual(services[0]["spec"]["ports"][0]["targetPort"], "metrics")
+                    self.assertEqual(next(p["containerPort"] for p in ports if p["name"] == "metrics"), 6060)
+                    self.assertEqual(tomllib.loads(config)["metrics"], {"enabled": True, "bind": "0.0.0.0:6060"})
+
     def test_monitor_and_external_ip(self):
         documents = render({"serviceMonitor": {"enabled": True}, "externalIP": {"value": "192.0.2.10"}})
         monitor = next(item for item in documents if item["kind"] == "ServiceMonitor")
@@ -100,6 +115,7 @@ class ChartTests(unittest.TestCase):
             {"persistence": {"type": "hostPath"}},
             {"extraArgs": {"config": "/override.toml"}},
             {"replicaCount": -1},
+            {"serviceMonitor": {"enabled": True}, "config": "[metrics]\nenabled = true\n"},
         ):
             with self.subTest(values=values), self.assertRaises(subprocess.CalledProcessError):
                 render(values)

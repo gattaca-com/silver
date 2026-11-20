@@ -4,10 +4,7 @@
 use std::{collections::HashSet, path::Path};
 
 use flux::{
-    communication::{
-        queue::{Consumer, Queue},
-        timer::TimingMessage,
-    },
+    communication::{queue::Consumer, timer::TimingMessage},
     tile::metrics::TileSample,
 };
 use hdrhistogram::Histogram;
@@ -101,22 +98,20 @@ struct TimingHist {
 }
 
 impl TimingHist {
-    fn open(path: &Path, label: String) -> Result<Self, String> {
-        let queue = Queue::try_open_shared(path).map_err(|e| format!("{path:?}: {e:?}"))?;
+    fn open(path: &Path, label: &'static str) -> Result<Self, String> {
+        let consumer = silver_observe::sample_reader(path, label)?;
         Ok(Self {
             // Lapping is recoverable and expected under bursts.
-            consumer: Consumer::new(queue, Box::leak(label.into_boxed_str())).without_log(),
+            consumer,
             hist: Histogram::new_with_bounds(1, HIST_MAX_NS, 3).expect("hdrhistogram bounds"),
         })
     }
 
     fn drain(&mut self) {
         let Self { consumer, hist } = self;
-        while consumer.consume(|msg| {
-            if msg.is_valid() {
-                hist.saturating_record(msg.elapsed().0);
-            }
-        }) {}
+        while silver_observe::consume_elapsed(consumer, |elapsed| hist.saturating_record(elapsed.0))
+        {
+        }
     }
 
     fn take(&mut self, source_id: u16, channel: TimingChannel) -> TimingStats {
@@ -150,7 +145,7 @@ struct TileSource {
 impl TileSource {
     fn drain(&mut self) {
         let Self { consumer, bucket, .. } = self;
-        while consumer.consume(|sample| {
+        while silver_observe::consume_sample(consumer, |sample| {
             bucket.busy += sample.busy_ticks;
             bucket.total += sample.total_ticks();
             bucket.busy_count += sample.busy_count as u64;
@@ -201,7 +196,7 @@ impl ExportSources {
         }
         for file in &found.timings {
             let Some(id) = self.claim(SourceClass::Timing, &file.name) else { continue };
-            let latency = match TimingHist::open(&file.path, format!("export-l-{}", file.name)) {
+            let latency = match TimingHist::open(&file.path, "dashboard-latency") {
                 Ok(h) => h,
                 Err(e) => {
                     warn!(name = file.name, %e, "timing source skipped");
@@ -211,23 +206,22 @@ impl ExportSources {
             let processing = file
                 .processing_path
                 .as_ref()
-                .and_then(|path| TimingHist::open(path, format!("export-p-{}", file.name)).ok());
+                .and_then(|path| TimingHist::open(path, "dashboard-processing").ok());
             self.timings.push(TimingSource { id, name: file.name.clone(), latency, processing });
         }
         for file in &found.tilemetrics {
             let Some(id) = self.claim(SourceClass::Tile, &file.name) else { continue };
-            let queue = match Queue::try_open_shared(&file.path) {
+            let consumer = match silver_observe::sample_reader(&file.path, "dashboard-tile") {
                 Ok(q) => q,
                 Err(e) => {
                     warn!(name = file.name, e = ?e, "tile source skipped");
                     continue;
                 }
             };
-            let label = Box::leak(format!("export-{}", file.name).into_boxed_str());
             self.tiles.push(TileSource {
                 id,
                 name: file.name.clone(),
-                consumer: Consumer::new(queue, label).without_log(),
+                consumer,
                 bucket: TileUtil { source_id: id, ..TileUtil::default() },
             });
         }

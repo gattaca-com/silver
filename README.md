@@ -154,6 +154,22 @@ These `[chain_config]` keys replace the network's own values:
 | `checkpoint_sync_urls` | the checkpoint providers, or a devnet's `genesis.ssz` |
 | `checkpoint_file` | the boot state, read on every start |
 
+## Prometheus metrics
+
+Official builds include the `metrics` Cargo feature. For a local build, use `cargo build --release -p silver --features metrics`.
+Enable collection in the node configuration:
+
+```toml
+[metrics]
+enabled = true
+bind = "127.0.0.1:5054"
+```
+
+Scrape the dedicated listener with `curl http://127.0.0.1:5054/metrics`. Collection is disabled by default.
+The application boundary tile publishes snapshots every second.
+It looks for new metric sources once per epoch, so a source created by a tile appears within an epoch. Flux timer histograms count samples observed since the collector attached.
+For example, `histogram_quantile(0.99, sum by (le, source) (rate(silver_timer_duration_seconds_bucket{channel="processing"}[5m])))` gives processing p99 by source.
+
 ## Docker and Kubernetes
 
 Release images are available as GitHub packages:
