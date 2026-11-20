@@ -13,6 +13,7 @@ pub const PAYLOAD_BUILDER_VERSION: u8 = 0;
 pub const DOMAIN_BEACON_BUILDER: u32 = 0x0000_000b;
 /// 1 ETH — collateral floor a builder must keep above its pending obligations.
 const MIN_DEPOSIT_AMOUNT: u64 = 1_000_000_000;
+const ETH_TO_GWEI: u64 = 1_000_000_000;
 
 #[derive(Debug, Error)]
 pub enum BidBuilderError {
@@ -91,6 +92,13 @@ impl<'a> BuilderRegistry<'a> {
             }
         }
         total
+    }
+
+    /// `get_builder_bid_limit`: gossip bids per slot and parent, one per
+    /// staked ETH not owed to pending withdrawals.
+    pub fn bid_limit(&self, builder_index: u64) -> u64 {
+        let balance = self.builders.get(builder_index as usize).map_or(0, |b| b.balance);
+        balance.saturating_sub(self.pending_balance_to_withdraw(builder_index)) / ETH_TO_GWEI
     }
 
     fn can_cover_bid(&self, builder_index: u64, bid_amount: u64) -> bool {

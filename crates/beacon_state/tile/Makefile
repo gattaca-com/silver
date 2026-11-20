@@ -1,7 +1,7 @@
 # A release tag downloads the upstream release. A full consensus-specs commit
 # hash downloads the vectors .github/workflows/spec_tests.yaml generated at that
 # commit, which must have run first.
-CONSENSUS_SPECS_TEST_VERSION ?= v1.7.0-beta.4
+CONSENSUS_SPECS_TEST_VERSION ?= 6ea84333433a840fbd534f8ebbe9dd5e1b599115
 OUTPUT_DIR := ./consensus-spec-tests
 STAMP := $(OUTPUT_DIR)/.version-$(CONSENSUS_SPECS_TEST_VERSION)
 

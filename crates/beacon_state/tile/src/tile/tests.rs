@@ -6657,7 +6657,7 @@ fn concurrent_builder_configs_report_their_winning_bids_total_payment() {
             slot / SLOTS_PER_EPOCH,
         );
         let signature = test_signing::sign(0, &signing_root);
-        let checked = tile.check_bid_on_parent(&bid, &signature, |_| true);
+        let checked = tile.check_bid_on_parent(&bid, &signature, |_, _| true);
         assert!(checked.is_ok(), "{checked:?}");
         let mut signed_bid = 100u32.to_le_bytes().to_vec();
         signed_bid.extend_from_slice(&signature);

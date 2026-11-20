@@ -16,8 +16,12 @@ use std::path::{Path, PathBuf};
 use ef_common::{case_file, ef_tile, iter_test_cases, parse_root, snappy_decode, spec_tests_dir};
 use serde_yml::{Mapping, Value};
 use silver_beacon_state::BeaconStateTile;
-use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH, SpecConfig};
-use silver_common::ssz_view::DataColumnSidecarFuluView;
+use silver_beacon_state_data::{B256, BeaconState, SLOTS_PER_EPOCH, SpecConfig};
+use silver_common::{
+    block_root_fulu,
+    column_util::{KzgScratch, block_root_from_sidecar},
+    ssz_view::DataColumnSidecarFuluView,
+};
 
 fn fork_choice_dir(fork: &str, handler: &str) -> PathBuf {
     spec_tests_dir().join("tests").join("mainnet").join(fork).join("fork_choice").join(handler)
@@ -25,15 +29,18 @@ fn fork_choice_dir(fork: &str, handler: &str) -> PathBuf {
 
 /// Spec `is_data_available`: run silver's real column-sidecar verification
 /// (shape + inclusion proof + KZG, from the storage tile) over the columns the
-/// step provides. Available iff non-empty and every column verifies.
-fn columns_available(dir: &Path, cols: &[Value], spec: &SpecConfig) -> bool {
-    let mut scratch = silver_common::column_util::KzgScratch::default();
+/// step provides. Available iff non-empty and every column is `block_root`'s
+/// and verifies. Production keys columns by their header's root, so a column
+/// of another block never counts toward this one.
+fn columns_available(dir: &Path, cols: &[Value], spec: &SpecConfig, block_root: &B256) -> bool {
+    let mut scratch = KzgScratch::default();
     !cols.is_empty() &&
         cols.iter().all(|c| {
             let sc = case_file(dir, c.as_str().unwrap());
             let epoch = DataColumnSidecarFuluView::slot(&sc) / SLOTS_PER_EPOCH;
             let max_blobs = spec.blob_params_at(epoch).max_blobs_per_block as usize;
-            silver_common::column_util::verify_data_column_sidecar_fulu(&sc, max_blobs) &&
+            block_root_from_sidecar(&sc) == *block_root &&
+                silver_common::column_util::verify_data_column_sidecar_fulu(&sc, max_blobs) &&
                 silver_common::column_util::verify_data_column_sidecar_inclusion_proof(&sc) &&
                 silver_common::column_util::verify_data_column_sidecar_kzg_proofs_fulu(
                     &sc,
@@ -64,7 +71,7 @@ fn run_case(name: &str, dir: &Path) {
                 // peerdas: spec `is_data_available` gates import on the columns
                 // verifying. An unavailable block stays out of fork choice, so
                 // the head is unchanged — model the gate by not importing.
-                Some(cols) if !columns_available(dir, cols, &spec) => {
+                Some(cols) if !columns_available(dir, cols, &spec, &block_root_fulu(&ssz)) => {
                     assert!(!valid, "{name} step {si}: block {b} unavailable but valid");
                 }
                 _ => {

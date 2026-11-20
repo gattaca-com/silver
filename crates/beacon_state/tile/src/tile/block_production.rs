@@ -1251,7 +1251,7 @@ impl BeaconStateTile {
         }
         let signature = SignedExecutionPayloadBidView::signature(bid.signed_bid);
         if let Err(feedback) =
-            self.check_bid_on_parent(&decoded, signature, |builder| bid.accepts(&builder.pubkey))
+            self.check_bid_on_parent(&decoded, signature, |builder, _| bid.accepts(&builder.pubkey))
         {
             let reason = match feedback {
                 Feedback::Reject { reason, .. } => reason,
