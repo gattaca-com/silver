@@ -35,9 +35,11 @@ ENV LOG_STDOUT=1
 ENTRYPOINT ["/usr/local/bin/silver"]
 
 # Release builds package the exact binaries attached to the GitHub release.
+# `BIN_ARCH` is the asset suffix (x86_64, aarch64), not the Docker platform name.
 FROM runtime AS release
-COPY --chmod=755 silver-linux-x86_64 /usr/local/bin/silver
-COPY --chmod=755 silver_surfer-linux-x86_64 /usr/local/bin/silver_surfer
+ARG BIN_ARCH=x86_64
+COPY --chmod=755 silver-linux-${BIN_ARCH} /usr/local/bin/silver
+COPY --chmod=755 silver_surfer-linux-${BIN_ARCH} /usr/local/bin/silver_surfer
 
 FROM runtime AS silver
 COPY --from=builder /usr/local/bin/silver /usr/local/bin/silver_surfer /usr/local/bin/
