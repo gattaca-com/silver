@@ -230,7 +230,7 @@ impl GossipHandler {
                     .reserve(ssz.len(), false)
                     .ok_or(Error::BufferTooSmall)?;
                 reservation.write_all(ssz)?;
-                (reservation.read(), Some(reservation))
+                (reservation.descriptor(), Some(reservation))
             }
         };
 

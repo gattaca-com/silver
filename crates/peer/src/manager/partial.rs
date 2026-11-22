@@ -154,7 +154,7 @@ mod tests {
         manager.on_column_verdict(1, root, 3, Nanos(1), true, now);
         manager.on_column_verdict(1, root, 3, Nanos(2), true, now);
         let mut cache = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
-        let idontwant = cache.reserve(1, false).unwrap().read();
+        let idontwant = cache.reserve(1, false).unwrap().descriptor();
         manager.on_new_gossip(
             1,
             topic,

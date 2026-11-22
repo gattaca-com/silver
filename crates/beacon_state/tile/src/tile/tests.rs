@@ -1440,11 +1440,12 @@ fn short_gossip_block_rejected_before_any_field_read() {
 /// to be published there to be readable back as `apply_block` sees it.
 fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCacheRead) {
     let mut r = producer.reserve(bytes.len().max(1), true).expect("reserve");
+    // An empty block leaves its one-byte record uncommitted.
+    let read = r.descriptor();
     if let Ok(buf) = r.buffer() {
         buf[..bytes.len()].copy_from_slice(bytes);
     }
     r.increment_offset(bytes.len());
-    let read = r.read();
     producer.loop_start();
     (bytes.to_vec(), read)
 }

@@ -104,8 +104,8 @@ pub fn alloc_incoming_rpc(
                 (Rpc::Request(RpcRequest::BlocksByRange([0u8; BLOCKS_BY_RANGE_REQ_SIZE])), None)
             }
             StreamProtocol::BeaconBlocksByRoot => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (Rpc::Request(RpcRequest::BlockByRoot(tcache)), Some(reservation))
             }
             StreamProtocol::DataColumnSidecarsByRange => (
@@ -116,8 +116,8 @@ pub fn alloc_incoming_rpc(
                 None,
             ),
             StreamProtocol::DataColumnSidecarsByRoot => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (Rpc::Request(RpcRequest::DataColumnsByRoot(tcache)), Some(reservation))
             }
             StreamProtocol::ExecutionPayloadEnvelopesByRange => (
@@ -127,8 +127,8 @@ pub fn alloc_incoming_rpc(
                 None,
             ),
             StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (
                     Rpc::Request(RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache)),
                     Some(reservation),
@@ -149,24 +149,24 @@ pub fn alloc_incoming_rpc(
                 (Rpc::Response(RpcResponse::MetaData([0u8; METADATA_SIZE])), None)
             }
             StreamProtocol::BeaconBlocksByRange => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (
                     Rpc::Response(RpcResponse::BeaconBlock { fork_digest: [0u8; 4], ssz: tcache }),
                     Some(reservation),
                 )
             }
             StreamProtocol::BeaconBlocksByRoot => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (
                     Rpc::Response(RpcResponse::BeaconBlock { fork_digest: [0u8; 4], ssz: tcache }),
                     Some(reservation),
                 )
             }
             StreamProtocol::DataColumnSidecarsByRange => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (
                     Rpc::Response(RpcResponse::DataColumnSidecar {
                         fork_digest: [0u8; 4],
@@ -176,8 +176,8 @@ pub fn alloc_incoming_rpc(
                 )
             }
             StreamProtocol::DataColumnSidecarsByRoot => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (
                     Rpc::Response(RpcResponse::DataColumnSidecar {
                         fork_digest: [0u8; 4],
@@ -188,8 +188,8 @@ pub fn alloc_incoming_rpc(
             }
             StreamProtocol::ExecutionPayloadEnvelopesByRange |
             StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
-                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
-                let tcache = reservation.read();
+                let mut reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.descriptor();
                 (
                     Rpc::Response(RpcResponse::ExecutionPayloadEnvelope {
                         fork_digest: [0u8; 4],

@@ -179,11 +179,10 @@ mod tests {
 
     fn write(producer: &mut impl TCacheProducer, bytes: &[u8]) -> TCacheRead {
         let mut reservation = producer.reserve(bytes.len(), true).unwrap();
-        let read = reservation.read();
         reservation.buffer().unwrap().copy_from_slice(bytes);
         reservation.increment_offset(bytes.len());
         producer.loop_start();
-        read
+        reservation.read()
     }
 
     #[test]

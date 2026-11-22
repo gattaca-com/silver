@@ -84,12 +84,17 @@ fn write_frame<T, E: From<TapeError>>(
     let buffer = reservation.buffer().map_err(reservation_error)?;
     let mut out = FrameOut { buffer, len: 0, overflowed: false };
     let encoded = to_frame(&mut out);
-    // An overflow surfaces as a decode error into the dropped bytes.
-    if out.overflowed {
-        return Err(WriteError::Overflow);
-    }
-    let encoded = encoded.map_err(WriteError::Frame)?;
     let len = out.len;
+    // An overflow surfaces as a decode error into the dropped bytes.
+    let encoded =
+        if out.overflowed { Err(WriteError::Overflow) } else { encoded.map_err(WriteError::Frame) };
+    let encoded = match encoded {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            producer.abort(reservation);
+            return Err(error);
+        }
+    };
     reservation.truncate(len);
     reservation.flush().map_err(reservation_error)?;
     Ok(Some((encoded, reservation.read())))
@@ -142,5 +147,37 @@ impl Deref for FrameOut<'_> {
 impl DerefMut for FrameOut<'_> {
     fn deref_mut(&mut self) -> &mut [u8] {
         &mut self.buffer[..self.len]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{TCache, TCacheId};
+
+    /// A frame that fails, or is rewritten under the loose bound, leaves no
+    /// record of the attempt in the cache.
+    #[test]
+    fn failed_frames_return_their_reservation() {
+        let mut producer = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
+        let mut scratch = TapeScratch::new(0);
+        let json = br#"{"result":"0x0102030405"}"#;
+        let head = producer.next_seq();
+
+        let failed: Result<Option<((), _)>, TapeError> =
+            scratch.encode(&mut json.to_vec(), &mut producer, |_, _| Err(TapeError::Overflow));
+        assert!(failed.is_err());
+        assert_eq!(producer.next_seq(), head);
+
+        let past_tight = json.len() / 2 + 1;
+        let (_, read) = scratch
+            .encode(&mut json.to_vec(), &mut producer, |_, out| {
+                out.zeroed(past_tight);
+                Ok::<_, TapeError>(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.seq(), head);
+        assert_eq!(producer.read_buffer(read).unwrap().len(), past_tight);
     }
 }

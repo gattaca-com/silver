@@ -136,7 +136,7 @@ fn mesh_refill_and_ihave_use_exact_domain_subscriptions() {
     manager.on_subscribe(1, TOPIC, NEW, now, &mut |_| {});
     let mut cache = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
     let mut reservation = cache.reserve(1, false).unwrap();
-    let protobuf = reservation.read();
+    let protobuf = reservation.descriptor();
     reservation.increment_offset(1);
     captured.0.clear();
     manager.on_outbound_ihave(TOPIC, NEW, protobuf, false, &mut |event| captured.0.push(event));

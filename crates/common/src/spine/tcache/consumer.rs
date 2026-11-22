@@ -780,14 +780,13 @@ mod tests {
 
     fn write_marker(p: &mut Producer, len: usize, marker: u8) -> TCacheRead {
         let mut r = p.reserve(len, true).expect("reserve");
-        let read = r.read();
         {
             let buf = r.buffer().expect("buffer");
             buf.fill(marker);
         }
         r.increment_offset(len);
         p.loop_start();
-        read
+        r.read()
     }
 
     /// Produce → acquire → read → drop. Buffer is readable while held;
@@ -1083,7 +1082,7 @@ mod tests {
         let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let mut reservation = producer.reserve(32, true).unwrap();
-        let acquired = consumer.acquire(reservation.read());
+        let acquired = consumer.acquire(reservation.descriptor());
         let bucket = consumer.active.bucket_index(reservation.seq());
 
         assert!(acquired.with_range(0, 1).is_none());
@@ -1124,9 +1123,9 @@ mod tests {
             );
             producer.loop_start();
             if let Some(mut r) = producer.reserve(MSG_LEN, true) {
-                let read = r.read();
                 r.buffer().unwrap().fill(0xab);
                 r.increment_offset(MSG_LEN);
+                let read = r.read();
                 // Consumer "lags": acquires but never drops the guard.
                 held.push(consumer.acquire(read));
                 // Publish updated tail so the producer can see eviction.

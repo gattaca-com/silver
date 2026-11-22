@@ -110,6 +110,20 @@ impl Producer {
         (oldest < self.state.seq && cache.min_tail(oldest) == oldest).then_some(oldest)
     }
 
+    /// Aborts `reservation`. The newest reservation returns its space at once
+    /// unless it was named or a published head covers it; any other is skipped
+    /// and reclaimed behind the consumers.
+    pub fn abort(&mut self, reservation: Reservation) {
+        let cache = self.cache_ref();
+        if !reservation.committed &&
+            !reservation.named &&
+            reservation.cache.cache == cache.cache &&
+            self.state.unreserve(&cache, reservation.seq)
+        {
+            std::mem::forget(reservation);
+        }
+    }
+
     /// A producer-side claim cannot survive an allocation, even after the view
     /// has been consumed.
     ///
@@ -242,7 +256,15 @@ impl AllocationState {
             self.seq += reservation_len as u64;
             self.space -= reservation_len as u32;
             let floor = self.floor();
-            Reservation { cache, seq, offset: 0, committed: false, auto_commit, floor }
+            Reservation {
+                cache,
+                seq,
+                offset: 0,
+                committed: false,
+                named: false,
+                auto_commit,
+                floor,
+            }
         })
     }
 
@@ -270,6 +292,20 @@ impl AllocationState {
         self.space = cache.space(self.seq, self.min_allocation);
     }
 
+    /// Moves the head back over the uncommitted reservation at `seq`, if it is
+    /// the newest. No read names it, so the space can be reserved again.
+    fn unreserve(&mut self, cache: &TCache, seq: u64) -> bool {
+        let reserved = cache.slot_at(cache.index(seq)).reservation_len;
+        // A consumer may already have taken a published head as its tail.
+        if seq + u64::from(reserved) != self.seq || cache.head().seq.load(Ordering::Acquire) > seq {
+            return false;
+        }
+        debug_assert!(self.min_allocation <= seq && self.reclaimed_seq <= seq);
+        self.seq = seq;
+        self.space += reserved;
+        true
+    }
+
     fn advance_min_allocation(&mut self, cache: &TCache) {
         while self.min_allocation < self.seq {
             let slot = cache.slot_at(cache.index(self.min_allocation));
@@ -291,6 +327,7 @@ pub struct Reservation {
     pub(super) seq: u64,
     offset: usize,
     pub(super) committed: bool,
+    named: bool,
     auto_commit: bool,
     floor: u64,
 }
@@ -341,6 +378,18 @@ impl Reservation {
     }
 
     pub fn read(&self) -> TCacheRead {
+        assert!(self.committed, "read of an uncommitted reservation");
+        self.stamp()
+    }
+
+    /// Names the record before it is committed, for a message emitted once it
+    /// is. A named reservation never returns its space on abort.
+    pub fn descriptor(&mut self) -> TCacheRead {
+        self.named = true;
+        self.stamp()
+    }
+
+    fn stamp(&self) -> TCacheRead {
         TCacheRead {
             id: self.cache.id(),
             emitter: PRODUCER_EMITTER,

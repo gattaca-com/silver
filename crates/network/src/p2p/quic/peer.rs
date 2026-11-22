@@ -2961,7 +2961,7 @@ mod tests {
         reservation.write_all(b"first").unwrap();
         let msg = GossipMsgOut {
             peer_id: handle.0,
-            tcache: reservation.read(),
+            tcache: reservation.descriptor(),
             traffic: GossipTraffic::CONTROL,
         };
         let SendResult::Dropped(Some(P2pSend::Gossip(dropped))) =
