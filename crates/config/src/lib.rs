@@ -14,8 +14,8 @@ pub use peer_score_params::ScoreParams;
 use serde::{Deserialize, Serialize};
 pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
-    DEFAULT_GOSSIP_MAX_BYTES_PER_SECOND, Enr, Error, GossipTopic, Identify, Keypair,
-    MAX_BLOBS_PER_BLOCK, PeerId, SAMPLES_PER_SLOT, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
+    ATTESTATION_SUBNETS, DEFAULT_GOSSIP_MAX_BYTES_PER_SECOND, Enr, Error, GossipTopic, Identify,
+    Keypair, MAX_BLOBS_PER_BLOCK, PeerId, SAMPLES_PER_SLOT, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
     rpc_rate_limit::DEFAULT_MAX_INBOUND_STREAMS_PER_SECOND,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
@@ -225,11 +225,12 @@ pub struct Config {
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
     /// Surround detection requires ~ 0.5GB of memory per epoch for 2.3M
-    /// validators + another 0.5GB for the current epoch. Default is 1 epoch
-    /// i.e. ~ 1GB, maximum is 16 epochs. Zero disables surround detection.
-    /// Disable if the node does not subscribe to all 64 attestation subnets.
-    #[serde(default = "default_u8::<1>")]
-    surround_epochs: u8,
+    /// validators + another 0.5GB for the current epoch. Maximum is 16 epochs.
+    /// Zero disables surround detection. Default is 1 epoch, i.e. ~ 1GB, when
+    /// `attestation_subnet_count` or `gossip_topics` covers all 64 attestation
+    /// subnets, and zero otherwise.
+    #[serde(default)]
+    surround_epochs: Option<u8>,
     #[serde(default)]
     trusted_peers: Vec<Enr>,
     #[serde(default)]
@@ -300,10 +301,11 @@ impl Config {
         if params.d_out > params.d_low || params.d_out > params.d / 2 {
             return Err(Error::ConfigError("d_out must not exceed d_low or d / 2".into()));
         }
-        if config.surround_epochs > MAX_SURROUND_EPOCHS {
+        if let Some(surround_epochs) = config.surround_epochs &&
+            surround_epochs > MAX_SURROUND_EPOCHS
+        {
             return Err(Error::ConfigError(format!(
-                "surround_epochs = {} exceeds the maximum of {MAX_SURROUND_EPOCHS}",
-                config.surround_epochs
+                "surround_epochs = {surround_epochs} exceeds the maximum of {MAX_SURROUND_EPOCHS}"
             )));
         }
         config.apply(overrides);
@@ -509,7 +511,20 @@ impl Config {
     }
 
     pub fn surround_epochs(&self) -> u8 {
-        self.surround_epochs
+        self.surround_epochs.unwrap_or(u8::from(self.subscribes_all_attestation_subnets()))
+    }
+
+    fn subscribes_all_attestation_subnets(&self) -> bool {
+        if usize::from(self.attestation_subnet_count) >= ATTESTATION_SUBNETS {
+            return true;
+        }
+        let topics =
+            self.gossip_topics.iter().filter_map(|t| GossipTopic::try_from(t.as_str()).ok());
+        let subnets = topics.fold(0u64, |subnets, topic| match topic {
+            GossipTopic::BeaconAttestation(subnet) => subnets | 1 << subnet,
+            _ => subnets,
+        });
+        subnets == u64::MAX
     }
 
     pub fn attestation_subnet_count(&self) -> u8 {
@@ -535,7 +550,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{ops::Range, path::Path};
 
     use tempfile::TempDir;
 
@@ -563,7 +578,25 @@ mod tests {
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
         assert_eq!(cfg.gossip_max_bytes_per_second(), 50_000_000);
         assert_eq!(cfg.max_inbound_streams_per_second(), 50);
-        assert_eq!(cfg.surround_epochs(), 1);
+        assert_eq!(cfg.surround_epochs(), 0);
+    }
+
+    #[test]
+    fn surround_detection_defaults_on_only_with_all_attestation_subnets() {
+        let config = |toml: &str| Config::from_toml(toml, Overrides::default()).unwrap();
+
+        assert_eq!(config("attestation_subnet_count = 63").surround_epochs(), 0);
+        assert_eq!(config("attestation_subnet_count = 64").surround_epochs(), 1);
+        let listed = |subnets: Range<u64>| {
+            let topics: Vec<_> = subnets.map(|s| format!("\"beacon_attestation_{s}\"")).collect();
+            config(&format!("gossip_topics = [{}]", topics.join(", "))).surround_epochs()
+        };
+        assert_eq!(listed(0..64), 1);
+        assert_eq!(listed(1..64), 0);
+        let explicit = "surround_epochs = 3\nattestation_subnet_count = 2";
+        assert_eq!(config(explicit).surround_epochs(), 3);
+        let explicit = "surround_epochs = 0\nattestation_subnet_count = 64";
+        assert_eq!(config(explicit).surround_epochs(), 0);
     }
 
     #[test]
