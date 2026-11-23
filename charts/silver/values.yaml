@@ -70,8 +70,8 @@ externalIP:
   image:
     # -- External IP init container image repository.
     repository: alpine
-    # -- External IP init container image tag.
-    tag: "3.24"
+    # -- External IP init container image tag and immutable digest.
+    tag: "3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
     # -- External IP init container image pull policy.
     pullPolicy: IfNotPresent
   # -- External IP init container resources.

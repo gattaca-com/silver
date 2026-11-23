@@ -19,11 +19,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --profile release-prod --locked --features silver/metrics --bin silver --bin silver_surfer && \
     cp target/release-prod/silver target/release-prod/silver_surfer /usr/local/bin/
 
-FROM debian:bookworm-slim AS runtime
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+WORKDIR /
 
 LABEL org.opencontainers.image.source="https://github.com/gattaca-com/silver" \
     org.opencontainers.image.licenses="MIT"

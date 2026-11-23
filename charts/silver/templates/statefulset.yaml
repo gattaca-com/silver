@@ -17,7 +17,6 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        checksum/entrypoint: {{ include (print $.Template.BasePath "/configmap-entrypoint.yaml") . | sha256sum }}
         kubectl.kubernetes.io/default-container: {{ .Chart.Name }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -57,14 +56,6 @@ spec:
               readOnly: true
             - name: runtime
               mountPath: /runtime
-            - name: entrypoint
-              mountPath: /entrypoint
-              readOnly: true
-            {{- if .Values.externalIP.enabled }}
-            - name: external-ip
-              mountPath: /network
-              readOnly: true
-            {{- end }}
             {{- if .Values.jwtSecret.existingSecret }}
             - name: jwt-secret
               mountPath: /jwt-secret
@@ -86,9 +77,9 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           command:
-            - /entrypoint/entrypoint.sh
-          args:
             - /usr/local/bin/silver
+          args:
+            - --config={{ ternary "/runtime/config.toml" "/config/config.toml" .Values.externalIP.enabled }}
             {{- if .Values.jwtSecret.existingSecret }}
             - --jwt-secret=/jwt-secret/jwt
             {{- end }}
@@ -156,17 +147,9 @@ spec:
       volumes:
         - name: runtime
           emptyDir: {}
-        - name: entrypoint
-          configMap:
-            name: {{ include "silver.fullname" . }}-entrypoint
-            defaultMode: 0555
         - name: config
           configMap:
             name: {{ include "silver.fullname" . }}-config
-        {{- if .Values.externalIP.enabled }}
-        - name: external-ip
-          emptyDir: {}
-        {{- end }}
         {{- if .Values.jwtSecret.existingSecret }}
         - name: jwt-secret
           secret:
