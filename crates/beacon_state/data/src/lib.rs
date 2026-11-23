@@ -5,8 +5,7 @@ pub use builder_registry::{
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use checkpoint_state::CheckpointState;
 pub use committee::{
-    CommitteeSlot, ShufflingId, TARGET_COMMITTEE_SIZE, committee_at_position, committee_range,
-    committees_per_slot,
+    CommitteeSlot, ShufflingId, committee_at_position, committee_range, committees_per_slot,
 };
 pub use decompose::DecomposeError;
 pub use delta_view::{StateView, StateWriterView};

@@ -12,8 +12,9 @@ use silver_beacon_state_data::{
 use silver_common::ssz_view::{
     ATTESTATION_FIXED, AttestationView, IndexedAttestationView, PAYLOAD_ATTESTATION_MESSAGE_SIZE,
     PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE,
-    SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedAggregateAndProofView,
-    SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
+    SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+    SYNC_SUBCOMMITTEE_BITS_SIZE, SignedAggregateAndProofView, SignedBlsToExecutionChangeView,
+    SignedVoluntaryExitView, SingleAttestationView,
 };
 
 use crate::{merkle, ssz_hash};
@@ -325,11 +326,11 @@ pub fn sign_contribution_and_proof(
     sk_part: usize,
     beacon_block_root: B256,
     imm: &Immutable,
-) -> [u8; 360] {
+) -> [u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE] {
     let fv = test_fork_version(slot / SLOTS_PER_EPOCH);
     let domain = |ty| bls::compute_domain(ty, fv, &imm.genesis_validators_root);
 
-    let mut bits = [0u8; 16];
+    let mut bits = [0u8; SYNC_SUBCOMMITTEE_BITS_SIZE];
     bits[participant_pos / 8] |= 1 << (participant_pos % 8);
     let contrib_sig = sign(
         sk_part,
@@ -354,16 +355,19 @@ pub fn sign_contribution_and_proof(
         &bls::compute_signing_root(&cap_root, &domain(bls::DOMAIN_CONTRIBUTION_AND_PROOF)),
     );
 
-    let mut buf = [0u8; 360];
-    buf[0..8].copy_from_slice(&aggregator_index.to_le_bytes());
-    buf[8..16].copy_from_slice(&slot.to_le_bytes());
-    buf[16..48].copy_from_slice(&beacon_block_root);
-    buf[48..56].copy_from_slice(&subcommittee.to_le_bytes());
-    buf[56..72].copy_from_slice(&bits);
-    buf[72..168].copy_from_slice(&contrib_sig);
-    buf[168..264].copy_from_slice(&selection_proof);
-    buf[264..360].copy_from_slice(&outer);
-    buf
+    [
+        &aggregator_index.to_le_bytes()[..],
+        &slot.to_le_bytes(),
+        &beacon_block_root,
+        &subcommittee.to_le_bytes(),
+        &bits,
+        &contrib_sig,
+        &selection_proof,
+        &outer,
+    ]
+    .concat()
+    .try_into()
+    .unwrap()
 }
 
 /// Build a single-signer `Attestation`: `committee_index` is the (single)

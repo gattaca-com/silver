@@ -2,7 +2,10 @@ use serde::Deserialize;
 use silver_common::{
     GossipTopic,
     json_fields::{BoundedHex, bytes, uint64},
-    ssz_view::{ATTESTATION_FIXED, MAX_VALIDATORS_PER_COMMITTEE, SIGNED_AGG_PROOF_MIN},
+    ssz_view::{
+        ATTESTATION_FIXED, COMMITTEE_BITS_SIZE, MAX_VALIDATORS_PER_COMMITTEE, SIGNED_AGG_PROOF_MIN,
+        bitvector_word,
+    },
 };
 
 use crate::{
@@ -49,13 +52,13 @@ struct SubmittedAggregateAttestation {
     #[serde(deserialize_with = "bytes")]
     signature: [u8; 96],
     #[serde(deserialize_with = "bytes")]
-    committee_bits: [u8; 8],
+    committee_bits: [u8; COMMITTEE_BITS_SIZE],
 }
 
 impl SubmittedEntry for SubmittedAggregate {
     fn accept(&self, _ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
         let aggregate = &self.message.aggregate;
-        if u64::from_le_bytes(aggregate.committee_bits).count_ones() != 1 {
+        if bitvector_word(&aggregate.committee_bits).count_ones() != 1 {
             return Err("committee_bits must name exactly one committee");
         }
         let bits = aggregate.aggregation_bits.as_bytes();

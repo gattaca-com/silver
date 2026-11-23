@@ -1,11 +1,14 @@
 use std::{
-    path::PathBuf,
+    fs::{self, File},
+    io::{self, Read},
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
 use silver_chain_spec::{ForkName, SpecConfig};
 use silver_common::{Enr, Error, NodeChain, SLOTS_PER_EPOCH};
+use silver_preset::PRESET_BASE;
 
 use crate::{Genesis, Network};
 
@@ -99,6 +102,31 @@ impl ChainConfig {
         Ok(self.spec.fork_digest_at(epoch, &genesis.validators_root))
     }
 
+    /// Binds `data_dir` to the compiled preset on first use. Its states are
+    /// laid out by preset, so a build for another one must not open them.
+    pub fn claim_data_dir_preset(&self) -> Result<(), Error> {
+        let dir = Path::new(&self.data_dir);
+        let marker = dir.join("preset");
+        let mut file = match File::open(&marker) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir_all(dir)?;
+                return Ok(fs::write(marker, PRESET_BASE)?);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let mut found = [0; 16];
+        let len = file.read(&mut found)?;
+        let found = found[..len].trim_ascii();
+        if found == PRESET_BASE.as_bytes() {
+            return Ok(());
+        }
+        Err(Error::ConfigError(format!(
+            "{} holds data of the {} preset, but this silver is built for {PRESET_BASE}",
+            dir.display(),
+            String::from_utf8_lossy(found)
+        )))
+    }
     pub fn node_chain(&self, genesis: &Genesis) -> NodeChain {
         NodeChain {
             genesis_unix_secs: genesis.unix_secs,
@@ -124,4 +152,32 @@ fn default_data_dir(network_name: &str) -> String {
         .unwrap_or_else(|| "/tmp/silver".into());
     let dir = if network_name == "mainnet" { base } else { base.join(network_name) };
     dir.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chain_config(data_dir: &Path) -> ChainConfig {
+        ChainConfig {
+            prepare_payload_lookahead_millis: 4000,
+            boot: BootSource::Providers(Vec::new()),
+            bootstrap_enrs: Vec::new(),
+            spec: SpecConfig::reference(),
+            genesis_validators_root: [0; 32],
+            data_dir: data_dir.to_str().unwrap().to_owned(),
+        }
+    }
+
+    #[test]
+    fn data_dir_of_another_preset_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = chain_config(&dir.path().join("node"));
+        config.claim_data_dir_preset().unwrap();
+        config.claim_data_dir_preset().unwrap();
+
+        fs::write(dir.path().join("node/preset"), "another").unwrap();
+        let err = config.claim_data_dir_preset().unwrap_err();
+        assert!(err.to_string().contains("another"), "{err}");
+    }
 }

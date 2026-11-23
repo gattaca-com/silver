@@ -17,6 +17,7 @@ pub use head::FcuExecutionHashes;
 pub(crate) use head::{compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot};
 pub use justified_balances::JustifiedBalances;
 pub use lookup::NodeLookup;
+pub(crate) use node::PTC_MASK_WORDS;
 use node::{Branch, NodeCheckpoints, PtcVotes};
 pub use node::{ExecutionStatus, ForkChoiceNode, PayloadAxis, PayloadStatus};
 pub use vote::{VoteTracker, WeightDelta};

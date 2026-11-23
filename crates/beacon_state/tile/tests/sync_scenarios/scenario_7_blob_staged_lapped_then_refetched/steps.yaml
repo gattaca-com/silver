@@ -6,7 +6,7 @@
 #
 # Source: EF's sanity/blocks/one_blob case — same fixtures as scenario 5.
 
-startup_checkpoint: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/pre.ssz_snappy
+startup_checkpoint: fulu/sanity/blocks/pyspec_tests/one_blob/pre.ssz_snappy
 slots_missing: 33
 
 steps:
@@ -16,7 +16,7 @@ steps:
   - kind: step
 
   - kind: blocks_range_resp
-    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+    from: fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
   - kind: step
   - kind: check
     outbound_has: [block_staged]
@@ -25,18 +25,18 @@ steps:
   - kind: lap_rpc_ring
 
   - kind: data_columns_available
-    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+    from: fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
   - kind: step
   - kind: check
     outbound_has: [request_block]
     outbound_lacks: [block_applied, persist_block]
 
   - kind: blocks_range_resp
-    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+    from: fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
   - kind: step
   - kind: check
     outbound_has: [block_applied, persist_block]
     outbound_lacks: [block_staged, request_block]
 
   - kind: state_root_matches
-    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/post.ssz_snappy
+    from: fulu/sanity/blocks/pyspec_tests/one_blob/post.ssz_snappy

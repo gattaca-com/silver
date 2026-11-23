@@ -16,16 +16,17 @@ use silver_common::{
     ssz_hash::HashedBody,
     ssz_view::{SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView},
 };
+use silver_preset::EPOCHS_PER_ETH1_VOTING_PERIOD;
 
 use crate::{
     error::{BlockError, Error, Result},
     merkle,
     ssz_hash::{self, BlockFork},
     stf::{
-        BlockAttestations, BlockVotes, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
-        collect_sigs_attestations, collect_sigs_attester_slashings,
-        collect_sigs_bls_to_execution_changes, collect_sigs_execution_payload_bid,
-        collect_sigs_proposer_slashings, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
+        BlockAttestations, BlockVotes, ShufflingRef, StfScratch, collect_sigs_attestations,
+        collect_sigs_attester_slashings, collect_sigs_bls_to_execution_changes,
+        collect_sigs_execution_payload_bid, collect_sigs_proposer_slashings,
+        collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
         gloas::collect_sigs_payload_attestations, process_attester_slashings,
         process_blinded_payload, process_bls_to_execution_changes, process_epoch,
         process_execution_payload, process_execution_payload_bid, process_execution_requests,

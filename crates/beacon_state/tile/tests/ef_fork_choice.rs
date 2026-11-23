@@ -13,7 +13,7 @@ mod ef_common;
 
 use std::path::{Path, PathBuf};
 
-use ef_common::{case_file, ef_tile, iter_test_cases, parse_root, snappy_decode, spec_tests_dir};
+use ef_common::{case_file, ef_tile, iter_test_cases, parse_root, preset_tests_dir, snappy_decode};
 use serde_yml::{Mapping, Value};
 use silver_beacon_state::BeaconStateTile;
 use silver_beacon_state_data::{B256, BeaconState, SLOTS_PER_EPOCH, SpecConfig};
@@ -24,7 +24,7 @@ use silver_common::{
 };
 
 fn fork_choice_dir(fork: &str, handler: &str) -> PathBuf {
-    spec_tests_dir().join("tests").join("mainnet").join(fork).join("fork_choice").join(handler)
+    preset_tests_dir().join(fork).join("fork_choice").join(handler)
 }
 
 /// Spec `is_data_available`: run silver's real column-sidecar verification
@@ -50,7 +50,7 @@ fn columns_available(dir: &Path, cols: &[Value], spec: &SpecConfig, block_root: 
 }
 
 fn run_case(name: &str, dir: &Path) {
-    let spec = SpecConfig::mainnet();
+    let spec = SpecConfig::reference();
     let anchor = snappy_decode(&dir.join("anchor_state.ssz_snappy"));
     let state = BeaconState::decompose(&anchor, &spec, None)
         .unwrap_or_else(|e| panic!("{name}: decompose anchor_state: {e}"));
@@ -172,6 +172,10 @@ fn run_checks(name: &str, si: usize, tile: &BeaconStateTile, checks: &Mapping) {
 }
 
 fn run_handler(fork: &str, handler: &str) {
+    if !preset_tests_dir().join(fork).exists() {
+        eprintln!("{fork}/{handler}: this preset ships no {fork} vectors, skipping");
+        return;
+    }
     let cases = iter_test_cases(&fork_choice_dir(fork, handler));
     assert!(!cases.is_empty(), "{fork}/{handler}: no fork_choice cases found");
     for (name, path) in &cases {

@@ -3,7 +3,7 @@ use silver_beacon_state_data::{
     LongtailView, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, StateReadView, StateWriterView,
     bls::{self, SigBatch},
 };
-use silver_common::ssz_view::{BLOCK_SYNC_AGGREGATE_SIZE, SyncAggregateView};
+use silver_common::ssz_view::{SYNC_AGGREGATE_SIZE, SyncAggregateView};
 
 use crate::{
     error::{Result, SyncAggregateError},
@@ -27,11 +27,11 @@ pub fn collect_sigs_sync_aggregate(
     let imm = view.imm;
     let validators = &view.validators;
     let longtail = &view.longtail;
-    if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
+    if sync_agg.len() < SYNC_AGGREGATE_SIZE {
         return;
     }
-    let sync_agg_fixed: &[u8; BLOCK_SYNC_AGGREGATE_SIZE] =
-        sync_agg[..BLOCK_SYNC_AGGREGATE_SIZE].try_into().unwrap();
+    let sync_agg_fixed: &[u8; SYNC_AGGREGATE_SIZE] =
+        sync_agg[..SYNC_AGGREGATE_SIZE].try_into().unwrap();
     let bits = SyncAggregateView::sync_committee_bits(sync_agg_fixed);
     let sig = SyncAggregateView::sync_committee_signature(sync_agg_fixed);
 
@@ -76,15 +76,15 @@ pub fn process_sync_aggregate(
     let slot = &view.slot;
     let validators = &view.validators;
     let balances = &mut view.balances;
-    if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
+    if sync_agg.len() < SYNC_AGGREGATE_SIZE {
         return Ok(0);
     }
     let count = validators.count();
     if (proposer_index as usize) >= count {
         return Err(SyncAggregateError::ProposerOutOfRange { idx: proposer_index as u64, count });
     }
-    let sync_agg_fixed: &[u8; BLOCK_SYNC_AGGREGATE_SIZE] =
-        sync_agg[..BLOCK_SYNC_AGGREGATE_SIZE].try_into().unwrap();
+    let sync_agg_fixed: &[u8; SYNC_AGGREGATE_SIZE] =
+        sync_agg[..SYNC_AGGREGATE_SIZE].try_into().unwrap();
     let bits = SyncAggregateView::sync_committee_bits(sync_agg_fixed);
 
     let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;

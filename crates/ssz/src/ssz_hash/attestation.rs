@@ -5,12 +5,12 @@ use crate::{
         B256, MerkleStack, ZERO_HASH, bitlist_len, hash_bitlist, hash_concat, hash_fixed_bytes,
         merkleize, merkleize_bytes, mix_in_length, uint64_chunk,
     },
-    ssz_view::AttestationView,
+    ssz_view::{ATTESTATION_FIXED, AttestationView, COMMITTEE_BITS_SIZE, MAX_ATTESTING_INDICES},
 };
 
 #[timed]
 pub fn hash_attestation(d: &[u8]) -> B256 {
-    if d.len() < 236 {
+    if d.len() < ATTESTATION_FIXED {
         return ZERO_HASH;
     }
     hash_attestation_with_data_root(d, hash_attestation_data(&d[4..132]))
@@ -21,17 +21,16 @@ fn hash_attestation_with_data_root(d: &[u8], data_root: B256) -> B256 {
     let agg_off = u32::from_le_bytes(d[0..4].try_into().unwrap()) as usize;
     let agg_bits = if agg_off <= d.len() { &d[agg_off..] } else { &[] };
 
-    let max_bits: usize = 64 * 2048;
     let bit_len = bitlist_len(agg_bits);
     let agg_root = hash_bitlist(
-        MerkleStack::new(max_bits.div_ceil(256).next_power_of_two()),
+        MerkleStack::new(MAX_ATTESTING_INDICES.div_ceil(256).next_power_of_two()),
         agg_bits,
         bit_len,
     );
 
     let sig_root = hash_fixed_bytes(&d[132..228]);
     let mut cb = ZERO_HASH;
-    cb[..8].copy_from_slice(&d[228..236]);
+    cb[..COMMITTEE_BITS_SIZE].copy_from_slice(AttestationView::committee_bits(d));
 
     merkleize(&[agg_root, data_root, sig_root, cb])
 }
@@ -50,7 +49,7 @@ pub fn hash_tree_root_aggregate_and_proof(
     is_gloas: bool,
 ) -> B256 {
     let idx_root = uint64_chunk(aggregator_index);
-    let agg_root = if aggregate.len() < 236 {
+    let agg_root = if aggregate.len() < ATTESTATION_FIXED {
         ZERO_HASH
     } else if is_gloas {
         AttestationView::hash_tree_root_gloas_with_data_root(aggregate, attestation_data_root)
@@ -74,7 +73,7 @@ pub fn hash_attestation_data(d: &[u8]) -> B256 {
 
 #[timed]
 pub fn hash_indexed_attestation(d: &[u8]) -> B256 {
-    const INDEX_CAPACITY: usize = (64 * 2048usize).div_ceil(4);
+    const INDEX_CAPACITY: usize = MAX_ATTESTING_INDICES.div_ceil(4);
     if d.len() < 228 {
         // Empty IA: zero attesting_indices, zero AttestationData, zero sig.
         const EMPTY_INDICES_ROOT: B256 = MerkleStack::empty_root(INDEX_CAPACITY);
@@ -115,11 +114,12 @@ mod tests {
 
     /// The `_with_data_root` fast path must be byte-identical to composing
     /// the self-computing hashers — for both fork shapes and for the short
-    /// (`< 236`) slices whose ZERO_HASH guard was hoisted to the caller.
+    /// (`< ATTESTATION_FIXED`) slices whose ZERO_HASH guard was hoisted to the
+    /// caller.
     #[test]
     fn aggregate_and_proof_threaded_root_matches_self_computed() {
         let mut agg = vec![0u8; 300];
-        agg[0..4].copy_from_slice(&236u32.to_le_bytes());
+        agg[0..4].copy_from_slice(&(ATTESTATION_FIXED as u32).to_le_bytes());
         for (i, b) in agg.iter_mut().enumerate().skip(4) {
             *b = (i * 31) as u8;
         }
@@ -127,7 +127,7 @@ mod tests {
 
         for aggregate in [&agg[..], &agg[..100]] {
             for is_gloas in [false, true] {
-                let data_root = if aggregate.len() >= 236 {
+                let data_root = if aggregate.len() >= ATTESTATION_FIXED {
                     hash_attestation_data(&aggregate[4..132])
                 } else {
                     ZERO_HASH

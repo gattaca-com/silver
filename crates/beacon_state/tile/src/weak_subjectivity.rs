@@ -13,10 +13,12 @@ const MIN_WITHDRAWABILITY_DELAY: u64 = 256;
 const MAX_EB_ETH: u64 = 32;
 const ETH_TO_GWEI: u64 = 1_000_000_000;
 const MAX_DEPOSITS: u64 = 16;
-const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 4;
-const CHURN_LIMIT_QUOTIENT: u64 = 1 << 16;
 
-pub(crate) fn weak_subjectivity_period_fulu(view: &StateReadView, scratch: &mut Vec<u32>) -> u64 {
+pub(crate) fn weak_subjectivity_period_fulu(
+    cfg: &SpecConfig,
+    view: &StateReadView,
+    scratch: &mut Vec<u32>,
+) -> u64 {
     let epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     scratch.clear();
     view.validators.active_indices_into(epoch, scratch);
@@ -34,7 +36,7 @@ pub(crate) fn weak_subjectivity_period_fulu(view: &StateReadView, scratch: &mut 
     let d = SAFETY_DECAY;
     let t = total / n / ETH_TO_GWEI;
     let cap = MAX_EB_ETH;
-    let delta = (n / CHURN_LIMIT_QUOTIENT).max(MIN_PER_EPOCH_CHURN_LIMIT);
+    let delta = (n / cfg.churn_limit_quotient).max(cfg.min_per_epoch_churn_limit);
     let big_delta = MAX_DEPOSITS * SLOTS_PER_EPOCH;
 
     let mut ws = MIN_WITHDRAWABILITY_DELAY;

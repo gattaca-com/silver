@@ -12,15 +12,16 @@ use crate::{
         },
     },
     gloas::{
-        BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
-        ExecutionPayloadBid, MAX_WITHDRAWALS_PER_PAYLOAD, Withdrawal,
+        BUILDER_PENDING_PAYMENT_SSZ, BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment,
+        EXECUTION_PAYLOAD_AVAILABILITY_BYTES, ExecutionPayloadBid, Withdrawal,
     },
-    types::{BeaconBlockHeader, Eth1Data, ExecutionPayloadHeader, SlotState},
+    types::{
+        BeaconBlockHeader, Eth1Data, ExecutionPayloadHeader, MAX_WITHDRAWALS_PER_PAYLOAD, SlotState,
+    },
 };
 
 // SSZ-serialised sizes of the Gloas fixed-width records.
 const WITHDRAWAL_SSZ: usize = 44;
-const BUILDER_PENDING_PAYMENT_SSZ: usize = 52;
 
 // size: ~1 KB inline — the `SlotState` scalars.
 #[derive(Default)]

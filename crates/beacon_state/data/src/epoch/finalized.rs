@@ -8,8 +8,8 @@ use crate::{
         common::{F17, F18, F19, F20, F29, F37, read_checkpoint, read_fork, u64_le},
         gloas::{G_DEPOSIT_BALANCE_TO_CONSUME, G_PROPOSER_LOOKAHEAD, G_PTC_WINDOW},
     },
-    gloas::{PTC_SIZE, zeroed_ptc_window},
-    types::EpochState,
+    gloas::zeroed_ptc_window,
+    types::{EpochState, PTC_SIZE},
 };
 
 // size: ~680 B stack (Box headers + EpochState); the 393 KB PTC window and its

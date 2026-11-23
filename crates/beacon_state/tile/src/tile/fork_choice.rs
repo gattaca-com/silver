@@ -17,6 +17,7 @@ use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
 use super::{BeaconStateTile, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers};
 use crate::{
+    fork_choice::PTC_MASK_WORDS,
     stf,
     tile::{Feedback, gossip::PreparedPtc},
 };
@@ -202,7 +203,7 @@ impl BeaconStateTile {
         else {
             return Err(Feedback::Ignore);
         };
-        let mut ptc_positions = [0u64; crate::tile::gossip::PTC_MASK_WORDS];
+        let mut ptc_positions = [0u64; PTC_MASK_WORDS];
         for (position, &member) in ptc.iter().enumerate() {
             if member == validator_index {
                 ptc_positions[position / 64] |= 1 << (position % 64);

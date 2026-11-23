@@ -81,7 +81,7 @@ impl<'a> SignedBlockContents<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ssz_view::BEACON_BLOCK_BODY_FIXED;
+    use crate::ssz_view::{BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView};
 
     /// A signed block whose body commits to `blobs` blobs and holds nothing
     /// else.
@@ -91,10 +91,11 @@ mod tests {
         block[180..184].copy_from_slice(&84u32.to_le_bytes());
         let body = &mut block[184..];
         let end = (BEACON_BLOCK_BODY_FIXED + blobs * BYTES_PER_KZG_COMMITMENT) as u32;
-        for at in [200, 204, 208, 212, 216, 380, 384, 388] {
+        let (last, offsets) = BeaconBlockBodyFuluView::VARIABLE_OFFSETS.split_last().unwrap();
+        for &at in offsets {
             body[at..at + 4].copy_from_slice(&(BEACON_BLOCK_BODY_FIXED as u32).to_le_bytes());
         }
-        body[392..396].copy_from_slice(&end.to_le_bytes());
+        body[*last..*last + 4].copy_from_slice(&end.to_le_bytes());
         block.resize(block.len() + blobs * BYTES_PER_KZG_COMMITMENT, 0);
         block
     }

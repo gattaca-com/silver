@@ -6,7 +6,7 @@ use silver_beacon_state_data::{
     TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TreeSpec, ValidatorsView,
     bls::{self, SigBatch},
 };
-use silver_common::ssz_view::{AttestationDataView, AttestationView};
+use silver_common::ssz_view::{AttestationDataView, AttestationView, bitvector_word};
 
 use crate::{
     error::{AttestationError, Result},
@@ -62,7 +62,7 @@ pub struct AttestedCommittees<'a> {
 
 impl<'a> AttestedCommittees<'a> {
     pub fn new(att: &'a [u8], shuffling: &'a EpochShuffling<'a>) -> Result<Self, AttestationError> {
-        let committee_bits = u64::from_le_bytes(*AttestationView::committee_bits(att));
+        let committee_bits = bitvector_word(AttestationView::committee_bits(att));
         if committee_bits == 0 {
             return Err(AttestationError::EmptyCommitteeBits);
         }
@@ -567,7 +567,7 @@ impl<'a> ParsedAttestationData<'a> {
         }
         let inclusion_delay = current_slot.saturating_sub(self.att_slot);
 
-        Ok((u8::from(inclusion_delay <= 5) * TIMELY_SOURCE_FLAG) |
+        Ok((u8::from(inclusion_delay <= SLOTS_PER_EPOCH.isqrt()) * TIMELY_SOURCE_FLAG) |
             (u8::from(is_matching_target) * TIMELY_TARGET_FLAG) |
             (u8::from(is_matching_head && inclusion_delay == 1) * TIMELY_HEAD_FLAG))
     }

@@ -32,6 +32,7 @@ silver_chain_spec.workspace = true
 silver_crypto_simd.workspace = true
 silver_log.workspace = true
 silver_metrics.workspace = true
+silver_preset.workspace = true
 silver_ssz.workspace = true
 serde.workspace = true
 serde_json.workspace = true

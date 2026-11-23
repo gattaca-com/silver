@@ -1,8 +1,7 @@
 use silver_beacon_state_data::{
-    Epoch, EpochView, EpochWriteView, MIN_SEED_LOOKAHEAD, RandaoMixesView, SLOTS_PER_EPOCH,
-    StateWriterView, ValidatorsView,
-    bls::DOMAIN_PTC_ATTESTER,
-    gloas::{PTC_SIZE, PtcCommittee},
+    Epoch, EpochView, EpochWriteView, MIN_SEED_LOOKAHEAD, PTC_SIZE, RandaoMixesView,
+    SLOTS_PER_EPOCH, StateWriterView, ValidatorsView, bls::DOMAIN_PTC_ATTESTER,
+    gloas::PtcCommittee,
 };
 
 use crate::{shuffling::Seed, stf::EpochShuffling};

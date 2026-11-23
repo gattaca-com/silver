@@ -4,25 +4,24 @@ use std::fs;
 
 mod ef_common;
 
-use ef_common::{compare_states, iter_test_cases, load_state, load_state_gloas, spec_tests_dir};
+use ef_common::{compare_states, iter_test_cases, load_state, load_state_gloas, preset_tests_dir};
 use silver_beacon_state::stf;
 use silver_beacon_state_data::SpecConfig;
 
 #[test]
 fn fulu_sanity_slots() {
-    sanity_slots_fork("fulu", SpecConfig::mainnet());
+    sanity_slots_fork("fulu", SpecConfig::reference());
 }
 
 #[test]
 fn gloas_sanity_slots() {
-    let mut cfg = SpecConfig::mainnet();
+    let mut cfg = SpecConfig::reference();
     cfg.gloas_fork_epoch = 0;
     sanity_slots_fork("gloas", cfg);
 }
 
 fn sanity_slots_fork(fork: &str, cfg: SpecConfig) {
-    let base =
-        spec_tests_dir().join("tests").join("mainnet").join(fork).join("sanity").join("slots");
+    let base = preset_tests_dir().join(fork).join("sanity").join("slots");
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
         eprintln!("sanity_slots[{fork}]: no test cases at {}, skipping", base.display());

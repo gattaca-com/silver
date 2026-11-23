@@ -4,13 +4,12 @@ use std::fs;
 
 mod ef_common;
 
-use ef_common::{load_state, snappy_decode, spec_tests_dir};
+use ef_common::{load_state, preset_tests_dir, snappy_decode};
 use silver_beacon_state::{merkle::sha256, ssz_hash};
 
 #[test]
 fn fulu_single_merkle_proof() {
-    let base = spec_tests_dir()
-        .join("tests/mainnet/fulu/merkle_proof/single_merkle_proof/BeaconBlockBody");
+    let base = preset_tests_dir().join("fulu/merkle_proof/single_merkle_proof/BeaconBlockBody");
     let Ok(entries) = fs::read_dir(&base) else {
         eprintln!("merkle_proof: no test cases, skipping");
         return;
@@ -60,8 +59,7 @@ fn fulu_single_merkle_proof() {
 /// 27).
 #[test]
 fn fulu_generates_kzg_commitments_inclusion_proof() {
-    let base = spec_tests_dir()
-        .join("tests/mainnet/fulu/merkle_proof/single_merkle_proof/BeaconBlockBody");
+    let base = preset_tests_dir().join("fulu/merkle_proof/single_merkle_proof/BeaconBlockBody");
     let Ok(entries) = fs::read_dir(&base) else {
         eprintln!("merkle_proof: no test cases, skipping");
         return;
@@ -99,7 +97,7 @@ fn fulu_generates_kzg_commitments_inclusion_proof() {
 /// (sync committees, finality) alongside `BeaconBlockBody` (execution).
 #[test]
 fn fulu_light_client_single_merkle_proof() {
-    let base = spec_tests_dir().join("tests/mainnet/fulu/light_client/single_merkle_proof");
+    let base = preset_tests_dir().join("fulu/light_client/single_merkle_proof");
     let Ok(types) = fs::read_dir(&base) else {
         eprintln!("light_client merkle_proof: no test cases, skipping");
         return;

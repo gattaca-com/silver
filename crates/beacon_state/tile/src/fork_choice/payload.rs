@@ -1,8 +1,8 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::B256;
+use silver_beacon_state_data::{B256, PTC_SIZE};
 use silver_log::{info, warn};
 
-use super::{ExecutionStatus, ForkChoice, NULL, PayloadStatus, node::PTC_SIZE};
+use super::{ExecutionStatus, ForkChoice, NULL, PTC_MASK_WORDS, PayloadStatus};
 
 impl ForkChoice {
     #[timed]
@@ -156,7 +156,7 @@ impl ForkChoice {
     pub fn record_ptc_votes(
         &mut self,
         block_root: &B256,
-        positions: &[u64; PTC_SIZE / 64],
+        positions: &[u64; PTC_MASK_WORDS],
         present: bool,
         da: bool,
     ) {

@@ -28,7 +28,41 @@ jobs:
           toolchain: nightly-2026-06-21
 
       - name: Download consensus-spec-tests
-        run: make -C crates/beacon_state/tile
+        run: make -C crates/beacon_state/tile PRESETS=mainnet
 
       - name: Run tests
         run: cargo test --locked --features "silver_beacon_state/ef_tests,silver_e2e/lh-client,silver/metrics" --no-fail-fast
+
+  # The minimal preset swaps every preset constant, so it is a separate build.
+  minimal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: ${{ runner.os }}-cargo-minimal-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-06-21
+          components: clippy
+
+      - name: Setup just
+        uses: extractions/setup-just@v2
+        with:
+          just-version: 1.5.0
+
+      - name: Download consensus-spec-tests
+        run: make -C crates/beacon_state/tile PRESETS=minimal
+
+      - name: Check clippy on the minimal preset
+        run: just clippy-minimal
+
+      - name: Run EF tests on the minimal preset
+        run: just test-minimal

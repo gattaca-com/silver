@@ -62,7 +62,7 @@ impl BeaconBlockBodyGloasView {
     // `bls_to_execution_changes` moves ahead of them; fields 0..9 are identical
     // to Fulu.
     fn field_roots(body: &[u8]) -> Option<[B256; 13]> {
-        if body.len() < 396 {
+        if body.len() < BEACON_BLOCK_BODY_FIXED {
             return None;
         }
 

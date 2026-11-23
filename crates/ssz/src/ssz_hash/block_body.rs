@@ -13,7 +13,8 @@ use crate::{
     },
     ssz_view::{
         BeaconBlockBodyGloasView, DepositView, ExecutionPayloadHeaderFuluView,
-        ProposerSlashingView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+        ProposerSlashingView, SYNC_COMMITTEE_BITS_SIZE, SignedBlsToExecutionChangeView,
+        SignedVoluntaryExitView,
     },
 };
 
@@ -28,8 +29,9 @@ pub fn hash_eth1_data_bytes(data: &[u8]) -> B256 {
 
 #[timed]
 pub fn hash_sync_aggregate(data: &[u8]) -> B256 {
-    let bits_hash = hash_fixed_bytes(&data[0..64]);
-    let sig_hash = hash_fixed_bytes(&data[64..160]);
+    let (bits, signature) = data.split_at(SYNC_COMMITTEE_BITS_SIZE);
+    let bits_hash = hash_fixed_bytes(bits);
+    let sig_hash = hash_fixed_bytes(signature);
     hash_concat(&bits_hash, &sig_hash)
 }
 

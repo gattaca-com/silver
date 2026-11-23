@@ -251,7 +251,9 @@ fn fulu_headers_use_snapshot_ancestry_and_validate_signature_and_inclusion() {
     data.write(&mut header);
     let domain = rig.tile.validator.domain_at(slot).unwrap();
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu")
+        .join("../beacon_state/tile/consensus-spec-tests/tests")
+        .join(silver_preset::PRESET_BASE)
+        .join("fulu")
         .join(CASE);
     for entry in std::fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();

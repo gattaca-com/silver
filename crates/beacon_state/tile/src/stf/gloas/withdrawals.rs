@@ -1,6 +1,7 @@
 use core::cmp::min;
 
 use silver_beacon_state_data::{PayloadWithdrawals, SLOTS_PER_EPOCH, StateWriterView, Withdrawal};
+use silver_preset::{MAX_BUILDERS_PER_WITHDRAWALS_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD};
 
 use super::builders::{
     convert_builder_index_to_validator_index, convert_validator_index_to_builder_index,
@@ -10,9 +11,6 @@ use crate::stf::{
     get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
     update_next_withdrawal_index, update_next_withdrawal_validator_index,
 };
-
-const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
-const MAX_BUILDERS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
 
 pub(crate) struct ExpectedWithdrawals {
     pub withdrawals: PayloadWithdrawals,

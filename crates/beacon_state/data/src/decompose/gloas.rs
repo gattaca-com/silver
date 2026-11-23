@@ -1,40 +1,47 @@
 use blst::min_pk::PublicKey;
 
 use super::common::{
-    DecomposeError, F7_OFF, F9_OFF, F11_OFF, F12_OFF, F15_OFF, F16_OFF, F21_OFF, Offsets, u32_le,
+    DecomposeError, F7_OFF, F9_OFF, F11_OFF, F12_OFF, F15_OFF, F16_OFF, F21_OFF, F24_OFF, OFFSET,
+    Offsets, u32_le,
 };
 use crate::{
-    BeaconState, EpochStateFinalized, FinalizedBuilders, SlotStateFinalized, SpecConfig,
-    gloas::{PTC_SIZE, PTC_WINDOW_LEN},
+    BeaconState, EpochStateFinalized, FinalizedBuilders, PROPOSER_LOOKAHEAD_SIZE, PTC_SIZE,
+    SlotStateFinalized, SpecConfig,
+    gloas::{
+        BUILDER_PENDING_PAYMENT_SSZ, BUILDER_PENDING_PAYMENTS_LEN,
+        EXECUTION_PAYLOAD_AVAILABILITY_BYTES, PTC_WINDOW_LEN,
+    },
 };
 
 // Gloas fixed-part byte offsets, from field 24 on (≤ F23 shares Fulu's
-// positions). Running offset shown; `*_OFF` are 4-byte variable-field offsets.
-pub(crate) const G_LATEST_BLOCK_HASH: usize = 2_736_629; // 32  (Fulu's F24_OFF slot)
-pub(crate) const G_NEXT_WITHDRAWAL_INDEX: usize = 2_736_661; // 8
-pub(crate) const G_NEXT_WITHDRAWAL_VALIDATOR_INDEX: usize = 2_736_669; // 8
-const G_HIST_SUMMARIES_OFF: usize = 2_736_677; // 4
-pub(crate) const G_DEPOSIT_REQUESTS_START_INDEX: usize = 2_736_681; // 8
-pub(crate) const G_DEPOSIT_BALANCE_TO_CONSUME: usize = 2_736_689; // 8
-pub(crate) const G_EXIT_BALANCE_TO_CONSUME: usize = 2_736_697; // 8
-pub(crate) const G_EARLIEST_EXIT_EPOCH: usize = 2_736_705; // 8
-pub(crate) const G_CONSOLIDATION_BALANCE_TO_CONSUME: usize = 2_736_713; // 8
-pub(crate) const G_EARLIEST_CONSOLIDATION_EPOCH: usize = 2_736_721; // 8
-const G_PENDING_DEPOSITS_OFF: usize = 2_736_729; // 4
-const G_PENDING_PARTIAL_OFF: usize = 2_736_733; // 4
-const G_PENDING_CONSOLIDATIONS_OFF: usize = 2_736_737; // 4
-pub(crate) const G_PROPOSER_LOOKAHEAD: usize = 2_736_741; // 512
-const G_BUILDERS_OFF: usize = 2_737_253; // 4
-pub(crate) const G_NEXT_WITHDRAWAL_BUILDER_INDEX: usize = 2_737_257; // 8
-pub(crate) const G_EXECUTION_PAYLOAD_AVAILABILITY: usize = 2_737_265; // 1024
-pub(crate) const G_BUILDER_PENDING_PAYMENTS: usize = 2_738_289; // 64 × 52 = 3328
-const G_BUILDER_PENDING_WITHDRAWALS_OFF: usize = 2_741_617; // 4
-const G_LATEST_EXECUTION_PAYLOAD_BID_OFF: usize = 2_741_621; // 4
-const G_PAYLOAD_EXPECTED_WITHDRAWALS_OFF: usize = 2_741_625; // 4
-pub(crate) const G_PTC_WINDOW: usize = 2_741_629; // 96 × 512 × 8 = 393216
-pub(crate) const GLOAS_FIXED_PART: usize = 3_134_845;
-
-const _: () = assert!(G_PTC_WINDOW + PTC_WINDOW_LEN * PTC_SIZE * 8 == GLOAS_FIXED_PART);
+// positions). Each names the field that starts there; `*_OFF` are 4-byte
+// variable-field offsets.
+pub(crate) const G_LATEST_BLOCK_HASH: usize = F24_OFF;
+pub(crate) const G_NEXT_WITHDRAWAL_INDEX: usize = G_LATEST_BLOCK_HASH + 32;
+pub(crate) const G_NEXT_WITHDRAWAL_VALIDATOR_INDEX: usize = G_NEXT_WITHDRAWAL_INDEX + 8;
+const G_HIST_SUMMARIES_OFF: usize = G_NEXT_WITHDRAWAL_VALIDATOR_INDEX + 8;
+pub(crate) const G_DEPOSIT_REQUESTS_START_INDEX: usize = G_HIST_SUMMARIES_OFF + OFFSET;
+pub(crate) const G_DEPOSIT_BALANCE_TO_CONSUME: usize = G_DEPOSIT_REQUESTS_START_INDEX + 8;
+pub(crate) const G_EXIT_BALANCE_TO_CONSUME: usize = G_DEPOSIT_BALANCE_TO_CONSUME + 8;
+pub(crate) const G_EARLIEST_EXIT_EPOCH: usize = G_EXIT_BALANCE_TO_CONSUME + 8;
+pub(crate) const G_CONSOLIDATION_BALANCE_TO_CONSUME: usize = G_EARLIEST_EXIT_EPOCH + 8;
+pub(crate) const G_EARLIEST_CONSOLIDATION_EPOCH: usize = G_CONSOLIDATION_BALANCE_TO_CONSUME + 8;
+const G_PENDING_DEPOSITS_OFF: usize = G_EARLIEST_CONSOLIDATION_EPOCH + 8;
+const G_PENDING_PARTIAL_OFF: usize = G_PENDING_DEPOSITS_OFF + OFFSET;
+const G_PENDING_CONSOLIDATIONS_OFF: usize = G_PENDING_PARTIAL_OFF + OFFSET;
+pub(crate) const G_PROPOSER_LOOKAHEAD: usize = G_PENDING_CONSOLIDATIONS_OFF + OFFSET;
+const G_BUILDERS_OFF: usize = G_PROPOSER_LOOKAHEAD + PROPOSER_LOOKAHEAD_SIZE * size_of::<u64>();
+pub(crate) const G_NEXT_WITHDRAWAL_BUILDER_INDEX: usize = G_BUILDERS_OFF + OFFSET;
+pub(crate) const G_EXECUTION_PAYLOAD_AVAILABILITY: usize = G_NEXT_WITHDRAWAL_BUILDER_INDEX + 8;
+pub(crate) const G_BUILDER_PENDING_PAYMENTS: usize =
+    G_EXECUTION_PAYLOAD_AVAILABILITY + EXECUTION_PAYLOAD_AVAILABILITY_BYTES;
+const G_BUILDER_PENDING_WITHDRAWALS_OFF: usize =
+    G_BUILDER_PENDING_PAYMENTS + BUILDER_PENDING_PAYMENTS_LEN * BUILDER_PENDING_PAYMENT_SSZ;
+const G_LATEST_EXECUTION_PAYLOAD_BID_OFF: usize = G_BUILDER_PENDING_WITHDRAWALS_OFF + OFFSET;
+const G_PAYLOAD_EXPECTED_WITHDRAWALS_OFF: usize = G_LATEST_EXECUTION_PAYLOAD_BID_OFF + OFFSET;
+pub(crate) const G_PTC_WINDOW: usize = G_PAYLOAD_EXPECTED_WITHDRAWALS_OFF + OFFSET;
+pub(crate) const GLOAS_FIXED_PART: usize =
+    G_PTC_WINDOW + PTC_WINDOW_LEN * PTC_SIZE * size_of::<u64>();
 
 /// Validated Gloas variable-field offsets: the Fulu-shaped `shared` set (with
 /// `eph` repurposed as the inactivity/historical_summaries boundary) plus the

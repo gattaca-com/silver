@@ -1,9 +1,9 @@
 use super::{EpochGroup, EpochStateFinalized};
 use crate::{
     PtcWindow,
-    gloas::{PTC_SIZE, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
+    gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
     merkle::{B256, MerkleStack, hash_uint64_vector, hash_vector},
-    types::SLOTS_PER_EPOCH,
+    types::{PTC_SIZE, SLOTS_PER_EPOCH},
 };
 
 #[test]

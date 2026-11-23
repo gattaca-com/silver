@@ -4,7 +4,7 @@ use std::fs;
 
 mod ef_common;
 
-use ef_common::{snappy_decode, spec_tests_dir};
+use ef_common::{preset_tests_dir, snappy_decode};
 use silver_beacon_state::ssz_hash;
 use silver_beacon_state_data::hash_tree_root_block_header;
 use silver_common::{
@@ -25,7 +25,7 @@ use silver_ssz::{
 };
 
 fn run_ssz_static(fork: &str, type_name: &str, hash_fn: impl Fn(&[u8]) -> [u8; 32]) {
-    let base = spec_tests_dir().join("tests/mainnet").join(fork).join("ssz_static").join(type_name);
+    let base = preset_tests_dir().join(fork).join("ssz_static").join(type_name);
     let suites = fs::read_dir(&base)
         .unwrap_or_else(|e| panic!("{fork}/{type_name}: no ssz_static vectors at {base:?}: {e}"));
 

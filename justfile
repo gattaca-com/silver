@@ -42,8 +42,17 @@ fmt-check:
   rustup toolchain install {{nightly}} --component rustfmt > /dev/null 2>&1 && \
   cargo +{{nightly}} fmt --check
 
+# Every feature but the preset switch: `--all-features` would turn on
+# `silver_preset/minimal` and lint only the minimal preset.
+lint_features := "$(cargo metadata --locked --no-deps --format-version 1 | perl -MJSON::PP -0777 -ne 'print join \",\", map { my $p = $_->{name}; map { \"$p/$_\" } grep { !/^(default|minimal)$/ } sort keys %{$_->{features}} } @{decode_json($_)->{packages}}')"
+
 clippy: log-check
-	cargo clippy --locked --all-features --no-deps -- -D warnings -A clippy::collapsible_if
+	cargo clippy --locked --features "{{lint_features}}" --no-deps -- -D warnings -A clippy::collapsible_if
+
+# Lints what `clippy` lints, then type-checks every target (tests included).
+clippy-minimal:
+	cargo clippy --locked --features "{{lint_features}},silver_preset/minimal" --no-deps -- -D warnings -A clippy::collapsible_if
+	cargo check --locked --features "{{lint_features}},silver_preset/minimal" --all-targets
 
 # Logs go through `silver_log`. This reads our source, not expanded code, so
 # other crates' macros (flux derives, `#[instrument]`) never trip it.
@@ -51,7 +60,7 @@ log-check:
 	! find crates -name '*.rs' -not -path 'crates/log/*' -exec perl -0777 -ne 'print "$ARGV\n" if /\btracing::(trace|debug|info|warn|error)!|\buse (::)?(flux::)?tracing::(\{[^;]*\b)?(trace|debug|info|warn|error)\b/' {} + | grep .
 
 clippy-fix:
-	cargo clippy --fix --locked --all-features --no-deps --allow-dirty -- -D warnings -A clippy::collapsible_if
+	cargo clippy --fix --locked --features "{{lint_features}}" --no-deps --allow-dirty -- -D warnings -A clippy::collapsible_if
 
 machete:
   cargo install --locked cargo-machete && \
@@ -71,6 +80,12 @@ checkpoint-fixtures:
 # checkpoint-fixtures` first if you don't have the fixtures locally.
 test:
   cargo test --locked --workspace --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --profile release-with-debug --no-fail-fast 2>&1
+
+# The spec vectors on the minimal preset (`minimal.tar.gz`). Unit tests are
+# written against mainnet's numbers and fixtures, so only `clippy-minimal`
+# builds them on this preset.
+test-minimal:
+  cargo test --locked -p silver_beacon_state --features "ef_tests,silver_preset/minimal" --profile release-with-debug --no-fail-fast --test 'ef_*' --test ssz_view_fixtures 2>&1
 
 # As above but using `nextest`
 nextest:

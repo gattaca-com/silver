@@ -2,12 +2,12 @@
 
 mod ef_common;
 
-use ef_common::{snappy_decode, spec_tests_dir};
+use ef_common::{preset_tests_dir, snappy_decode};
 use silver_beacon_state_data::{BeaconState, SpecConfig};
 
 #[test]
 fn gloas_encode_round_trip() {
-    let root = spec_tests_dir().join("tests").join("mainnet").join("gloas");
+    let root = preset_tests_dir().join("gloas");
     if !root.exists() {
         eprintln!("gloas_encode_round_trip: no fixtures at {}, skipping", root.display());
         return;
@@ -34,7 +34,7 @@ fn gloas_encode_round_trip() {
     const MAX_CASES: usize = 64;
     let stride = (posts.len() / MAX_CASES).max(1);
 
-    let cfg = SpecConfig::mainnet();
+    let cfg = SpecConfig::reference();
     let mut checked = 0;
     let mut skipped = 0;
     for path in posts.iter().step_by(stride) {

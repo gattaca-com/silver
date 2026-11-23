@@ -1,11 +1,11 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    FinalizedValidators, HashFormat, MIN_SEED_LOOKAHEAD, ShufflingId, ValidatorsGroup,
+    FinalizedValidators, HashFormat, MIN_SEED_LOOKAHEAD, PTC_SIZE, ShufflingId, ValidatorsGroup,
     ValidatorsId, Withdrawals,
 };
 use silver_common::PayloadResolution;
 
-use super::{node::PTC_SIZE, vote::branch_voted_for, *};
+use super::{vote::branch_voted_for, *};
 use crate::stf::VoteTarget;
 
 /// Opaque per-tier bundle for topology/weight tests that never resolve
