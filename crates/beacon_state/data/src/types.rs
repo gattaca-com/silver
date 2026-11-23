@@ -1,6 +1,13 @@
 use std::mem;
 
 use flux_profiler::timed;
+pub use silver_preset::{
+    EPOCHS_PER_ETH1_VOTING_PERIOD, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
+    EPOCHS_PER_SYNC_COMMITTEE_PERIOD, MAX_WITHDRAWALS_PER_PAYLOAD, PENDING_CONSOLIDATIONS_LIMIT,
+    PENDING_PARTIAL_WITHDRAWALS_LIMIT, PTC_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+    SYNC_COMMITTEE_SIZE, TARGET_COMMITTEE_SIZE,
+};
+pub use silver_ssz::ssz_view::{SYNC_COMMITTEE_SUBNETS, SYNC_SUBCOMMITTEE_SIZE};
 pub use silver_state_hashing::HashFormat;
 
 use crate::{
@@ -43,19 +50,13 @@ pub fn validator_capacity(count: usize) -> usize {
 
 /// SSZ spec sentinel for "not yet activated / exited / withdrawable".
 pub const FAR_FUTURE_EPOCH: Epoch = u64::MAX;
-pub const SLOTS_PER_HISTORICAL_ROOT: usize = 8192;
-pub const EPOCHS_PER_HISTORICAL_VECTOR: usize = 65536;
-pub const EPOCHS_PER_SLASHINGS_VECTOR: usize = 8192;
 /// In-memory cap for the `historical_summaries` list. Mainnet grows by 1 entry
 /// per 256 epochs (~27h); 8192 covers ~25 years.
 pub const HISTORICAL_SUMMARIES_CAP: usize = 8192;
 pub const HISTORICAL_ROOTS_LIMIT: usize = 1 << 24;
 
 pub const PENDING_DEPOSITS_LIMIT: usize = 1 << 27;
-pub const PENDING_PARTIAL_WITHDRAWALS_LIMIT: usize = 1 << 27;
-pub const PENDING_CONSOLIDATIONS_LIMIT: usize = 1 << 18;
 
-pub const SLOTS_PER_EPOCH: u64 = 32;
 pub const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
 pub(crate) const MAX_EFFECTIVE_BALANCE_COMPOUNDING: u64 = 2048 * EFFECTIVE_BALANCE_INCREMENT;
 pub const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
@@ -63,11 +64,7 @@ pub const TIMELY_TARGET_FLAG: u8 = 1 << 1;
 pub const TIMELY_HEAD_FLAG: u8 = 1 << 2;
 pub const PARTICIPATION_FLAGS: [u8; 3] = [TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TIMELY_HEAD_FLAG];
 pub const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
-pub const SYNC_COMMITTEE_SIZE: usize = 512;
-pub const SYNC_COMMITTEE_SUBNETS: usize = 4;
-pub const SYNC_SUBCOMMITTEE_SIZE: usize = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNETS;
-pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
-pub const MAX_ETH1_VOTES: usize = 2048;
+pub const MAX_ETH1_VOTES: usize = (EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH) as usize;
 pub const MIN_SEED_LOOKAHEAD: u64 = 1;
 pub const PROPOSER_LOOKAHEAD_SIZE: usize =
     (MIN_SEED_LOOKAHEAD as usize + 1) * SLOTS_PER_EPOCH as usize;
@@ -444,7 +441,7 @@ impl HistoricalSummary {
     }
 }
 
-// size: ~24 KB (48 B × 512 + 48 B)
+// size: 48 B × (SYNC_COMMITTEE_SIZE + 1); ~24 KB on mainnet
 #[derive(Clone, Copy)]
 pub struct SyncCommittee {
     pub pubkeys: [BLSPubkey; SYNC_COMMITTEE_SIZE],
@@ -462,9 +459,10 @@ impl SyncCommittee {
 
     /// `Self::default().hash_root()` at compile time — the all-zero committee
     /// is zero subtrees: a zero pubkey merkleizes to `ZERO_HASHES[1]`, the
-    /// 512-vector of those to `ZERO_HASHES[1 + 9]`. A default-built state must
-    /// hash identically to its own decomposed encode.
+    /// pubkeys vector of those to `ZERO_HASHES[1 + PUBKEYS_DEPTH]`. A
+    /// default-built state must hash identically to its own decomposed encode.
     pub const fn default_root() -> B256 {
+        const _: () = assert!(SYNC_COMMITTEE_SIZE.is_power_of_two());
         const PUBKEYS_DEPTH: usize = SYNC_COMMITTEE_SIZE.trailing_zeros() as usize;
         const_hash_concat(&ZERO_HASHES[1 + PUBKEYS_DEPTH], &ZERO_HASHES[1])
     }

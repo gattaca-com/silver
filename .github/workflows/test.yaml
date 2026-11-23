@@ -28,7 +28,7 @@ jobs:
           toolchain: nightly-2026-06-21
 
       - name: Download consensus-spec-tests
-        run: make -C crates/beacon_state/tile
+        run: make -C crates/beacon_state/tile PRESETS=mainnet
 
       - name: Run tests
         run: cargo test --locked --features "silver_beacon_state/ef_tests,silver_e2e/lh-client,silver/metrics" --no-fail-fast

@@ -1,7 +1,10 @@
 use crate::{
     merkle::{B256, FixedContainer, hash_fixed_bytes, merkleize, uint64_chunk},
     progressive::{ProgressiveContainer, packed_active_fields},
-    ssz_view::{PAYLOAD_ATTESTATION_SIZE, PayloadAttestationDataView, PayloadAttestationView},
+    ssz_view::{
+        PAYLOAD_ATTESTATION_DATA_SIZE, PAYLOAD_ATTESTATION_SIZE, PTC_AGGREGATION_BITS_SIZE,
+        PayloadAttestationDataView, PayloadAttestationView,
+    },
 };
 
 impl ProgressiveContainer for PayloadAttestationView {
@@ -11,11 +14,13 @@ impl ProgressiveContainer for PayloadAttestationView {
 impl FixedContainer for PayloadAttestationView {
     const SSZ_SIZE: usize = PAYLOAD_ATTESTATION_SIZE;
 
-    /// aggregation_bits(Bitvector[512]=64B) + data(42B) + signature(96B).
+    /// aggregation_bits(Bitvector[PTC_SIZE]) + data(42B) + signature(96B).
     fn hash_tree_root(d: &[u8]) -> B256 {
-        let aggregation_bits = hash_fixed_bytes(&d[0..64]);
-        let data = PayloadAttestationDataView::hash_tree_root(&d[64..106]);
-        let signature = hash_fixed_bytes(&d[106..202]);
+        const DATA_END: usize = PTC_AGGREGATION_BITS_SIZE + PAYLOAD_ATTESTATION_DATA_SIZE;
+        let aggregation_bits = hash_fixed_bytes(&d[..PTC_AGGREGATION_BITS_SIZE]);
+        let data =
+            PayloadAttestationDataView::hash_tree_root(&d[PTC_AGGREGATION_BITS_SIZE..DATA_END]);
+        let signature = hash_fixed_bytes(&d[DATA_END..PAYLOAD_ATTESTATION_SIZE]);
         Self::progressive_root(&[aggregation_bits, data, signature])
     }
 }

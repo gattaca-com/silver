@@ -1,8 +1,8 @@
-use silver_beacon_state_data::{B256, Checkpoint, Slot, StateId};
+use silver_beacon_state_data::{B256, Checkpoint, PTC_SIZE, Slot, StateId};
 
 use super::{NULL, WeightDelta};
 
-pub(super) const PTC_SIZE: usize = 512;
+pub(crate) const PTC_MASK_WORDS: usize = PTC_SIZE.div_ceil(64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionStatus {
@@ -114,9 +114,9 @@ pub struct PayloadAxis {
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct PtcVotes {
-    voted: [u64; 8],
-    present: [u64; 8],
-    da: [u64; 8],
+    voted: [u64; PTC_MASK_WORDS],
+    present: [u64; PTC_MASK_WORDS],
+    da: [u64; PTC_MASK_WORDS],
 }
 
 impl PtcVotes {
@@ -133,7 +133,12 @@ impl PtcVotes {
     }
 
     #[inline]
-    pub(super) fn record_mask(&mut self, positions: &[u64; 8], present: bool, da: bool) {
+    pub(super) fn record_mask(
+        &mut self,
+        positions: &[u64; PTC_MASK_WORDS],
+        present: bool,
+        da: bool,
+    ) {
         for (word, &positions) in self.voted.iter_mut().zip(positions) {
             *word |= positions;
         }
@@ -182,7 +187,7 @@ impl PtcVotes {
     }
 
     #[cfg(any(test, feature = "ef_tests"))]
-    fn optional(&self, value: &[u64; 8]) -> [Option<bool>; PTC_SIZE] {
+    fn optional(&self, value: &[u64; PTC_MASK_WORDS]) -> [Option<bool>; PTC_SIZE] {
         let mut out = [None; PTC_SIZE];
         for (i, slot) in out.iter_mut().enumerate() {
             let (w, b) = (i / 64, i % 64);
@@ -195,11 +200,11 @@ impl PtcVotes {
 }
 
 #[inline]
-fn popcount(bits: &[u64; 8]) -> usize {
+fn popcount(bits: &[u64; PTC_MASK_WORDS]) -> usize {
     bits.iter().map(|w| w.count_ones() as usize).sum()
 }
 
 #[inline]
-fn popcount_unset(voted: &[u64; 8], set: &[u64; 8]) -> usize {
+fn popcount_unset(voted: &[u64; PTC_MASK_WORDS], set: &[u64; PTC_MASK_WORDS]) -> usize {
     voted.iter().zip(set).map(|(v, s)| (v & !s).count_ones() as usize).sum()
 }

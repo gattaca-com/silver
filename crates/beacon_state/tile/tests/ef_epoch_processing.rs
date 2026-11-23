@@ -3,14 +3,14 @@
 mod ef_common;
 
 use ef_common::{
-    LoadedState, compare_states, iter_test_cases, load_state, load_state_gloas, spec_tests_dir,
+    LoadedState, compare_states, iter_test_cases, load_state, load_state_gloas, preset_tests_dir,
 };
 use silver_beacon_state::stf::{self, HISTORICAL_SUMMARY_PERIOD};
 use silver_beacon_state_data::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
 /// Gloas EF config: mainnet preset with Gloas active from genesis, so the
 /// `cfg.is_gloas_at(epoch)`-gated STF branches fire on the loaded Gloas states.
 fn gloas_cfg() -> silver_beacon_state_data::SpecConfig {
-    let mut cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let mut cfg = silver_beacon_state_data::SpecConfig::reference();
     cfg.gloas_fork_epoch = 0;
     cfg
 }
@@ -20,12 +20,7 @@ fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
 }
 
 fn epoch_handler_fork(fork: &str, handler_name: &str, run: impl Fn(&mut LoadedState)) {
-    let base = spec_tests_dir()
-        .join("tests")
-        .join("mainnet")
-        .join(fork)
-        .join("epoch_processing")
-        .join(handler_name);
+    let base = preset_tests_dir().join(fork).join("epoch_processing").join(handler_name);
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
         eprintln!("{handler_name}: no test cases at {}, skipping", base.display());
@@ -78,7 +73,7 @@ fn fulu_justification_and_finalization() {
 
 #[test]
 fn fulu_inactivity_updates() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = silver_beacon_state_data::SpecConfig::reference();
     epoch_handler("inactivity_updates", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
@@ -89,7 +84,7 @@ fn fulu_inactivity_updates() {
 
 #[test]
 fn fulu_rewards_and_penalties() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = silver_beacon_state_data::SpecConfig::reference();
     epoch_handler("rewards_and_penalties", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
@@ -100,7 +95,7 @@ fn fulu_rewards_and_penalties() {
 
 #[test]
 fn fulu_registry_updates() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = silver_beacon_state_data::SpecConfig::reference();
     epoch_handler("registry_updates", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
@@ -111,7 +106,7 @@ fn fulu_registry_updates() {
 
 #[test]
 fn fulu_slashings() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = silver_beacon_state_data::SpecConfig::reference();
     epoch_handler("slashings", move |s| {
         s.with_view_and_epoch(|view, _e| {
             let current_epoch = view.slot.reader().current_epoch();
@@ -132,7 +127,7 @@ fn fulu_eth1_data_reset() {
 
 #[test]
 fn fulu_pending_deposits() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = silver_beacon_state_data::SpecConfig::reference();
     epoch_handler("pending_deposits", move |s| {
         let sid = s.state_id;
         let (mut view, epoch, _) = s.view();

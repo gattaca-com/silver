@@ -5,8 +5,8 @@ use std::{fs, path::Path};
 mod ef_common;
 
 use ef_common::{
-    LoadedState, compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode,
-    spec_tests_dir,
+    LoadedState, compare_states, iter_test_cases, load_state, load_state_gloas, preset_tests_dir,
+    snappy_decode,
 };
 use silver_beacon_state::{
     error::ExecutionPayloadBidError,
@@ -14,9 +14,13 @@ use silver_beacon_state::{
     stf::{self, ShufflingRef},
 };
 use silver_beacon_state_data::{
-    BeaconBlockHeader, Payload, SLOTS_PER_EPOCH, bls::SigBatch, hash_tree_root_block_header,
+    BeaconBlockHeader, Payload, SLOTS_PER_EPOCH, SpecConfig, bls::SigBatch,
+    hash_tree_root_block_header,
 };
-use silver_common::ssz_view::{PTC_AGGREGATION_BITS_SIZE, SignedExecutionPayloadBidView};
+use silver_common::ssz_view::{
+    BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, PTC_AGGREGATION_BITS_SIZE,
+    SignedExecutionPayloadBidView,
+};
 
 fn operations_handler(
     handler_name: &str,
@@ -37,7 +41,7 @@ fn config_u64(dir: &Path, key: &str) -> Option<u64> {
 }
 
 fn gloas_cfg() -> silver_beacon_state_data::SpecConfig {
-    let mut cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let mut cfg = SpecConfig::reference();
     cfg.gloas_fork_epoch = 0;
     cfg
 }
@@ -63,8 +67,7 @@ fn operations_handler_cases(
     detects_reject: bool,
     run: impl Fn(&Path, &mut LoadedState, &[u8]) -> bool,
 ) {
-    let base =
-        spec_tests_dir().join("tests/mainnet").join(fork).join("operations").join(handler_name);
+    let base = preset_tests_dir().join(fork).join("operations").join(handler_name);
     let loader = if fork == "gloas" { load_state_gloas } else { load_state };
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
@@ -148,7 +151,9 @@ fn run_proposer_slashing(s: &mut LoadedState, op: &[u8]) -> bool {
             return false;
         }
     }
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    // A Gloas vector's churn follows EIP-8061, which only an active Gloas fork
+    // selects.
+    let cfg = if s.bs.is_finalized_post_gloas() { gloas_cfg() } else { SpecConfig::reference() };
     if !batch.verify_all() {
         return false;
     }
@@ -197,7 +202,7 @@ fn fulu_attester_slashing() {
                 return false;
             }
         }
-        let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+        let cfg = SpecConfig::reference();
         if !batch.verify_all() {
             return false;
         }
@@ -277,7 +282,7 @@ fn fulu_voluntary_exit() {
             let (p, _, _) = s.view();
             stf::collect_sigs_voluntary_exits(p.imm, &p.validators.reader(), op, &mut batch);
         }
-        let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+        let cfg = SpecConfig::reference();
         if !batch.verify_all() {
             return false;
         }
@@ -346,7 +351,7 @@ fn fulu_deposit_request() {
 
 #[test]
 fn fulu_withdrawal_request() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = SpecConfig::reference();
     operations_handler("withdrawal_request", "withdrawal_request", false, move |s, op| {
         s.with_view(|view| stf::process_withdrawal_requests(view, &cfg, op));
         true
@@ -355,7 +360,7 @@ fn fulu_withdrawal_request() {
 
 #[test]
 fn fulu_consolidation_request() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = SpecConfig::reference();
     operations_handler("consolidation_request", "consolidation_request", false, move |s, op| {
         s.with_view(|view| stf::process_consolidation_requests(view, &cfg, op));
         true
@@ -374,15 +379,14 @@ fn fulu_withdrawals() {
 
 #[test]
 fn fulu_execution_payload() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = SpecConfig::reference();
     operations_handler("execution_payload", "body", false, move |s, op| {
-        if op.len() < 396 {
+        if op.len() < BEACON_BLOCK_BODY_FIXED {
             return true;
         }
-        let off = |pos: usize| u32::from_le_bytes(op[pos..pos + 4].try_into().unwrap()) as usize;
-        let exec_off = off(380);
-        let bls_off = off(384);
-        let commitments = op.get(off(388)..off(392)).unwrap_or_default();
+        let exec_off = BeaconBlockBodyFuluView::execution_payload_offset(op) as usize;
+        let bls_off = BeaconBlockBodyFuluView::bls_to_execution_changes_offset(op) as usize;
+        let commitments = BeaconBlockBodyFuluView::blob_kzg_commitments(op).unwrap_or_default();
         if exec_off < bls_off &&
             bls_off <= op.len() &&
             let Ok(payload) = Payload::new(&op[exec_off..bls_off])
@@ -398,7 +402,6 @@ fn fulu_execution_payload() {
                     block_slot,
                     roots,
                 );
-                let _ = stf::process_withdrawals_fulu(view, payload);
             });
         }
         true
@@ -409,19 +412,22 @@ fn fulu_execution_payload() {
 /// is the empty pre-merge one (`block_number == 0`).
 #[test]
 fn fulu_first_payload_with_bad_parent_hash_is_rejected() {
-    let dir = spec_tests_dir().join(
-        "tests/mainnet/fulu/operations/execution_payload/pyspec_tests/invalid_bad_parent_hash_first_payload",
+    let dir = preset_tests_dir().join(
+        "fulu/operations/execution_payload/pyspec_tests/invalid_bad_parent_hash_first_payload",
     );
     if !dir.exists() {
         eprintln!("fulu_first_payload_with_bad_parent_hash_is_rejected: no vector, skipping");
         return;
     }
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = SpecConfig::reference();
     let mut s = load_state(&dir.join("pre.ssz_snappy"));
     let body = snappy_decode(&dir.join("body.ssz_snappy"));
-    let off = |pos: usize| u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize;
-    let payload = Payload::new(&body[off(380)..off(384)]).unwrap();
-    let commitments = &body[off(388)..off(392)];
+    let payload = Payload::new(
+        &body[BeaconBlockBodyFuluView::execution_payload_offset(&body) as usize..
+            BeaconBlockBodyFuluView::bls_to_execution_changes_offset(&body) as usize],
+    )
+    .unwrap();
+    let commitments = BeaconBlockBodyFuluView::blob_kzg_commitments(&body).unwrap();
     let block_slot = s.slot();
     let result = s.with_view(|view| {
         stf::process_execution_payload(
@@ -444,7 +450,8 @@ fn gloas_builder_deposit_request() {
         "builder_deposit_request",
         false,
         |s, op| {
-            s.with_view(|view| stf::process_builder_deposit_request(view, op));
+            let cfg = gloas_cfg();
+            s.with_view(|view| stf::process_builder_deposit_request(view, &cfg, op));
             true
         },
     );
@@ -463,7 +470,8 @@ fn gloas_builder_exit_request() {
                 let (_, epoch, _) = s.view();
                 epoch.view_opt(sid.epoch_idx).state().finalized_checkpoint.epoch
             };
-            s.with_view(|view| stf::process_builder_exit_request(view, finalized_epoch, op));
+            let cfg = gloas_cfg();
+            s.with_view(|view| stf::process_builder_exit_request(view, &cfg, finalized_epoch, op));
             true
         },
     );
@@ -471,7 +479,7 @@ fn gloas_builder_exit_request() {
 
 #[test]
 fn gloas_execution_payload_bid() {
-    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let cfg = SpecConfig::reference();
     operations_handler_fork(
         "gloas",
         "execution_payload_bid",
@@ -525,7 +533,7 @@ fn gloas_execution_payload_bid() {
 fn gloas_withdrawals() {
     // Gloas `process_withdrawals` is deterministic (no payload); the EF case
     // carries only pre/post, so this runs like an epoch handler.
-    let base = spec_tests_dir().join("tests/mainnet/gloas/operations/withdrawals");
+    let base = preset_tests_dir().join("gloas/operations/withdrawals");
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
         eprintln!("gloas withdrawals: no test cases, skipping");
@@ -614,9 +622,7 @@ fn gloas_payload_attestation() {
 /// overflow `slot + 1` (a panic under overflow checks).
 #[test]
 fn gloas_payload_attestation_rejects_max_slot() {
-    let dir = spec_tests_dir().join(
-        "tests/mainnet/gloas/operations/payload_attestation/pyspec_tests/process_payload_attestation_payload_present",
-    );
+    let dir = preset_tests_dir().join("gloas/operations/payload_attestation/pyspec_tests/process_payload_attestation_payload_present");
     if !dir.exists() {
         eprintln!("gloas_payload_attestation_rejects_max_slot: no vector, skipping");
         return;

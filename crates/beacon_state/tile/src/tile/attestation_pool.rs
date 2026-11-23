@@ -358,7 +358,7 @@ fn write_ssz_list<'a, P: AsRef<[CommitteeAttestation]>>(
 mod tests {
     use blst::{BLST_ERROR, min_pk::AggregateSignature};
     use silver_beacon_state_data::{Immutable, bls};
-    use silver_common::ssz_view::AttestationView;
+    use silver_common::ssz_view::{AttestationView, bitvector_word};
 
     use super::{
         vote_candidates::{MAX_SLOT_CANDIDATES, RETAINED_SLOTS},
@@ -422,7 +422,7 @@ mod tests {
             AttestationView::data(&out).as_bytes(),
             SingleAttestationView::data(&a).as_bytes()
         );
-        assert_eq!(AttestationView::committee_bits(&out), &1u64.to_le_bytes());
+        assert_eq!(bitvector_word(AttestationView::committee_bits(&out)), 1);
         // committee members 1 and 3 set, terminator at bit 4.
         assert_eq!(AttestationView::aggregation_bits(&out), &[0b0001_1010]);
 
@@ -484,7 +484,7 @@ mod tests {
         let out_b = pool.aggregate_ssz(SLOT, 1, vb.data_root).unwrap();
         assert_eq!(AttestationView::aggregation_bits(&out_a), &[0b0001_0001]);
         assert_eq!(AttestationView::aggregation_bits(&out_b), &[0b0001_0001]);
-        assert_eq!(AttestationView::committee_bits(&out_b), &2u64.to_le_bytes());
+        assert_eq!(bitvector_word(AttestationView::committee_bits(&out_b)), 2);
     }
 
     #[test]
@@ -835,7 +835,7 @@ mod tests {
             AttestationView::data(attestation).as_bytes(),
             SingleAttestationView::data(&a).as_bytes()
         );
-        assert_eq!(AttestationView::committee_bits(attestation), &0b11u64.to_le_bytes());
+        assert_eq!(bitvector_word(AttestationView::committee_bits(attestation)), 0b11);
         // Committee 0's bit 4, committee 1's bit 0 at 5, terminator at 9.
         assert_eq!(AttestationView::aggregation_bits(attestation), &[0b0011_0000, 0b0000_0010]);
         assert_signed_by(attestation, &[0, 1]);

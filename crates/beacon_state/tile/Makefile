@@ -3,12 +3,17 @@
 # commit, which must have run first.
 CONSENSUS_SPECS_TEST_VERSION ?= 6ea84333433a840fbd534f8ebbe9dd5e1b599115
 OUTPUT_DIR := ./consensus-spec-tests
-STAMP := $(OUTPUT_DIR)/.version-$(CONSENSUS_SPECS_TEST_VERSION)
+# One tarball per preset. `just test-minimal` needs `PRESETS="mainnet minimal"`,
+# which only an upstream release tag provides.
+PRESETS ?= mainnet
+empty :=
+space := $(empty) $(empty)
+STAMP := $(OUTPUT_DIR)/.version-$(CONSENSUS_SPECS_TEST_VERSION)-$(subst $(space),-,$(PRESETS))
 
 ifneq ($(filter v%,$(CONSENSUS_SPECS_TEST_VERSION)),)
-TARBALL_URL := https://github.com/ethereum/consensus-specs/releases/download/$(CONSENSUS_SPECS_TEST_VERSION)/mainnet.tar.gz
+TARBALL_BASE := https://github.com/ethereum/consensus-specs/releases/download/$(CONSENSUS_SPECS_TEST_VERSION)
 else
-TARBALL_URL := https://github.com/gattaca-com/silver/releases/download/spec-tests-$(CONSENSUS_SPECS_TEST_VERSION)/mainnet.tar.gz
+TARBALL_BASE := https://github.com/gattaca-com/silver/releases/download/spec-tests-$(CONSENSUS_SPECS_TEST_VERSION)
 endif
 
 .PHONY: all clean
@@ -24,8 +29,10 @@ clean:
 $(STAMP):
 	rm -rf $(OUTPUT_DIR)
 	mkdir -p $(OUTPUT_DIR)
-	curl --progress-bar --location --remote-name --show-error --retry 3 --retry-all-errors --fail \
-		"$(TARBALL_URL)"
-	tar -xzf mainnet.tar.gz -C $(OUTPUT_DIR)
-	rm -f mainnet.tar.gz
+	for preset in $(PRESETS); do \
+		curl --progress-bar --location --remote-name --show-error --retry 3 --retry-all-errors --fail \
+			"$(TARBALL_BASE)/$$preset.tar.gz" && \
+		tar -xzf $$preset.tar.gz -C $(OUTPUT_DIR) && \
+		rm -f $$preset.tar.gz || exit 1; \
+	done
 	touch $(STAMP)

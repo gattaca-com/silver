@@ -5,24 +5,24 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{
-    compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode, spec_tests_dir,
+    compare_states, iter_test_cases, load_state, load_state_gloas, preset_tests_dir, snappy_decode,
 };
 use silver_beacon_state_data::SpecConfig;
 
 #[test]
 fn fulu_random() {
-    random_fork("fulu", SpecConfig::mainnet());
+    random_fork("fulu", SpecConfig::reference());
 }
 
 #[test]
 fn gloas_random() {
-    let mut cfg = SpecConfig::mainnet();
+    let mut cfg = SpecConfig::reference();
     cfg.gloas_fork_epoch = 0;
     random_fork("gloas", cfg);
 }
 
 fn random_fork(fork: &str, cfg: SpecConfig) {
-    let base = spec_tests_dir().join(format!("tests/mainnet/{fork}/random/random"));
+    let base = preset_tests_dir().join(format!("{fork}/random/random"));
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
         eprintln!("random[{fork}]: no test cases, skipping");

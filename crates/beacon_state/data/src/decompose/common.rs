@@ -1,4 +1,5 @@
 use flux_profiler::timed;
+use silver_ssz::ssz_view::BEACON_BLOCK_HEADER_SIZE;
 
 use crate::{
     BalancesGroup, BeaconState, BlockRootsGroup, BuildersGroup, CurrentParticipationGroup,
@@ -11,9 +12,9 @@ use crate::{
     gloas::BuilderPendingWithdrawal,
     merkle,
     types::{
-        self, B256, Checkpoint, HISTORICAL_ROOTS_LIMIT, HashFormat, Immutable,
+        self, B256, BLSPubkey, Checkpoint, HISTORICAL_ROOTS_LIMIT, HashFormat, Immutable,
         PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
-        SLOTS_PER_EPOCH,
+        SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE,
     },
 };
 
@@ -24,51 +25,53 @@ const PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE: usize = 24;
 const PENDING_CONSOLIDATION_SSZ_SIZE: usize = 16;
 const ROOT_RING_SSZ: usize = SLOTS_PER_HISTORICAL_ROOT * size_of::<B256>();
 const RANDAO_RING_SSZ: usize = EPOCHS_PER_HISTORICAL_VECTOR * size_of::<B256>();
+const SLASHINGS_SSZ: usize = EPOCHS_PER_SLASHINGS_VECTOR * size_of::<u64>();
+const CHECKPOINT_SSZ: usize = 40;
+const SYNC_COMMITTEE_SSZ: usize = (SYNC_COMMITTEE_SIZE + 1) * size_of::<BLSPubkey>();
+pub(super) const OFFSET: usize = 4;
 
-// Fixed-part byte offsets (Fulu).
-pub(super) const F0: usize = 0; // genesis_time: 8
-pub(super) const F1: usize = 8; // genesis_validators_root: 32
-pub(crate) const F2: usize = 40; // slot: 8
-pub(super) const F3: usize = 48; // fork: 16
-pub(crate) const F4: usize = 64; // latest_block_header: 112
-pub(crate) const F5: usize = 176; // block_roots: 8192 × 32 = 262144
-pub(crate) const F6: usize = 262_320; // state_roots: 262144
-pub(super) const F7_OFF: usize = 524_464; // historical_roots offset: 4
-pub(crate) const F8: usize = 524_468; // eth1_data: 72
-pub(super) const F9_OFF: usize = 524_540; // eth1_data_votes offset: 4
-pub(crate) const F10: usize = 524_544; // eth1_deposit_index: 8
-pub(super) const F11_OFF: usize = 524_552; // validators offset: 4
-pub(super) const F12_OFF: usize = 524_556; // balances offset: 4
-pub(crate) const F13: usize = 524_560; // randao_mixes: 65536 × 32 = 2097152
-pub(crate) const F14: usize = 2_621_712; // slashings: 8192 × 8 = 65536
-pub(super) const F15_OFF: usize = 2_687_248; // previous_epoch_participation offset
-pub(super) const F16_OFF: usize = 2_687_252; // current_epoch_participation offset
-pub(crate) const F17: usize = 2_687_256; // justification_bits: 1
-pub(crate) const F18: usize = 2_687_257; // previous_justified_checkpoint: 40
-pub(crate) const F19: usize = 2_687_297; // current_justified_checkpoint
-pub(crate) const F20: usize = 2_687_337; // finalized_checkpoint
-pub(super) const F21_OFF: usize = 2_687_377; // inactivity_scores offset
-pub(crate) const F22: usize = 2_687_381; // current_sync_committee: 24624
-pub(crate) const F23: usize = 2_712_005; // next_sync_committee: 24624
-pub(super) const F24_OFF: usize = 2_736_629; // latest_execution_payload_header offset
-pub(crate) const F25: usize = 2_736_633; // next_withdrawal_index: 8
-pub(crate) const F26: usize = 2_736_641; // next_withdrawal_validator_index: 8
-pub(super) const F27_OFF: usize = 2_736_649; // historical_summaries offset
-pub(crate) const F28: usize = 2_736_653; // deposit_requests_start_index: 8
-pub(crate) const F29: usize = 2_736_661; // deposit_balance_to_consume: 8
-pub(crate) const F30: usize = 2_736_669; // exit_balance_to_consume: 8
-pub(crate) const F31: usize = 2_736_677; // earliest_exit_epoch: 8
-pub(crate) const F32: usize = 2_736_685; // consolidation_balance_to_consume: 8
-pub(crate) const F33: usize = 2_736_693; // earliest_consolidation_epoch: 8
-pub(super) const F34_OFF: usize = 2_736_701; // pending_deposits offset
-pub(super) const F35_OFF: usize = 2_736_705; // pending_partial_withdrawals offset
-pub(super) const F36_OFF: usize = 2_736_709; // pending_consolidations offset
-pub(crate) const F37: usize = 2_736_713; // proposer_lookahead: 64 × 8 = 512
-pub(crate) const FULU_FIXED_PART: usize = 2_737_225;
+// Fixed-part byte offsets (Fulu). Each names the field that starts there.
+pub(super) const F0: usize = 0; // genesis_time
+pub(super) const F1: usize = F0 + 8; // genesis_validators_root
+pub(crate) const F2: usize = F1 + 32; // slot
+pub(super) const F3: usize = F2 + 8; // fork
+pub(crate) const F4: usize = F3 + 16; // latest_block_header
+pub(crate) const F5: usize = F4 + BEACON_BLOCK_HEADER_SIZE; // block_roots
+pub(crate) const F6: usize = F5 + ROOT_RING_SSZ; // state_roots
+pub(super) const F7_OFF: usize = F6 + ROOT_RING_SSZ; // historical_roots
+pub(crate) const F8: usize = F7_OFF + OFFSET; // eth1_data
+pub(super) const F9_OFF: usize = F8 + ETH1_DATA_SSZ_SIZE; // eth1_data_votes
+pub(crate) const F10: usize = F9_OFF + OFFSET; // eth1_deposit_index
+pub(super) const F11_OFF: usize = F10 + 8; // validators
+pub(super) const F12_OFF: usize = F11_OFF + OFFSET; // balances
+pub(crate) const F13: usize = F12_OFF + OFFSET; // randao_mixes
+pub(crate) const F14: usize = F13 + RANDAO_RING_SSZ; // slashings
+pub(super) const F15_OFF: usize = F14 + SLASHINGS_SSZ; // previous_epoch_participation
+pub(super) const F16_OFF: usize = F15_OFF + OFFSET; // current_epoch_participation
+pub(crate) const F17: usize = F16_OFF + OFFSET; // justification_bits
+pub(crate) const F18: usize = F17 + 1; // previous_justified_checkpoint
+pub(crate) const F19: usize = F18 + CHECKPOINT_SSZ; // current_justified_checkpoint
+pub(crate) const F20: usize = F19 + CHECKPOINT_SSZ; // finalized_checkpoint
+pub(super) const F21_OFF: usize = F20 + CHECKPOINT_SSZ; // inactivity_scores
+pub(crate) const F22: usize = F21_OFF + OFFSET; // current_sync_committee
+pub(crate) const F23: usize = F22 + SYNC_COMMITTEE_SSZ; // next_sync_committee
+pub(super) const F24_OFF: usize = F23 + SYNC_COMMITTEE_SSZ; // latest_execution_payload_header
+pub(crate) const F25: usize = F24_OFF + OFFSET; // next_withdrawal_index
+pub(crate) const F26: usize = F25 + 8; // next_withdrawal_validator_index
+pub(super) const F27_OFF: usize = F26 + 8; // historical_summaries
+pub(crate) const F28: usize = F27_OFF + OFFSET; // deposit_requests_start_index
+pub(crate) const F29: usize = F28 + 8; // deposit_balance_to_consume
+pub(crate) const F30: usize = F29 + 8; // exit_balance_to_consume
+pub(crate) const F31: usize = F30 + 8; // earliest_exit_epoch
+pub(crate) const F32: usize = F31 + 8; // consolidation_balance_to_consume
+pub(crate) const F33: usize = F32 + 8; // earliest_consolidation_epoch
+pub(super) const F34_OFF: usize = F33 + 8; // pending_deposits
+pub(super) const F35_OFF: usize = F34_OFF + OFFSET; // pending_partial_withdrawals
+pub(super) const F36_OFF: usize = F35_OFF + OFFSET; // pending_consolidations
+pub(crate) const F37: usize = F36_OFF + OFFSET; // proposer_lookahead
+pub(crate) const FULU_FIXED_PART: usize = F37 + PROPOSER_LOOKAHEAD_SIZE * size_of::<u64>();
 
-// Compile-time sanity for the hand-rolled offset table and the alignment
-// assumption behind the `&[B256]` raw-slice casts below.
-const _: () = assert!(F37 + PROPOSER_LOOKAHEAD_SIZE * 8 == FULU_FIXED_PART);
+// The alignment assumption behind the `&[B256]` raw-slice casts below.
 const _: () = assert!(std::mem::align_of::<B256>() == 1);
 
 #[derive(Debug, thiserror::Error)]

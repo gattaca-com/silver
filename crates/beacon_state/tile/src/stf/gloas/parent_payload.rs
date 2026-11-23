@@ -91,12 +91,14 @@ pub(crate) fn apply_parent_execution_payload(
     for i in 0..builder_deposits.len() / BUILDER_DEPOSIT_SSZ {
         process_builder_deposit_request(
             view,
+            cfg,
             &builder_deposits[i * BUILDER_DEPOSIT_SSZ..][..BUILDER_DEPOSIT_SSZ],
         );
     }
     for i in 0..builder_exits.len() / BUILDER_EXIT_SSZ {
         process_builder_exit_request(
             view,
+            cfg,
             finalized_epoch,
             &builder_exits[i * BUILDER_EXIT_SSZ..][..BUILDER_EXIT_SSZ],
         );

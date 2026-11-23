@@ -13,8 +13,8 @@ use crate::{
     DecomposeError,
     decompose::common::{b256, u32_le, u64_le},
     types::{
-        B256, BLSPubkey, Epoch, ExecutionAddress, FAR_FUTURE_EPOCH, MIN_SEED_LOOKAHEAD,
-        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, Version,
+        B256, BLSPubkey, Epoch, ExecutionAddress, FAR_FUTURE_EPOCH, MAX_WITHDRAWALS_PER_PAYLOAD,
+        MIN_SEED_LOOKAHEAD, PTC_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, Version,
     },
 };
 
@@ -22,9 +22,9 @@ const EXECUTION_PAYLOAD_BID_FIXED: usize = 224;
 const KZG_COMMITMENT_SSZ: usize = 48;
 
 pub const GLOAS_FORK_VERSION: Version = [0x07, 0, 0, 0];
-pub const PTC_SIZE: usize = 512;
 pub const PTC_WINDOW_LEN: usize = (2 + MIN_SEED_LOOKAHEAD as usize) * SLOTS_PER_EPOCH as usize;
 pub const BUILDER_PENDING_PAYMENTS_LEN: usize = 2 * SLOTS_PER_EPOCH as usize;
+pub(crate) const BUILDER_PENDING_PAYMENT_SSZ: usize = 52;
 pub const BUILDER_REGISTRY_LIMIT: usize = 1 << 40;
 const MIN_BUILDER_HEADROOM: usize = 64;
 
@@ -33,7 +33,6 @@ pub fn builder_capacity(count: usize) -> usize {
 }
 pub const BUILDER_PENDING_WITHDRAWALS_LIMIT: usize = 1 << 20;
 pub const MAX_BLOB_COMMITMENTS_PER_BLOCK: usize = 4096;
-pub const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
 
 /// `execution_payload_availability: Bitvector[SLOTS_PER_HISTORICAL_ROOT]`.
 pub const EXECUTION_PAYLOAD_AVAILABILITY_BYTES: usize = SLOTS_PER_HISTORICAL_ROOT / 8;

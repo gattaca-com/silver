@@ -1,5 +1,10 @@
 // Zero-copy SSZ field extraction for Fulu p2p wire types.
 
+use silver_preset::{MAX_ATTESTER_SLASHING_SIZE, MAX_SIGNED_AGGREGATE_AND_PROOF_SIZE, PTC_SIZE};
+pub use silver_preset::{
+    MAX_COMMITTEES_PER_SLOT, MAX_WITHDRAWALS_PER_PAYLOAD, SYNC_COMMITTEE_SIZE,
+};
+
 use crate::ssz_hash_gloas::ExecutionRequestsView;
 
 pub enum SszView {
@@ -121,7 +126,6 @@ pub const MAX_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
 
 // List/bit-length limits referenced by the views below.
 pub const MAX_VALIDATORS_PER_COMMITTEE: usize = 2048;
-pub const MAX_COMMITTEES_PER_SLOT: usize = 64;
 pub const MAX_ATTESTING_INDICES: usize = MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT;
 pub const MAX_BLOB_COMMITMENTS_PER_BLOCK: usize = 4096;
 pub const NUMBER_OF_COLUMNS: usize = 128;
@@ -143,7 +147,6 @@ pub const MAX_VOLUNTARY_EXITS: usize = 16;
 pub const MAX_BLS_TO_EXECUTION_CHANGES: usize = 16;
 pub const MAX_PAYLOAD_ATTESTATIONS: usize = 4;
 pub const MAX_EXTRA_DATA_BYTES: usize = 32;
-pub const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
 pub const MAX_TRANSACTIONS_PER_PAYLOAD: usize = 1 << 20;
 pub const MAX_BYTES_PER_TRANSACTION: usize = 1 << 30;
 pub const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 8192;
@@ -152,7 +155,6 @@ pub const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: usize = 2;
 pub const MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 64;
 pub const MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD: usize = 16;
 pub const DEPOSIT_CONTRACT_TREE_DEPTH: usize = 32;
-pub const SYNC_COMMITTEE_SIZE: usize = 512;
 
 // -- SingleAttestation (beacon_attestation_{subnet_id}) ---------------
 //
@@ -270,20 +272,22 @@ impl IndexedAttestationView {
 
 // -- Attestation (block-body attestations list element, Fulu) -----
 //
-// Variable (trailing `aggregation_bits` Bitlist). Fixed prefix 236B.
+// Variable (trailing `aggregation_bits` Bitlist). Fixed prefix 236B on
+// mainnet.
 //
 // Attestation: { aggregation_bits: Bitlist[MAX_VALIDATORS_PER_COMMITTEE *
 //                  MAX_COMMITTEES_PER_SLOT],
 //                data: AttestationData(128), signature(96),
-//                committee_bits: Bitvector[MAX_COMMITTEES_PER_SLOT] (8B) }
+//                committee_bits: Bitvector[MAX_COMMITTEES_PER_SLOT] }
 //
-//   [0..4)     offset to aggregation_bits (== 236)
+//   [0..4)     offset to aggregation_bits (== ATTESTATION_FIXED)
 //   [4..132)   data (AttestationData 128B)
 //   [132..228) signature
-//   [228..236) committee_bits (8B)
-//   [236..)    aggregation_bits (Bitlist)
+//   [228..)    committee_bits (COMMITTEE_BITS_SIZE)
+//   [ATTESTATION_FIXED..) aggregation_bits (Bitlist)
 
-pub const ATTESTATION_FIXED: usize = 236;
+pub const COMMITTEE_BITS_SIZE: usize = MAX_COMMITTEES_PER_SLOT.div_ceil(8);
+pub const ATTESTATION_FIXED: usize = 228 + COMMITTEE_BITS_SIZE;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -299,7 +303,7 @@ impl AttestationView {
         fixed(buf, 132)
     }
     #[inline]
-    pub fn committee_bits(buf: &[u8]) -> &[u8; 8] {
+    pub fn committee_bits(buf: &[u8]) -> &[u8; COMMITTEE_BITS_SIZE] {
         fixed(buf, 228)
     }
     #[inline]
@@ -308,7 +312,10 @@ impl AttestationView {
     }
 
     pub fn check_canonical(buf: &[u8]) -> bool {
-        if buf.len() <= ATTESTATION_FIXED || u32_le(buf, 0) as usize != ATTESTATION_FIXED {
+        if buf.len() <= ATTESTATION_FIXED ||
+            u32_le(buf, 0) as usize != ATTESTATION_FIXED ||
+            !bitvector_ok(Self::committee_bits(buf), MAX_COMMITTEES_PER_SLOT)
+        {
             return false;
         }
         let bits = &buf[ATTESTATION_FIXED..];
@@ -318,6 +325,20 @@ impl AttestationView {
     }
 }
 
+/// `Bitvector[len]`: the padding bits of the last byte are zero.
+#[inline]
+pub(crate) fn bitvector_ok(bits: &[u8], len: usize) -> bool {
+    len.is_multiple_of(8) || bits[len / 8] >> (len % 8) == 0
+}
+
+/// A `Bitvector` of at most 64 bits, as a little-endian word.
+#[inline]
+pub fn bitvector_word<const N: usize>(bits: &[u8; N]) -> u64 {
+    const { assert!(N <= 8) };
+    let mut word = [0; 8];
+    word[..N].copy_from_slice(bits);
+    u64::from_le_bytes(word)
+}
 // -- ProposerSlashing (proposer_slashing) ----------------------------
 //
 // All fixed, exactly 416B. Two SignedBeaconBlockHeaders (208B each).
@@ -450,14 +471,18 @@ impl SyncCommitteeView {
 
 // -- SyncCommitteeContribution --------------------------------------
 //
-// All fixed, exactly 160B.
+// All fixed, exactly 160B on mainnet.
 //   [0..8)     slot
 //   [8..40)    beacon_block_root
 //   [40..48)   subcommittee_index
-//   [48..64)   aggregation_bits (Bitvector[128])
+//   [48..64)   aggregation_bits (Bitvector[SYNC_SUBCOMMITTEE_SIZE])
 //   [64..160)  signature
 
-pub const SYNC_COMMITTEE_CONTRIBUTION_SIZE: usize = 160;
+pub const SYNC_COMMITTEE_SUBNETS: usize = 4;
+pub const SYNC_SUBCOMMITTEE_SIZE: usize = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNETS;
+const _: () = assert!(SYNC_SUBCOMMITTEE_SIZE.is_multiple_of(8));
+pub const SYNC_SUBCOMMITTEE_BITS_SIZE: usize = SYNC_SUBCOMMITTEE_SIZE / 8;
+pub const SYNC_COMMITTEE_CONTRIBUTION_SIZE: usize = 48 + SYNC_SUBCOMMITTEE_BITS_SIZE + 96;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -477,18 +502,20 @@ impl SyncCommitteeContributionView {
         u64_le(buf, 40)
     }
     #[inline]
-    pub fn aggregation_bits(buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) -> &[u8; 16] {
+    pub fn aggregation_bits(
+        buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE],
+    ) -> &[u8; SYNC_SUBCOMMITTEE_BITS_SIZE] {
         fixed(buf, 48)
     }
     #[inline]
     pub fn signature(buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) -> &[u8; 96] {
-        fixed(buf, 64)
+        fixed(buf, 48 + SYNC_SUBCOMMITTEE_BITS_SIZE)
     }
 }
 
 // -- SignedContributionAndProof (sync_committee_contribution_and_proof)
 //
-// All fixed, exactly 360B.
+// All fixed, exactly 360B on mainnet.
 // Outer: { message: ContributionAndProof(264B), signature(96B) }
 // ContributionAndProof: { aggregator_index(8), contribution(160B),
 // selection_proof(96) } SyncCommitteeContribution: { slot(8),
@@ -504,7 +531,8 @@ impl SyncCommitteeContributionView {
 //   [168..264) selection_proof
 //   [264..360) signature (outer)
 
-pub const SIGNED_CONTRIBUTION_AND_PROOF_SIZE: usize = 360;
+const SELECTION_PROOF_AT: usize = 8 + SYNC_COMMITTEE_CONTRIBUTION_SIZE;
+pub const SIGNED_CONTRIBUTION_AND_PROOF_SIZE: usize = SELECTION_PROOF_AT + 96 + 96;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -534,7 +562,9 @@ impl SignedSyncCommitteeProofView {
         SyncCommitteeContributionView::subcommittee_index(Self::contribution(buf))
     }
     #[inline]
-    pub fn aggregation_bits(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> &[u8; 16] {
+    pub fn aggregation_bits(
+        buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE],
+    ) -> &[u8; SYNC_SUBCOMMITTEE_BITS_SIZE] {
         SyncCommitteeContributionView::aggregation_bits(Self::contribution(buf))
     }
     #[inline]
@@ -543,11 +573,11 @@ impl SignedSyncCommitteeProofView {
     }
     #[inline]
     pub fn selection_proof(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> &[u8; 96] {
-        fixed(buf, 168)
+        fixed(buf, SELECTION_PROOF_AT)
     }
     #[inline]
     pub fn signature(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> &[u8; 96] {
-        fixed(buf, 264)
+        fixed(buf, SELECTION_PROOF_AT + 96)
     }
 }
 
@@ -616,21 +646,21 @@ pub const BEACON_BLOCK_FIXED: usize = 8 + 8 + 32 + 32 + 4;
 //                  + sync_aggregate(160) + 9*offset(4) = 396
 //   proposer_slashings:       16 * 416
 //   attester_slashings:       4 + ATTESTER_SLASHING_MAX
-//   attestations:             8*4 + 8 * (236 + Bitlist[MAX_ATTESTING_INDICES])
-//   deposits:                 16 * 1240          (proof 1056 + DepositData 184)
-//   voluntary_exits:          16 * 112
+//   attestations:             8*4 + 8 * (ATTESTATION_FIXED +
+// Bitlist[MAX_ATTESTING_INDICES])   deposits:                 16 * 1240
+// (proof 1056 + DepositData 184)   voluntary_exits:          16 * 112
 //   execution_payload:        528 + 32 + (4 + MAX_BYTES_PER_TRANSACTION)
 //                             * MAX_TRANSACTIONS_PER_PAYLOAD + 16 * 44
 //   bls_to_execution_changes: 16 * 172
 //   blob_kzg_commitments:     4096 * 48
 //   execution_requests:       12 + 8192*192 + 16*76 + 2*116
 pub const SIGNED_BEACON_BLOCK_MAX: usize = SIGNED_BEACON_BLOCK_MIN +
-    396 +
+    BEACON_BLOCK_BODY_FIXED +
     MAX_PROPOSER_SLASHINGS * PROPOSER_SLASHING_SIZE +
     4 +
     ATTESTER_SLASHING_MAX +
     MAX_ATTESTATIONS_ELECTRA * 4 +
-    MAX_ATTESTATIONS_ELECTRA * (236 + MAX_ATTESTING_INDICES / 8 + 1) +
+    MAX_ATTESTATIONS_ELECTRA * (ATTESTATION_FIXED + MAX_ATTESTING_INDICES / 8 + 1) +
     MAX_DEPOSITS * 1240 +
     MAX_VOLUNTARY_EXITS * SIGNED_VOLUNTARY_EXIT_SIZE +
     528 +
@@ -747,8 +777,9 @@ impl SignedBeaconBlockView {
 
 // -- BeaconBlockBody --------------------------------------------------
 //
-// Variable. 13 fields, fixed part 396B; trailing variable region holds the
-// 9 offset-pointed lists / containers.
+// Variable. 13 fields, fixed part 396B on mainnet; trailing variable region
+// holds the 9 offset-pointed lists / containers. Positions past
+// `sync_aggregate` shift with the preset's `SYNC_COMMITTEE_SIZE`.
 //
 //   [0..96)    randao_reveal
 //   [96..168)  eth1_data (72B)
@@ -765,7 +796,9 @@ impl SignedBeaconBlockView {
 //   [392..396) offset: execution_requests
 //   [396..)    variable region
 
-pub const BEACON_BLOCK_BODY_FIXED: usize = 396;
+const BODY_SYNC_AGGREGATE_AT: usize = 220;
+const BODY_AFTER_SYNC_AGGREGATE: usize = BODY_SYNC_AGGREGATE_AT + SYNC_AGGREGATE_SIZE;
+pub const BEACON_BLOCK_BODY_FIXED: usize = BODY_AFTER_SYNC_AGGREGATE + 4 * 4;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -805,24 +838,24 @@ impl BeaconBlockBodyFuluView {
         u32_le(buf, 216)
     }
     #[inline]
-    pub fn sync_aggregate(buf: &[u8]) -> &[u8; BLOCK_SYNC_AGGREGATE_SIZE] {
-        fixed(buf, 220)
+    pub fn sync_aggregate(buf: &[u8]) -> &[u8; SYNC_AGGREGATE_SIZE] {
+        fixed(buf, BODY_SYNC_AGGREGATE_AT)
     }
     #[inline]
     pub fn execution_payload_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 380)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE)
     }
     #[inline]
     pub fn bls_to_execution_changes_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 384)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE + 4)
     }
     #[inline]
     pub fn blob_kzg_commitments_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 388)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE + 8)
     }
     #[inline]
     pub fn execution_requests_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 392)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE + 12)
     }
     #[inline]
     pub fn blob_kzg_commitments(buf: &[u8]) -> Option<&[u8]> {
@@ -834,7 +867,17 @@ impl BeaconBlockBodyFuluView {
         buf.get(start..end)
     }
 
-    pub const VARIABLE_OFFSETS: [usize; 9] = [200, 204, 208, 212, 216, 380, 384, 388, 392];
+    pub const VARIABLE_OFFSETS: [usize; 9] = [
+        200,
+        204,
+        208,
+        212,
+        216,
+        BODY_AFTER_SYNC_AGGREGATE,
+        BODY_AFTER_SYNC_AGGREGATE + 4,
+        BODY_AFTER_SYNC_AGGREGATE + 8,
+        BODY_AFTER_SYNC_AGGREGATE + 12,
+    ];
 
     pub fn check_canonical(body: &[u8]) -> bool {
         if body.len() < BEACON_BLOCK_BODY_FIXED ||
@@ -883,14 +926,14 @@ pub(crate) fn variable_field<'a>(buf: &'a [u8], positions: &[usize], i: usize) -
 // AggregateAndProof: { aggregator_index(8), aggregate: Attestation(var),
 // selection_proof(96) }   Fixed part: 8 + offset(4) + 96 = 108B
 // Attestation: { aggregation_bits(var), data(128), signature(96),
-// committee_bits(8) }   Fixed part: offset(4) + 128 + 96 + 8 = 236B
+// committee_bits } Fixed part: ATTESTATION_FIXED (236B on mainnet)
 //
 //   [0..4)     offset to message (== 100)
 //   [4..100)   signature (outer)
 //   [100..108) aggregator_index
 //   [108..112) offset to aggregate (rel. to 100, == 108)
 //   [112..208) selection_proof
-//   [208..212) offset to aggregation_bits (rel. to 208, == 236)
+//   [208..212) offset to aggregation_bits (rel. to 208, == ATTESTATION_FIXED)
 //   [212..340) aggregate.data (AttestationData 128B)
 //     [212..220) slot
 //     [220..228) index (always 0 post-Electra)
@@ -900,13 +943,14 @@ pub(crate) fn variable_field<'a>(buf: &'a [u8], positions: &[usize], i: usize) -
 //     [300..308) target.epoch
 //     [308..340) target.root
 //   [340..436) aggregate.signature
-//   [436..444) committee_bits
-//   [444..)    aggregation_bits (variable)
+//   [436..)    committee_bits (COMMITTEE_BITS_SIZE)
+//   [SIGNED_AGG_PROOF_MIN..) aggregation_bits (variable)
 
-pub const SIGNED_AGG_PROOF_MIN: usize = 444;
+pub const SIGNED_AGG_PROOF_MIN: usize = 436 + COMMITTEE_BITS_SIZE;
 
 // aggregation_bits: Bitlist[MAX_ATTESTING_INDICES], ceil((N+1)/8) bytes.
 pub const SIGNED_AGG_PROOF_MAX: usize = SIGNED_AGG_PROOF_MIN + MAX_ATTESTING_INDICES / 8 + 1;
+const _: () = assert!(SIGNED_AGG_PROOF_MAX == MAX_SIGNED_AGGREGATE_AND_PROOF_SIZE);
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -958,7 +1002,7 @@ impl SignedAggregateAndProofView {
         fixed(buf, 340)
     }
     #[inline]
-    pub fn agg_committee_bits(buf: &[u8]) -> &[u8; 8] {
+    pub fn agg_committee_bits(buf: &[u8]) -> &[u8; COMMITTEE_BITS_SIZE] {
         fixed(buf, 436)
     }
     #[inline]
@@ -967,7 +1011,7 @@ impl SignedAggregateAndProofView {
     }
     #[inline]
     pub fn agg_aggregation_bits(buf: &[u8]) -> &[u8] {
-        &buf[444..]
+        &buf[SIGNED_AGG_PROOF_MIN..]
     }
     /// Inner Attestation SSZ slice (variable, runs to end-of-buf). Used as
     /// input to the AggregateAndProof container hash tree root.
@@ -1010,6 +1054,7 @@ pub const ATTESTER_SLASHING_MIN: usize = 8 + 228 + 228; // 464
 
 // Two IndexedAttestations; each: 228B fixed + MAX_ATTESTING_INDICES * 8B.
 pub const ATTESTER_SLASHING_MAX: usize = 8 + 2 * (228 + MAX_ATTESTING_INDICES * 8);
+const _: () = assert!(ATTESTER_SLASHING_MAX == MAX_ATTESTER_SLASHING_SIZE);
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -1333,16 +1378,17 @@ impl LightClientHeaderView {
 //   [4..8)     offset to finalized_header (>= 400 + LCH_MIN)
 //   [8..232)   finality_branch
 //                (Vector[Bytes32, FINALITY_BRANCH_DEPTH=7] = 224B)
-//   [232..392) sync_aggregate (160B)
-//     [232..296) sync_committee_bits (Bitvector[512] = 64B)
+//   [232..392) sync_aggregate (SYNC_AGGREGATE_SIZE)
+//     [232..296) sync_committee_bits (SYNC_COMMITTEE_BITS_SIZE)
 //     [296..392) sync_committee_signature (96B)
 //   [392..400) signature_slot
+// Positions past `sync_committee_bits` are mainnet's; they shift with the
+// preset's `SYNC_COMMITTEE_SIZE`.
 //   [400..fin_off)  attested_header
 //   [fin_off..)     finalized_header
 
 pub const FINALITY_BRANCH_DEPTH: usize = 7;
 pub const FINALITY_BRANCH_SIZE: usize = FINALITY_BRANCH_DEPTH * 32;
-pub const SYNC_AGGREGATE_SIZE: usize = SYNC_COMMITTEE_SIZE / 8 + 96; // 160
 pub const LC_FINALITY_UPDATE_FIXED: usize = 4 + 4 + FINALITY_BRANCH_SIZE + SYNC_AGGREGATE_SIZE + 8;
 pub const LIGHT_CLIENT_FINALITY_UPDATE_MIN: usize =
     LC_FINALITY_UPDATE_FIXED + 2 * LIGHT_CLIENT_HEADER_MIN;
@@ -1359,16 +1405,16 @@ impl LightClientFinalityUpdateView {
         fixed(buf, 8)
     }
     #[inline]
-    pub fn sync_committee_bits(buf: &[u8]) -> &[u8; SYNC_COMMITTEE_SIZE / 8] {
+    pub fn sync_committee_bits(buf: &[u8]) -> &[u8; SYNC_COMMITTEE_BITS_SIZE] {
         fixed(buf, 232)
     }
     #[inline]
     pub fn sync_committee_signature(buf: &[u8]) -> &[u8; 96] {
-        fixed(buf, 296)
+        fixed(buf, 232 + SYNC_COMMITTEE_BITS_SIZE)
     }
     #[inline]
     pub fn signature_slot(buf: &[u8]) -> u64 {
-        u64_le(buf, 392)
+        u64_le(buf, 232 + SYNC_AGGREGATE_SIZE)
     }
     #[inline]
     fn finalized_off(buf: &[u8]) -> usize {
@@ -1433,16 +1479,16 @@ pub struct LightClientOptimisticUpdateView;
 
 impl LightClientOptimisticUpdateView {
     #[inline]
-    pub fn sync_committee_bits(buf: &[u8]) -> &[u8; SYNC_COMMITTEE_SIZE / 8] {
+    pub fn sync_committee_bits(buf: &[u8]) -> &[u8; SYNC_COMMITTEE_BITS_SIZE] {
         fixed(buf, 4)
     }
     #[inline]
     pub fn sync_committee_signature(buf: &[u8]) -> &[u8; 96] {
-        fixed(buf, 68)
+        fixed(buf, 4 + SYNC_COMMITTEE_BITS_SIZE)
     }
     #[inline]
     pub fn signature_slot(buf: &[u8]) -> u64 {
-        u64_le(buf, 164)
+        u64_le(buf, 4 + SYNC_AGGREGATE_SIZE)
     }
     /// Raw LightClientHeader bytes for `attested_header` — feed to
     /// `LightClientHeaderView`.
@@ -1818,13 +1864,12 @@ impl PayloadAttestationDataView {
 
 // -- PayloadAttestation (beacon block body payload_attestations element) --
 //
-// All fixed, 202B.
-//   [0..64)    aggregation_bits (Bitvector[PTC_SIZE=512])
+// All fixed, 202B on mainnet.
+//   [0..64)    aggregation_bits (Bitvector[PTC_SIZE])
 //   [64..106)  data (PayloadAttestationData 42B)
 //   [106..202) signature
 
-// aggregation_bits: Bitvector[PTC_SIZE] where PTC_SIZE = 512.
-pub const PTC_AGGREGATION_BITS_SIZE: usize = 512 / 8;
+pub const PTC_AGGREGATION_BITS_SIZE: usize = PTC_SIZE.div_ceil(8);
 pub const PAYLOAD_ATTESTATION_SIZE: usize =
     PTC_AGGREGATION_BITS_SIZE + PAYLOAD_ATTESTATION_DATA_SIZE + 96;
 
@@ -2278,7 +2323,8 @@ impl DataColumnSidecarGloasView {
 // [Modified in Gloas] `execution_payload`, `blob_kzg_commitments`, and
 // `execution_requests` removed; `signed_execution_payload_bid`,
 // `payload_attestations`, and `parent_execution_requests` added. Fixed part
-// 396B (the four post-`sync_aggregate` offset slots are unchanged in position).
+// `BEACON_BLOCK_BODY_FIXED` (the four post-`sync_aggregate` offset slots are
+// unchanged in position).
 //   [0..96)    randao_reveal
 //   [96..168)  eth1_data (72B)
 //   [168..200) graffiti
@@ -2331,24 +2377,24 @@ impl BeaconBlockBodyGloasView {
         u32_le(buf, 216)
     }
     #[inline]
-    pub fn sync_aggregate(buf: &[u8]) -> &[u8; BLOCK_SYNC_AGGREGATE_SIZE] {
-        fixed(buf, 220)
+    pub fn sync_aggregate(buf: &[u8]) -> &[u8; SYNC_AGGREGATE_SIZE] {
+        fixed(buf, BODY_SYNC_AGGREGATE_AT)
     }
     #[inline]
     pub fn bls_to_execution_changes_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 380)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE)
     }
     #[inline]
     pub fn signed_execution_payload_bid_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 384)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE + 4)
     }
     #[inline]
     pub fn payload_attestations_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 388)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE + 8)
     }
     #[inline]
     pub fn parent_execution_requests_offset(buf: &[u8]) -> u32 {
-        u32_le(buf, 392)
+        u32_le(buf, BODY_AFTER_SYNC_AGGREGATE + 12)
     }
 }
 
@@ -2497,11 +2543,13 @@ impl WithdrawalView {
     }
 }
 
-// -- SyncAggregate (160B; in BeaconBlockBody) -------------------------
-//   [0..64)   sync_committee_bits (Bitvector[512] = 64B)
+// -- SyncAggregate (160B on mainnet; in BeaconBlockBody) --------------
+//   [0..64)   sync_committee_bits (Bitvector[SYNC_COMMITTEE_SIZE])
 //   [64..160) sync_committee_signature
 
-pub const BLOCK_SYNC_AGGREGATE_SIZE: usize = 160;
+pub const SYNC_COMMITTEE_BITS_SIZE: usize = SYNC_COMMITTEE_SIZE / 8;
+const _: () = assert!(SYNC_COMMITTEE_SIZE.is_multiple_of(8));
+pub const SYNC_AGGREGATE_SIZE: usize = SYNC_COMMITTEE_BITS_SIZE + 96;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -2509,12 +2557,12 @@ pub struct SyncAggregateView;
 
 impl SyncAggregateView {
     #[inline]
-    pub fn sync_committee_bits(buf: &[u8; BLOCK_SYNC_AGGREGATE_SIZE]) -> &[u8; 64] {
+    pub fn sync_committee_bits(buf: &[u8; SYNC_AGGREGATE_SIZE]) -> &[u8; SYNC_COMMITTEE_BITS_SIZE] {
         fixed(buf, 0)
     }
     #[inline]
-    pub fn sync_committee_signature(buf: &[u8; BLOCK_SYNC_AGGREGATE_SIZE]) -> &[u8; 96] {
-        fixed(buf, 64)
+    pub fn sync_committee_signature(buf: &[u8; SYNC_AGGREGATE_SIZE]) -> &[u8; 96] {
+        fixed(buf, SYNC_COMMITTEE_BITS_SIZE)
     }
 }
 

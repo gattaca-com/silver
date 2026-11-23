@@ -36,7 +36,7 @@ impl LoadedState {
 
 pub fn load_state(path: &Path) -> LoadedState {
     anchor(
-        BeaconState::decompose(&snappy_decode(path), &SpecConfig::mainnet(), None)
+        BeaconState::decompose(&snappy_decode(path), &SpecConfig::reference(), None)
             .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display())),
     )
 }
@@ -46,7 +46,7 @@ pub fn load_state(path: &Path) -> LoadedState {
 /// routing in `BeaconState::decompose`; the harness knows the layout is Gloas.
 pub fn load_state_gloas(path: &Path) -> LoadedState {
     anchor(
-        BeaconState::decompose_gloas(&snappy_decode(path), &SpecConfig::mainnet(), None)
+        BeaconState::decompose_gloas(&snappy_decode(path), &SpecConfig::reference(), None)
             .unwrap_or_else(|e| panic!("{}: decompose_gloas failed: {e}", path.display())),
     )
 }

@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+silver_preset.workspace = true
 silver_state_hashing.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true

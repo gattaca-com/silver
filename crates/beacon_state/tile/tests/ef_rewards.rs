@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 mod ef_common;
 
-use ef_common::{load_state, load_state_gloas, snappy_decode, spec_tests_dir};
+use ef_common::{load_state, load_state_gloas, preset_tests_dir, snappy_decode};
 use silver_beacon_state::stf;
 use silver_beacon_state_data::{Epoch, EpochView, StateWriterView};
 
@@ -148,7 +148,7 @@ fn run_rewards_handler(handler_name: &str) {
 }
 
 fn run_rewards_handler_fork(fork: &str, handler_name: &str) {
-    let base = spec_tests_dir().join(format!("tests/mainnet/{fork}/rewards")).join(handler_name);
+    let base = preset_tests_dir().join(format!("{fork}/rewards")).join(handler_name);
     let loader = if fork == "gloas" { load_state_gloas } else { load_state };
     let Ok(suites) = fs::read_dir(&base) else {
         eprintln!("{handler_name}: no test dir, skipping");

@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{
-    compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode, spec_tests_dir,
+    compare_states, iter_test_cases, load_state, load_state_gloas, preset_tests_dir, snappy_decode,
 };
 use silver_beacon_state::stf::{self, BlockInput, BlockVotes, ShufflingRef, StfScratch};
 use silver_beacon_state_data::{
@@ -15,12 +15,12 @@ use silver_common::{ssz_hash::HashedBody, ssz_view::SignedBeaconBlockView};
 
 #[test]
 fn fulu_sanity_blocks() {
-    sanity_blocks_fork("fulu", SpecConfig::mainnet());
+    sanity_blocks_fork("fulu", SpecConfig::reference());
 }
 
 #[test]
 fn gloas_sanity_blocks() {
-    let mut cfg = SpecConfig::mainnet();
+    let mut cfg = SpecConfig::reference();
     cfg.gloas_fork_epoch = 0;
     sanity_blocks_fork("gloas", cfg);
 }
@@ -30,9 +30,9 @@ fn gloas_sanity_blocks() {
 /// `finality` blocks carry the operations a packed body will.
 #[test]
 fn fulu_state_roots_match_the_proposal_path() {
-    let cfg = SpecConfig::mainnet();
+    let cfg = SpecConfig::reference();
     for suite in ["sanity/blocks", "random/random", "finality/finality"] {
-        let base = spec_tests_dir().join("tests/mainnet/fulu").join(suite);
+        let base = preset_tests_dir().join("fulu").join(suite);
         let mut checked = 0;
         for (name, dir) in &iter_test_cases(&base) {
             if !dir.join("post.ssz_snappy").exists() {
@@ -95,7 +95,7 @@ fn proposal_state_root(
 }
 
 fn sanity_blocks_fork(fork: &str, cfg: SpecConfig) {
-    let base = spec_tests_dir().join(format!("tests/mainnet/{fork}/sanity/blocks"));
+    let base = preset_tests_dir().join(format!("{fork}/sanity/blocks"));
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
         eprintln!("sanity_blocks[{fork}]: no test cases, skipping");

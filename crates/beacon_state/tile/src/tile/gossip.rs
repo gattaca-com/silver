@@ -9,7 +9,6 @@ use silver_beacon_state_data::{
     MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
     SYNC_SUBCOMMITTEE_SIZE, ShufflingId, Slot, StateId, StateReadView, SyncSubcommittee,
     bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
-    gloas::PTC_SIZE,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BroadcastValidation, EngineNewPayloadEnvelopeReq, EngineReq,
@@ -47,7 +46,7 @@ use crate::{
     counters::BeaconStateCounters,
     error::{EnvelopeError, VoluntaryExitError},
     fork_choice::{
-        ExecutionStatus, PayloadAxis, compute_shuffling_dependent_slot,
+        ExecutionStatus, PTC_MASK_WORDS, PayloadAxis, compute_shuffling_dependent_slot,
         compute_shuffling_lookahead_start_slot,
     },
     merkle, ssz_hash,
@@ -58,8 +57,6 @@ use crate::{
 };
 
 pub(super) const VOTE_BATCH_CAP: usize = 1024;
-
-pub(super) const PTC_MASK_WORDS: usize = PTC_SIZE.div_ceil(64);
 
 pub(super) struct PreparedAttestation {
     buf: [u8; SINGLE_ATT_SIZE],

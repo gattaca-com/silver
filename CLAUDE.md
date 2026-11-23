@@ -45,13 +45,16 @@ Use the `justfile` — don't invent your own cargo invocations:
 - `just fmt` / `just fmt-check` — **always format with this, never `cargo fmt`.** It pins
   the nightly that honours `rustfmt.toml`; stable `cargo fmt` ignores the nightly-only
   options and churns the whole workspace.
-- `just clippy` — `--all-features -D warnings` (with `collapsible_if` allowed).
+- `just clippy` — every feature but `silver_preset/minimal`, `-D warnings` (with
+  `collapsible_if` allowed). `just clippy-minimal` builds every target on the minimal
+  preset; `just test-minimal` runs the EF vectors on it.
 - `just test` / `just nextest` — mirrors CI: every crate, with
   `silver_beacon_state/ef_tests` and `silver_e2e/lh-client` features on.
 - `just proto` — after adding or editing a `.proto`; see `docs/protobuf.md`.
-- **Verify with `--all-features`.** Feature-gated test binaries (`ef_tests`, e2e
-  `lh-client`) are invisible to a plain `cargo check --all-targets`; a change that compiles
-  without features can still break them.
+- **Verify with the features `just clippy` lists, not `--all-features`.** Feature-gated test
+  binaries (`ef_tests`, e2e `lh-client`) are invisible to a plain `cargo check
+  --all-targets`; a change that compiles without features can still break them.
+  `--all-features` turns on `silver_preset/minimal`, which swaps the whole preset.
 
 ## Code style — the two things that matter most here
 

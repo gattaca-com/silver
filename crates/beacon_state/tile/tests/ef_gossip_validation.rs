@@ -17,8 +17,8 @@ use std::{
 };
 
 use ef_common::{
-    case_file, ef_tile_with_spec, init_tracing, iter_test_cases, parse_root, snappy_decode,
-    spec_tests_dir,
+    case_file, ef_tile_with_spec, init_tracing, iter_test_cases, parse_root, preset_tests_dir,
+    snappy_decode,
 };
 use flux::spine::SpineAdapter;
 use serde::Deserialize;
@@ -108,7 +108,7 @@ struct Message {
 }
 
 fn networking_dir(fork: &str) -> PathBuf {
-    spec_tests_dir().join("tests").join("mainnet").join(fork).join("networking")
+    preset_tests_dir().join(fork).join("networking")
 }
 
 /// Mainnet with the fork under test active from genesis, plus the case's own
@@ -116,7 +116,7 @@ fn networking_dir(fork: &str) -> PathBuf {
 /// the EF file writes addresses and the terminal difficulty as bare integers
 /// wider than any YAML number type, so the whole file does not load.
 fn case_spec(dir: &Path, is_gloas: bool) -> SpecConfig {
-    let mut spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() };
+    let mut spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::reference() };
     if is_gloas {
         spec.gloas_fork_epoch = 0;
     }

@@ -6,6 +6,7 @@ use secp256k1::{
     hashes::{Hash, sha256},
 };
 use serde::{Deserialize, Serialize};
+use silver_preset::SHUFFLE_ROUND_COUNT;
 
 use super::{Enr, digest, keys};
 use crate::PeerId;
@@ -128,7 +129,6 @@ pub fn attnet_subnets(attnets: [u8; 8]) -> impl Iterator<Item = u64> {
 /// Spec phase0 `compute_shuffled_index` — single-index swap-or-not.
 fn compute_shuffled_index(mut index: u64, index_count: u64, seed: &[u8; 32]) -> u64 {
     debug_assert!(index < index_count);
-    const SHUFFLE_ROUND_COUNT: u8 = 90;
     for round in 0..SHUFFLE_ROUND_COUNT {
         let mut buf = [0u8; 33];
         buf[..32].copy_from_slice(seed);

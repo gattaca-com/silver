@@ -19,13 +19,12 @@ use silver_common::{
     block_root_fulu,
     ssz_hash::{BlockFork, HashedBody},
     ssz_view::{
-        ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE,
-        BYTES_PER_KZG_COMMITMENT, EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED,
-        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_AGG_PROOF_MIN,
-        SIGNED_BEACON_BLOCK_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedAggregateAndProofView,
-        SignedBeaconBlockView, SignedSyncCommitteeProofView, SignedVoluntaryExitView,
-        SingleAttestationView, StatusView,
+        ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
+        EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
+        ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
+        SINGLE_ATT_SIZE, SYNC_AGGREGATE_SIZE, SignedAggregateAndProofView, SignedBeaconBlockView,
+        SignedSyncCommitteeProofView, SignedVoluntaryExitView, SingleAttestationView, StatusView,
     },
     test_util::ShmemDir,
 };
@@ -33,7 +32,10 @@ use silver_common::{
 use silver_common::{ProducedBlock, SidecarBidRequest, SidecarBidResponse};
 use silver_config::EngineConfig;
 use silver_slashing::{Admission, Selection};
-use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
+use silver_ssz::ssz_view::{
+    EXECUTION_PAYLOAD_ENVELOPE_MIN, SYNC_SUBCOMMITTEE_BITS_SIZE, SyncCommitteeContributionView,
+    bitvector_word,
+};
 
 #[cfg(feature = "ef_tests")]
 use super::block_production::Operations;
@@ -47,7 +49,9 @@ use super::{
 };
 use crate::{
     error::{PrecheckError, RejectReason},
-    fork_choice::{BlockImport, PROPOSER_SCORE_BOOST_PERCENT, PayloadAxis, PayloadStatus},
+    fork_choice::{
+        BlockImport, PROPOSER_SCORE_BOOST_PERCENT, PTC_MASK_WORDS, PayloadAxis, PayloadStatus,
+    },
     merkle, ssz_hash,
     stf::{self, VoteTarget},
     test_signing,
@@ -907,7 +911,12 @@ impl HeadRig {
     /// Bypasses gossip validation and supplies the recomputation normally
     /// performed after committing PTC votes.
     fn ptc_majority(&mut self, block_root: B256) {
-        self.tile.fork_choice.record_ptc_votes(&block_root, &[u64::MAX; 8], true, true);
+        self.tile.fork_choice.record_ptc_votes(
+            &block_root,
+            &[u64::MAX; PTC_MASK_WORDS],
+            true,
+            true,
+        );
         self.tile.recompute_head(|_| {});
     }
 
@@ -1594,7 +1603,8 @@ fn sanity_fixture(name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 #[cfg(feature = "ef_tests")]
 fn sanity_fixture_of(fork: &str, name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("consensus-spec-tests/tests/mainnet")
+        .join("consensus-spec-tests/tests")
+        .join(silver_preset::PRESET_BASE)
         .join(fork)
         .join("sanity/blocks/pyspec_tests")
         .join(name);
@@ -1755,9 +1765,10 @@ fn a_replayed_block_publishes_its_own_head_metadata() {
 #[cfg(feature = "ef_tests")]
 #[test]
 fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-        "consensus-spec-tests/tests/mainnet/fulu/sanity/slots/pyspec_tests/slots_2/post.ssz_snappy",
-    );
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("consensus-spec-tests/tests")
+        .join(silver_preset::PRESET_BASE)
+        .join("fulu/sanity/slots/pyspec_tests/slots_2/post.ssz_snappy");
     let raw = fs::read(&path)
         .unwrap_or_else(|e| panic!("{}: {e} (run `just ef-tests-download`)", path.display()));
     let ssz = snap::Decoder::new().decompress_vec(&raw).expect("snappy post");
@@ -3728,9 +3739,12 @@ fn sync_message_batch_applies_and_marks_seen() {
     assert!(tile.seen_sync_msgs[1].contains(wall, 0));
     let contribution =
         tile.sync_contribution_pool.contribution_ssz(wall, 1, bbr).expect("pooled contribution");
-    // The test state's default current committee repeats validator 0 in all
-    // 128 positions of each subcommittee.
-    assert_eq!(SyncCommitteeContributionView::aggregation_bits(&contribution), &[0xff; 16]);
+    // The test state's default current committee repeats validator 0 in every
+    // position of each subcommittee.
+    assert_eq!(
+        SyncCommitteeContributionView::aggregation_bits(&contribution),
+        &[0xff; SYNC_SUBCOMMITTEE_BITS_SIZE]
+    );
     assert!(tile.votes.batch.is_empty() && tile.votes.pending.is_empty());
     assert_eq!(non_block_relays(&mut adapter), [GossipTopic::SyncCommittee(1)]);
 }
@@ -3913,7 +3927,7 @@ fn sync_contribution_accepted_then_superset_ignored() {
     assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::AlreadySeen));
 
     // No messages were seen, so a block on `bbr` carries the contribution alone.
-    let mut aggregate = [0; BLOCK_SYNC_AGGREGATE_SIZE];
+    let mut aggregate = [0; SYNC_AGGREGATE_SIZE];
     tile.sync_contribution_pool.write_sync_aggregate(slot, bbr, &mut aggregate);
     let bits_at = sub as usize * SYNC_SUBCOMMITTEE_SIZE / 8;
     let signed = buf[..].try_into().unwrap();
@@ -7189,7 +7203,7 @@ fn pooled_attestations_land_in_the_produced_block() {
     let attestation = &attestations[4..];
     assert_eq!(&attestations[..4], &4u32.to_le_bytes(), "one attestation");
     assert_eq!(AttestationView::data(attestation).as_bytes(), &data, "not the wrong source");
-    assert_eq!(AttestationView::committee_bits(attestation), &1u64.to_le_bytes());
+    assert_eq!(bitvector_word(AttestationView::committee_bits(attestation)), 1);
 
     let view = tile.state.read_view(parent);
     let shuffling = tile.shuffling_cache.for_block(&view, epoch).unwrap();

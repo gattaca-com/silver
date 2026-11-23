@@ -4,14 +4,13 @@ use std::fs;
 
 mod ef_common;
 
-use ef_common::spec_tests_dir;
+use ef_common::preset_tests_dir;
 use silver_common::{NUMBER_OF_CUSTODY_GROUPS, NodeId};
 use silver_ssz::ssz_view::NUMBER_OF_COLUMNS;
 
 #[test]
 fn fulu_get_custody_groups() {
-    let base =
-        spec_tests_dir().join("tests/mainnet/fulu/networking/get_custody_groups/pyspec_tests");
+    let base = preset_tests_dir().join("fulu/networking/get_custody_groups/pyspec_tests");
     let Ok(cases) = fs::read_dir(&base) else {
         eprintln!("get_custody_groups: no test cases, skipping");
         return;
@@ -51,8 +50,8 @@ fn fulu_get_custody_groups() {
 
 #[test]
 fn fulu_compute_columns_for_custody_group() {
-    let base = spec_tests_dir()
-        .join("tests/mainnet/fulu/networking/compute_columns_for_custody_group/pyspec_tests");
+    let base =
+        preset_tests_dir().join("fulu/networking/compute_columns_for_custody_group/pyspec_tests");
     let Ok(cases) = fs::read_dir(&base) else {
         eprintln!("compute_columns_for_custody_group: no test cases, skipping");
         return;

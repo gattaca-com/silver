@@ -104,7 +104,7 @@ impl PtcDuty {
 mod tests {
     use silver_beacon_state_data::{
         BeaconBlockHeader, BeaconState, BeaconStateOwner, EpochState, EpochStateFinalized, Fork,
-        SlotState, SlotStateFinalized, SlotStateGroup, SpecConfig, ValSeed,
+        PTC_SIZE, SlotState, SlotStateFinalized, SlotStateGroup, SpecConfig, ValSeed,
         gloas::{GLOAS_FORK_VERSION, zeroed_ptc_window},
     };
     use silver_common::SyncUpdate;
@@ -143,7 +143,7 @@ mod tests {
         let mut window = zeroed_ptc_window();
         window[SPE + 3][10] = 7;
         window[SPE + 3][11] = 7;
-        window[SPE + 5][20] = 7;
+        window[SPE + 5][PTC_SIZE - 1] = 7;
         window[2 * SPE][0] = 42;
         window[4][0] = 9;
 

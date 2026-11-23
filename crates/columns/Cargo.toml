@@ -28,5 +28,6 @@ workspace = true
 c-kzg.workspace = true
 silver_control.workspace = true
 silver_common = { workspace = true, features = ["test-util"] }
+silver_preset.workspace = true
 rand.workspace = true
 snap.workspace = true

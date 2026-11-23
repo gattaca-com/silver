@@ -9,8 +9,10 @@ use std::{
 use serde_yml::Value;
 use silver_common::ssz_view::*;
 
-fn spec_tests_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
+fn preset_tests_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("consensus-spec-tests/tests")
+        .join(silver_preset::PRESET_BASE)
 }
 
 fn snappy_decode(path: &Path) -> Vec<u8> {
@@ -25,12 +27,7 @@ fn cases_for(container: &str) -> Vec<(PathBuf, Vec<u8>, Value)> {
 }
 
 fn cases_for_fork(fork: &str, container: &str) -> Vec<(PathBuf, Vec<u8>, Value)> {
-    let dir = spec_tests_dir()
-        .join("tests/mainnet")
-        .join(fork)
-        .join("ssz_static")
-        .join(container)
-        .join("ssz_random");
+    let dir = preset_tests_dir().join(fork).join("ssz_static").join(container).join("ssz_random");
     let mut dirs: Vec<PathBuf> = fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()).filter(|p| p.is_dir()))
@@ -209,7 +206,7 @@ fn signed_contribution_and_proof() {
         // Bitvector[SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 128] → 16 B
         assert_eq!(
             SignedSyncCommitteeProofView::aggregation_bits(buf)[..],
-            b(&c["aggregation_bits"], 16)[..]
+            b(&c["aggregation_bits"], SYNC_SUBCOMMITTEE_BITS_SIZE)[..]
         );
         assert_eq!(
             *SignedSyncCommitteeProofView::contribution_signature(buf),
@@ -279,12 +276,15 @@ fn signed_aggregate_and_proof() {
         let d = &a["data"];
 
         // Layout invariants: outer message offset 100, inner aggregate offset
-        // 108 (rel. to 100), aggregation_bits offset 236 (rel. to 208).
+        // 108 (rel. to 100), aggregation_bits offset ATTESTATION_FIXED (rel. to 208).
         // `check_size` enforces all three.
         assert!(SignedAggregateAndProofView::check_size(buf), "{}", _case.display());
         assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 100);
         assert_eq!(u32::from_le_bytes(buf[108..112].try_into().unwrap()), 108);
-        assert_eq!(u32::from_le_bytes(buf[208..212].try_into().unwrap()), 236);
+        assert_eq!(
+            u32::from_le_bytes(buf[208..212].try_into().unwrap()) as usize,
+            ATTESTATION_FIXED
+        );
         for off in [0, 108, 208] {
             let mut bad = bytes.clone();
             bad[off] = bad[off].wrapping_add(1);
@@ -311,7 +311,7 @@ fn signed_aggregate_and_proof() {
         assert_eq!(*SignedAggregateAndProofView::agg_signature(buf), b96(&a["signature"]));
         assert_eq!(
             SignedAggregateAndProofView::agg_committee_bits(buf)[..],
-            b(&a["committee_bits"], 8)[..]
+            b(&a["committee_bits"], COMMITTEE_BITS_SIZE)[..]
         );
         assert_eq!(
             SignedAggregateAndProofView::agg_aggregation_bits(buf),

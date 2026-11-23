@@ -1,12 +1,10 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, ShufflingId, Slot,
+    B256, Epoch, MIN_SEED_LOOKAHEAD, PTC_SIZE, SLOTS_PER_EPOCH, ShufflingId, Slot,
 };
 use silver_common::PayloadResolution;
 
-use super::{
-    ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, ROOT, node::PTC_SIZE,
-};
+use super::{ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, ROOT};
 
 impl ForkChoice {
     /// Fold `self.weight_deltas` (staged by the caller) into the node weights.
