@@ -18,6 +18,7 @@ silver_gossip.workspace = true
 silver_log.workspace = true
 silver_network.workspace = true
 silver_peer.workspace = true
+silver_preset.workspace = true
 silver_storage.workspace = true
 silver_httpcore.workspace = true
 
@@ -50,4 +51,7 @@ crypto_simd = ["silver_beacon_state/crypto_simd"]
 # perf-{fn} queues (dev; needs `sudo sysctl kernel.perf_event_paranoid=2`).
 # Surfer picks the queues up when present; non-perf builds are unaffected.
 perf = ["silver_common/perf"]
+# The spec's minimal preset in place of mainnet's. Preset values size types, so
+# a binary runs exactly one.
+minimal = ["silver_preset/minimal"]
 thread_park = ["flux/park", "silver_common/thread_park", "silver_network/thread_park"]

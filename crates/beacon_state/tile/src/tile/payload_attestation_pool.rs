@@ -4,7 +4,7 @@ use silver_common::ssz_view::{
     MAX_PAYLOAD_ATTESTATIONS, PAYLOAD_ATTESTATION_DATA_SIZE, PAYLOAD_ATTESTATION_SIZE,
 };
 
-use super::gossip::PTC_MASK_WORDS;
+use crate::fork_choice::PTC_MASK_WORDS;
 
 /// Verified payload attestation messages, aggregated per
 /// `PayloadAttestationData`. A slot's PTC splits over at most four data

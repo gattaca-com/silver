@@ -2,15 +2,14 @@
 
 mod ef_common;
 
-use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
+use ef_common::{compare_states, iter_test_cases, load_state, preset_tests_dir};
 use silver_beacon_state::stf;
 
 /// EF `fork` vectors for the Fulu → Gloas upgrade: decode the Fulu `pre`, apply
 /// `upgrade_to_gloas`, and check the result hashes to the Gloas `post`.
 #[test]
 fn gloas_fork() {
-    let base =
-        spec_tests_dir().join("tests").join("mainnet").join("gloas").join("fork").join("fork");
+    let base = preset_tests_dir().join("gloas").join("fork").join("fork");
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
         eprintln!("gloas_fork: no test cases at {}, skipping", base.display());

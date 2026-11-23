@@ -12,14 +12,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ef_common::{case_file, ef_tile, iter_test_cases, parse_root, snappy_decode, spec_tests_dir};
+use ef_common::{case_file, ef_tile, iter_test_cases, parse_root, preset_tests_dir, snappy_decode};
 use serde_yml::{Mapping, Value};
 use silver_beacon_state::{BeaconStateTile, ExecutionStatus};
 use silver_beacon_state_data::{B256, BeaconState, SpecConfig};
 use silver_common::PayloadValidationStatus;
 
 fn optimistic_dir() -> PathBuf {
-    spec_tests_dir().join("tests").join("mainnet").join("fulu").join("sync").join("optimistic")
+    preset_tests_dir().join("fulu").join("sync").join("optimistic")
 }
 
 /// `SYNCING`/`ACCEPTED` keep the block optimistic (no verdict to apply).
@@ -50,7 +50,7 @@ fn node_root_by_exec(tile: &BeaconStateTile, exec: &B256) -> Option<B256> {
 
 fn run_case(name: &str, dir: &Path) {
     let anchor = snappy_decode(&dir.join("anchor_state.ssz_snappy"));
-    let state = BeaconState::decompose(&anchor, &SpecConfig::mainnet(), None)
+    let state = BeaconState::decompose(&anchor, &SpecConfig::reference(), None)
         .unwrap_or_else(|e| panic!("{name}: decompose anchor_state: {e}"));
     let genesis_time = state.immutable.genesis_time;
     let mut tile = ef_tile(state);

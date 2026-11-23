@@ -10,6 +10,7 @@ use silver_beacon_state_data::{
     SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotStateWriteView,
     SpecConfig, StateWriterView, SyncCommittees, TIMELY_TARGET_FLAG, ValidatorsView, bls,
 };
+use silver_preset::EPOCHS_PER_ETH1_VOTING_PERIOD;
 
 use crate::{
     merkle,
@@ -23,8 +24,6 @@ use crate::{
         },
     },
 };
-
-pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
 
 pub(crate) const WEIGHT_DENOMINATOR: u64 = 64;
 pub(crate) const PROPOSER_WEIGHT: u64 = 8;

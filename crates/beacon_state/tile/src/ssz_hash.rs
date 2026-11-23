@@ -3,8 +3,8 @@ use silver_beacon_state_data::{
     Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, ExecutionPayloadHeader,
     Fork, SLOTS_PER_HISTORICAL_ROOT, StateView, hash_tree_root_block_header,
 };
-use silver_common::merkle::*;
 pub use silver_common::ssz_hash::*;
+use silver_common::{merkle::*, ssz_view::SYNC_SUBCOMMITTEE_BITS_SIZE};
 
 use crate::ssz_hash_gloas::BeaconStateGloas;
 
@@ -12,11 +12,11 @@ pub fn hash_tree_root_sync_contribution(
     slot: u64,
     beacon_block_root: &B256,
     subcommittee_index: u64,
-    aggregation_bits: &[u8; 16],
+    aggregation_bits: &[u8; SYNC_SUBCOMMITTEE_BITS_SIZE],
     signature: &[u8; 96],
 ) -> B256 {
     let mut bits_chunk = [0u8; 32];
-    bits_chunk[..16].copy_from_slice(aggregation_bits);
+    bits_chunk[..SYNC_SUBCOMMITTEE_BITS_SIZE].copy_from_slice(aggregation_bits);
     merkleize(&[
         uint64_chunk(slot),
         *beacon_block_root,

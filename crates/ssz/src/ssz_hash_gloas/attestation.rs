@@ -7,7 +7,10 @@ use crate::{
     },
     progressive::{ProgressiveContainer, ProgressiveHasher, packed_active_fields},
     ssz_hash::hash_attestation_data,
-    ssz_view::{AttestationView, AttesterSlashingView, IndexedAttestationView},
+    ssz_view::{
+        ATTESTATION_FIXED, AttestationView, AttesterSlashingView, COMMITTEE_BITS_SIZE,
+        IndexedAttestationView,
+    },
 };
 
 impl ProgressiveContainer for AttestationView {
@@ -19,7 +22,7 @@ impl AttestationView {
     /// layout identical to the fulu [`crate::ssz_hash::hash_attestation`].
     #[timed]
     pub fn hash_tree_root_gloas(d: &[u8]) -> B256 {
-        if d.len() < 236 {
+        if d.len() < ATTESTATION_FIXED {
             return ZERO_HASH;
         }
         Self::hash_tree_root_gloas_with_data_root(d, hash_attestation_data(&d[4..132]))
@@ -35,7 +38,7 @@ impl AttestationView {
 
         let sig_root = hash_fixed_bytes(&d[132..228]);
         let mut cb = ZERO_HASH;
-        cb[..8].copy_from_slice(&d[228..236]);
+        cb[..COMMITTEE_BITS_SIZE].copy_from_slice(AttestationView::committee_bits(d));
 
         Self::progressive_root(&[agg_root, data_root, sig_root, cb])
     }

@@ -59,7 +59,9 @@ fn fulu_from_genesis() -> SpecConfig {
 
 fn sanity_file(name: &str, file: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests")
+        .join("consensus-spec-tests/tests")
+        .join(silver_preset::PRESET_BASE)
+        .join("fulu/sanity/blocks/pyspec_tests")
         .join(name)
         .join(file);
     let raw = fs::read(&path)

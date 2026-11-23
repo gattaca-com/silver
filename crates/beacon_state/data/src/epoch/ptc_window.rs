@@ -1,7 +1,7 @@
 use crate::{
-    gloas::{PTC_SIZE, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
+    gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
     merkle::{B256, MerkleStack, hash_uint64_vector, merkleize},
-    types::{Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH},
+    types::{Epoch, MIN_SEED_LOOKAHEAD, PTC_SIZE, SLOTS_PER_EPOCH},
 };
 
 const SPE: usize = SLOTS_PER_EPOCH as usize;

@@ -2,7 +2,7 @@ use serde::Deserialize;
 use silver_common::{
     GossipTopic, SYNC_COMMITTEE_SUBNETS,
     json_fields::{bytes, uint64},
-    ssz_view::SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
+    ssz_view::{SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SYNC_SUBCOMMITTEE_BITS_SIZE},
 };
 
 use crate::{
@@ -44,7 +44,7 @@ struct SyncCommitteeContribution {
     #[serde(deserialize_with = "uint64")]
     subcommittee_index: u64,
     #[serde(deserialize_with = "bytes")]
-    aggregation_bits: [u8; 16],
+    aggregation_bits: [u8; SYNC_SUBCOMMITTEE_BITS_SIZE],
     #[serde(deserialize_with = "bytes")]
     signature: [u8; 96],
 }
@@ -64,14 +64,21 @@ impl SubmittedEntry for SignedSyncCommitteeContribution {
     fn encode(&self, ssz: &mut [u8]) {
         let message = &self.message;
         let contribution = &message.contribution;
-        ssz[0..8].copy_from_slice(&message.aggregator_index.to_le_bytes());
-        ssz[8..16].copy_from_slice(&contribution.slot.to_le_bytes());
-        ssz[16..48].copy_from_slice(&contribution.beacon_block_root);
-        ssz[48..56].copy_from_slice(&contribution.subcommittee_index.to_le_bytes());
-        ssz[56..72].copy_from_slice(&contribution.aggregation_bits);
-        ssz[72..168].copy_from_slice(&contribution.signature);
-        ssz[168..264].copy_from_slice(&message.selection_proof);
-        ssz[264..SIGNED_CONTRIBUTION_AND_PROOF_SIZE].copy_from_slice(&self.signature);
+        let mut at = 0;
+        for field in [
+            &message.aggregator_index.to_le_bytes()[..],
+            &contribution.slot.to_le_bytes(),
+            &contribution.beacon_block_root,
+            &contribution.subcommittee_index.to_le_bytes(),
+            &contribution.aggregation_bits,
+            &contribution.signature,
+            &message.selection_proof,
+            &self.signature,
+        ] {
+            ssz[at..at + field.len()].copy_from_slice(field);
+            at += field.len();
+        }
+        debug_assert_eq!(at, SIGNED_CONTRIBUTION_AND_PROOF_SIZE);
     }
 }
 
@@ -95,7 +102,7 @@ mod tests {
              \"subcommittee_index\":\"{subcommittee_index}\",\"aggregation_bits\":\"0x{}\",\
              \"signature\":\"0x{}\"}},\"selection_proof\":\"0x{}\"}},\"signature\":\"0x{}\"}}",
             "11".repeat(32),
-            "0f".repeat(16),
+            "0f".repeat(SYNC_SUBCOMMITTEE_BITS_SIZE),
             "44".repeat(96),
             "55".repeat(96),
             "66".repeat(96),
@@ -120,7 +127,10 @@ mod tests {
         assert_eq!(SignedSyncCommitteeProofView::slot(ssz), SLOT);
         assert_eq!(SignedSyncCommitteeProofView::beacon_block_root(ssz), &[0x11; 32]);
         assert_eq!(SignedSyncCommitteeProofView::subcommittee_index(ssz), 2);
-        assert_eq!(SignedSyncCommitteeProofView::aggregation_bits(ssz), &[0x0f; 16]);
+        assert_eq!(
+            SignedSyncCommitteeProofView::aggregation_bits(ssz),
+            &[0x0f; SYNC_SUBCOMMITTEE_BITS_SIZE]
+        );
         assert_eq!(SignedSyncCommitteeProofView::contribution_signature(ssz), &[0x44; 96]);
         assert_eq!(SignedSyncCommitteeProofView::selection_proof(ssz), &[0x55; 96]);
         assert_eq!(SignedSyncCommitteeProofView::signature(ssz), &[0x66; 96]);

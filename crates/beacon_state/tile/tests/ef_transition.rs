@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 mod ef_common;
 
 use ef_common::{
-    compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode, spec_tests_dir,
+    compare_states, iter_test_cases, load_state, load_state_gloas, preset_tests_dir, snappy_decode,
 };
 use silver_beacon_state_data::SpecConfig;
 
@@ -31,7 +31,7 @@ fn parse_meta(dir: &Path) -> (u64, usize) {
 /// `post`.
 #[test]
 fn transition() {
-    let base = spec_tests_dir().join("tests/mainnet/gloas/transition/core");
+    let base = preset_tests_dir().join("gloas/transition/core");
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
         eprintln!("transition: no test cases, skipping");
@@ -46,7 +46,7 @@ fn transition() {
             continue;
         }
         let (fork_epoch, blocks_count) = parse_meta(dir);
-        let mut cfg = SpecConfig::mainnet();
+        let mut cfg = SpecConfig::reference();
         cfg.gloas_fork_epoch = fork_epoch;
 
         let mut pre = load_state(&dir.join("pre.ssz_snappy"));

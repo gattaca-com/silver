@@ -7,6 +7,7 @@ use std::{
 use serde::Deserialize;
 use silver_chain_spec::SpecConfig;
 use silver_common::{Enr, Error};
+use silver_preset::PRESET_BASE;
 
 use crate::{BootSource, Genesis};
 
@@ -100,7 +101,7 @@ impl Network {
     const NAMED: [Self; 3] = [Self::Mainnet, Self::Hoodi, Self::Sepolia];
 
     pub fn spec(&self) -> Result<SpecConfig, Error> {
-        Ok(match self {
+        let spec = match self {
             Self::Mainnet => SpecConfig::mainnet(),
             Self::Hoodi => SpecConfig::hoodi(),
             Self::Sepolia => SpecConfig::sepolia(),
@@ -110,7 +111,15 @@ impl Network {
                     Error::ConfigError(format!("{} is not a spec config: {e}", path.display()))
                 })?
             }
-        })
+        };
+        if spec.preset_base.name() != PRESET_BASE {
+            return Err(Error::ConfigError(format!(
+                "{} runs the {} preset, but this silver is built for {PRESET_BASE}",
+                spec.network_name(),
+                spec.preset_base.name(),
+            )));
+        }
+        Ok(spec)
     }
 
     /// Devnets often share a `CONFIG_NAME` (ethpandaops' are all `testnet`),
@@ -235,5 +244,19 @@ mod tests {
             ));
             assert_eq!(name.parse::<Network>().unwrap(), network);
         }
+    }
+
+    #[test]
+    fn devnet_on_another_preset_is_refused() {
+        let other = if PRESET_BASE == "mainnet" { "minimal" } else { "mainnet" };
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = dir.path().join("config.yaml");
+
+        fs::write(&config, format!("PRESET_BASE: '{other}'\n")).unwrap();
+        let err = Network::Devnet(dir.path().to_owned()).spec().unwrap_err();
+        assert!(err.to_string().contains(other), "{err}");
+
+        fs::write(&config, format!("PRESET_BASE: '{PRESET_BASE}'\n")).unwrap();
+        assert!(Network::Devnet(dir.path().to_owned()).spec().is_ok());
     }
 }

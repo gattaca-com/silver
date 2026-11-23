@@ -7,6 +7,10 @@ use silver_beacon_state_data::{
 use silver_common::ssz_view::{
     BYTES_PER_KZG_COMMITMENT, ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView,
 };
+use silver_preset::{
+    MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP, MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP,
+    MAX_WITHDRAWALS_PER_PAYLOAD,
+};
 
 use crate::{
     error::{ExecutionPayloadError, Result, WithdrawalRecord, WithdrawalsError},
@@ -16,10 +20,6 @@ use crate::{
     stf::MIN_ACTIVATION_BALANCE,
     validate,
 };
-
-pub(crate) const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
-pub(crate) const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
-const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: usize = 8;
 
 /// Validate header sanity then cache the execution payload header.
 /// No BLS sigs; everything happens in pass 2.

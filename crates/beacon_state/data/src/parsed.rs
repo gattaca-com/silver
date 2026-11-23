@@ -1,4 +1,4 @@
-use silver_ssz::ssz_view::{AttestationDataView, SignedAggregateAndProofView};
+use silver_ssz::ssz_view::{AttestationDataView, SignedAggregateAndProofView, bitvector_word};
 
 use crate::{Epoch, SLOTS_PER_EPOCH};
 
@@ -28,9 +28,7 @@ impl<'a> ParsedAggregateAndProof<'a> {
             selection_proof: SignedAggregateAndProofView::selection_proof(data),
             agg_slot,
             agg_data_index: SignedAggregateAndProofView::agg_data_index(data),
-            committee_bits: u64::from_le_bytes(*SignedAggregateAndProofView::agg_committee_bits(
-                data,
-            )),
+            committee_bits: bitvector_word(SignedAggregateAndProofView::agg_committee_bits(data)),
             agg_sig: SignedAggregateAndProofView::agg_signature(data),
             agg_data: SignedAggregateAndProofView::agg_data(data),
             aggregation_bits: SignedAggregateAndProofView::agg_aggregation_bits(data),

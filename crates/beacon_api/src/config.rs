@@ -1,5 +1,5 @@
 //! Every value the spec calls a preset is a constant here, because silver
-//! runs the mainnet preset only; every config-file key a network can vary
+//! fixes its preset at compile time; every config-file key a network can vary
 //! comes from [`SpecConfig`] — including the genesis, merge and eth1
 //! parameters silver itself never reads. What is left are the fork-choice and
 //! networking parameters silver fixes in its own tiles.
@@ -20,22 +20,27 @@ use silver_common::{
     },
     ticker::{ATTESTATION_DUE_BPS, ATTESTATION_DUE_BPS_GLOAS, MAXIMUM_GOSSIP_CLOCK_DISPARITY},
 };
+use silver_preset::{
+    EPOCHS_PER_ETH1_VOTING_PERIOD, INACTIVITY_PENALTY_QUOTIENT,
+    MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP, MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP,
+    MAX_WITHDRAWALS_PER_PAYLOAD, MIN_SLASHING_PENALTY_QUOTIENT, PRESET_BASE,
+    PROPORTIONAL_SLASHING_MULTIPLIER, SHUFFLE_ROUND_COUNT, UPDATE_TIMEOUT,
+};
 
 use crate::{
     ctx::ApiCtx,
     http::{json::Json, response::Response, router::Request},
 };
 
-const PRESET_BASE: &str = "mainnet";
-
-/// `presets/mainnet/*.yaml` (consensus-specs v1.6.0), in fork order. Values
-/// silver itself computes with are imported rather than respelled.
+/// `presets/<PRESET_BASE>/*.yaml` (consensus-specs v1.6.0), in fork order.
+/// Values that differ between presets, or that silver computes with, are
+/// imported rather than respelled.
 const PRESET: &[(&str, u64)] = &[
     // phase0.yaml
     ("MAX_COMMITTEES_PER_SLOT", MAX_COMMITTEES_PER_SLOT as u64),
     ("TARGET_COMMITTEE_SIZE", TARGET_COMMITTEE_SIZE as u64),
     ("MAX_VALIDATORS_PER_COMMITTEE", MAX_VALIDATORS_PER_COMMITTEE as u64),
-    ("SHUFFLE_ROUND_COUNT", 90),
+    ("SHUFFLE_ROUND_COUNT", SHUFFLE_ROUND_COUNT as u64),
     ("HYSTERESIS_QUOTIENT", 4),
     ("HYSTERESIS_DOWNWARD_MULTIPLIER", 1),
     ("HYSTERESIS_UPWARD_MULTIPLIER", 5),
@@ -45,7 +50,7 @@ const PRESET: &[(&str, u64)] = &[
     ("MIN_ATTESTATION_INCLUSION_DELAY", 1),
     ("SLOTS_PER_EPOCH", SLOTS_PER_EPOCH),
     ("MIN_SEED_LOOKAHEAD", MIN_SEED_LOOKAHEAD),
-    ("EPOCHS_PER_ETH1_VOTING_PERIOD", 64),
+    ("EPOCHS_PER_ETH1_VOTING_PERIOD", EPOCHS_PER_ETH1_VOTING_PERIOD),
     ("SLOTS_PER_HISTORICAL_ROOT", SLOTS_PER_HISTORICAL_ROOT as u64),
     ("EPOCHS_PER_HISTORICAL_VECTOR", EPOCHS_PER_HISTORICAL_VECTOR as u64),
     ("EPOCHS_PER_SLASHINGS_VECTOR", EPOCHS_PER_SLASHINGS_VECTOR as u64),
@@ -54,9 +59,9 @@ const PRESET: &[(&str, u64)] = &[
     ("BASE_REWARD_FACTOR", 64),
     ("WHISTLEBLOWER_REWARD_QUOTIENT", 512),
     ("PROPOSER_REWARD_QUOTIENT", 8),
-    ("INACTIVITY_PENALTY_QUOTIENT", 67_108_864),
-    ("MIN_SLASHING_PENALTY_QUOTIENT", 128),
-    ("PROPORTIONAL_SLASHING_MULTIPLIER", 1),
+    ("INACTIVITY_PENALTY_QUOTIENT", INACTIVITY_PENALTY_QUOTIENT),
+    ("MIN_SLASHING_PENALTY_QUOTIENT", MIN_SLASHING_PENALTY_QUOTIENT),
+    ("PROPORTIONAL_SLASHING_MULTIPLIER", PROPORTIONAL_SLASHING_MULTIPLIER),
     ("MAX_PROPOSER_SLASHINGS", 16),
     ("MAX_ATTESTER_SLASHINGS", 2),
     ("MAX_ATTESTATIONS", 128),
@@ -69,7 +74,7 @@ const PRESET: &[(&str, u64)] = &[
     ("SYNC_COMMITTEE_SIZE", SYNC_COMMITTEE_SIZE as u64),
     ("EPOCHS_PER_SYNC_COMMITTEE_PERIOD", EPOCHS_PER_SYNC_COMMITTEE_PERIOD),
     ("MIN_SYNC_COMMITTEE_PARTICIPANTS", 1),
-    ("UPDATE_TIMEOUT", 8192),
+    ("UPDATE_TIMEOUT", UPDATE_TIMEOUT),
     // bellatrix.yaml
     ("MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX", 32),
     ("MAX_BYTES_PER_TRANSACTION", 1_073_741_824),
@@ -78,8 +83,8 @@ const PRESET: &[(&str, u64)] = &[
     ("MAX_EXTRA_DATA_BYTES", MAX_EXTRA_DATA_BYTES as u64),
     // capella.yaml
     ("MAX_BLS_TO_EXECUTION_CHANGES", 16),
-    ("MAX_WITHDRAWALS_PER_PAYLOAD", 16),
-    ("MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP", 16_384),
+    ("MAX_WITHDRAWALS_PER_PAYLOAD", MAX_WITHDRAWALS_PER_PAYLOAD as u64),
+    ("MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP", MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP),
     // deneb.yaml
     ("FIELD_ELEMENTS_PER_BLOB", 4096),
     ("MAX_BLOB_COMMITMENTS_PER_BLOCK", MAX_BLOB_COMMITMENTS_PER_BLOCK as u64),
@@ -96,7 +101,10 @@ const PRESET: &[(&str, u64)] = &[
     ("MAX_DEPOSIT_REQUESTS_PER_PAYLOAD", 8192),
     ("MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD", 16),
     ("MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD", 2),
-    ("MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP", 8),
+    (
+        "MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP",
+        MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP as u64,
+    ),
     ("MAX_PENDING_DEPOSITS_PER_EPOCH", 16),
     // fulu.yaml
     ("FIELD_ELEMENTS_PER_CELL", 64),
@@ -162,11 +170,7 @@ const BYTE_CONSTANTS: &[(&str, [u8; 1])] = &[
 /// serves it under the successor's name from [`configured`]; the retired
 /// spelling is frozen at the value it had, since no network silver can join
 /// is on the wrong side of the fork that replaced it.
-const SUPERSEDED_CONFIG: &[(&str, u64)] = &[
-    ("MIN_PER_EPOCH_CHURN_LIMIT", 4),
-    ("MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT", 8),
-    ("MAX_BLOBS_PER_BLOCK", 6),
-];
+const SUPERSEDED_CONFIG: &[(&str, u64)] = &[("MAX_BLOBS_PER_BLOCK", 6)];
 
 /// Fork-choice, slot-timing and networking parameters. No config file silver
 /// has seen varies them, so the ones silver acts on live as constants of the
@@ -321,7 +325,10 @@ fn configured(spec: &SpecConfig) -> impl IntoIterator<Item = (&'static str, u64)
         ("ETH1_FOLLOW_DISTANCE", spec.eth1_follow_distance),
         ("SHARD_COMMITTEE_PERIOD", spec.shard_committee_period),
         ("MIN_VALIDATOR_WITHDRAWABILITY_DELAY", spec.min_validator_withdrawability_delay),
+        ("MIN_BUILDER_WITHDRAWABILITY_DELAY", spec.min_builder_withdrawability_delay),
         ("MAX_SEED_LOOKAHEAD", spec.max_seed_lookahead),
+        ("MIN_PER_EPOCH_CHURN_LIMIT", spec.min_per_epoch_churn_limit),
+        ("MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT", spec.max_per_epoch_activation_churn_limit),
         ("MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA", spec.min_per_epoch_churn_limit_electra),
         (
             "MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT",
@@ -628,11 +635,13 @@ mod tests {
 
     /// The fork-suffixed keys carry the scalars silver runs on, so a config
     /// file that overrides one has to move the served value with it. Their
-    /// pre-fork spellings are frozen historical values and must not follow.
+    /// pre-fork spellings are frozen historical values and must not follow,
+    /// except `MIN_PER_EPOCH_CHURN_LIMIT`, which silver still reads.
     #[test]
     fn churn_and_penalty_scalars_are_served_under_their_fork_suffixed_names() {
         let spec: SpecConfig = toml::from_str(
             r#"
+            MIN_PER_EPOCH_CHURN_LIMIT = 2
             MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA = 7
             MIN_SLASHING_PENALTY_QUOTIENT = 64
             INACTIVITY_PENALTY_QUOTIENT = 128
@@ -641,12 +650,12 @@ mod tests {
         )
         .unwrap();
         let served = spec_map(&spec);
+        assert_eq!(served["MIN_PER_EPOCH_CHURN_LIMIT"], "2");
         assert_eq!(served["MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA"], "7");
         assert_eq!(served["MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA"], "64");
         assert_eq!(served["INACTIVITY_PENALTY_QUOTIENT_BELLATRIX"], "128");
         assert_eq!(served["PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX"], "5");
 
-        assert_eq!(served["MIN_PER_EPOCH_CHURN_LIMIT"], "4");
         assert_eq!(served["MIN_SLASHING_PENALTY_QUOTIENT"], "128");
         assert_eq!(served["MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX"], "32");
         assert_eq!(served["INACTIVITY_PENALTY_QUOTIENT"], "67108864");

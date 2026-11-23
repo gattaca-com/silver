@@ -134,6 +134,7 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
     diff_validator_columns(&mut diffs, &va, &vb, n);
     diff_rings(&mut diffs, &va, &vb);
     diff_latest_block_header(&mut diffs, &va, &vb);
+    diff_latest_execution_payload_header(&mut diffs, &va, &vb);
     diff_proposer_lookahead(&mut diffs, &ea, &eb);
     diff_builders_and_pending(&mut diffs, &va, &vb);
 
@@ -305,6 +306,47 @@ fn diff_rings(diffs: &mut Vec<String>, va: &StateWriterView, vb: &StateWriterVie
     );
 }
 
+fn diff_latest_execution_payload_header(
+    diffs: &mut Vec<String>,
+    va: &StateWriterView,
+    vb: &StateWriterView,
+) {
+    let (a, b) = (
+        va.slot.state().latest_execution_payload_header,
+        vb.slot.state().latest_execution_payload_header,
+    );
+    let fields: [(&str, &[u8], &[u8]); 7] = [
+        ("parent_hash", &a.parent_hash, &b.parent_hash),
+        ("state_root", &a.state_root, &b.state_root),
+        ("prev_randao", &a.prev_randao, &b.prev_randao),
+        ("block_hash", &a.block_hash, &b.block_hash),
+        ("transactions_root", &a.transactions_root, &b.transactions_root),
+        ("withdrawals_root", &a.withdrawals_root, &b.withdrawals_root),
+        ("fee_recipient", &a.fee_recipient, &b.fee_recipient),
+    ];
+    for (name, x, y) in fields {
+        if x != y {
+            let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            diffs.push(format!(
+                "  latest_execution_payload_header.{name}: {} vs {}",
+                hex(x),
+                hex(y)
+            ));
+        }
+    }
+    let scalars = [
+        ("block_number", a.block_number, b.block_number),
+        ("timestamp", a.timestamp, b.timestamp),
+        ("blob_gas_used", a.blob_gas_used, b.blob_gas_used),
+        ("excess_blob_gas", a.excess_blob_gas, b.excess_blob_gas),
+    ];
+    for (name, x, y) in scalars {
+        if x != y {
+            diffs.push(format!("  latest_execution_payload_header.{name}: {x} vs {y}"));
+        }
+    }
+}
+
 fn diff_latest_block_header(diffs: &mut Vec<String>, va: &StateWriterView, vb: &StateWriterView) {
     let alh = va.slot.state().latest_block_header;
     let blh = vb.slot.state().latest_block_header;
@@ -392,6 +434,10 @@ pub fn spec_tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
 }
 
+pub fn preset_tests_dir() -> PathBuf {
+    spec_tests_dir().join("tests").join(silver_preset::PRESET_BASE)
+}
+
 /// Parse a `0x`-prefixed 32-byte hex root (fork_choice / sync vectors).
 pub fn parse_root(s: &str) -> B256 {
     let h = s.strip_prefix("0x").unwrap_or(s);
@@ -415,7 +461,7 @@ pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile 
     // Fixtures are generated with the fork under test active from genesis,
     // and they sit in the first epochs: a block signature is verified against
     // the fork version the config says is active at the block's epoch.
-    let mut spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() };
+    let mut spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::reference() };
     if state.is_finalized_post_gloas() {
         spec.gloas_fork_epoch = 0;
     }

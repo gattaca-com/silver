@@ -4,7 +4,7 @@
 # Source: EF gloas finality finality_rule_3, 160 blocks from pre. It finalizes
 # past the anchor only in its last epochs.
 
-startup_checkpoint: tests/mainnet/gloas/finality/finality/pyspec_tests/finality_rule_3/pre.ssz_snappy
+startup_checkpoint: gloas/finality/finality/pyspec_tests/finality_rule_3/pre.ssz_snappy
 gloas: true
 slots_missing: 200
 
@@ -15,7 +15,7 @@ steps:
   - kind: step
 
   - kind: ef_blocks
-    case: tests/mainnet/gloas/finality/finality/pyspec_tests/finality_rule_3
+    case: gloas/finality/finality/pyspec_tests/finality_rule_3
   - kind: check
     outbound_has: [block_applied]
     outbound_lacks: [new_payload, block_rejected]

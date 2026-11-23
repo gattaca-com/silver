@@ -1,8 +1,7 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Epoch, RandaoMixesView};
 use silver_common::merkle::sha256;
-
-const SHUFFLE_ROUND_COUNT: u8 = 90;
+use silver_preset::SHUFFLE_ROUND_COUNT;
 
 pub const DOMAIN_BEACON_PROPOSER: u32 = 0;
 pub const DOMAIN_BEACON_ATTESTER: u32 = 1;

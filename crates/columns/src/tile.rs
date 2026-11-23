@@ -1368,7 +1368,9 @@ mod tests {
 
     fn ef_sidecar(case: &str) -> Option<(Vec<u8>, Vec<u8>)> {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu");
+            .join("../beacon_state/tile/consensus-spec-tests/tests")
+            .join(silver_preset::PRESET_BASE)
+            .join("fulu");
         if !fixtures.try_exists().expect("check EF fixture directory") {
             eprintln!("EF sidecar coverage unavailable: run just ef-tests-download");
             return None;
@@ -1396,7 +1398,9 @@ mod tests {
     /// writes integers wider than any YAML number type.
     fn ef_blob_schedule(case: &str) -> Vec<BlobParameters> {
         let config = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu")
+            .join("../beacon_state/tile/consensus-spec-tests/tests")
+            .join(silver_preset::PRESET_BASE)
+            .join("fulu")
             .join(case)
             .join("config.yaml");
         let yaml = std::fs::read_to_string(config).unwrap_or_default();
