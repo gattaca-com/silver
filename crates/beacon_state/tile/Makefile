@@ -3,9 +3,9 @@
 # commit, which must have run first.
 CONSENSUS_SPECS_TEST_VERSION ?= 6ea84333433a840fbd534f8ebbe9dd5e1b599115
 OUTPUT_DIR := ./consensus-spec-tests
-# One tarball per preset; `just test-minimal` reads the minimal one. CI jobs
-# override it to fetch only their own.
-PRESETS ?= mainnet minimal
+# One tarball per preset. `just test-minimal` needs `PRESETS="mainnet minimal"`,
+# which only an upstream release tag provides.
+PRESETS ?= mainnet
 empty :=
 space := $(empty) $(empty)
 STAMP := $(OUTPUT_DIR)/.version-$(CONSENSUS_SPECS_TEST_VERSION)-$(subst $(space),-,$(PRESETS))
