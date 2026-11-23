@@ -1191,7 +1191,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
+    pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8], local: bool) -> Feedback {
         let Some(parsed) = ParsedAggregateAndProof::try_from(data) else {
             return Feedback::reject("aggregate malformed");
         };
@@ -1278,6 +1278,9 @@ impl BeaconStateTile {
         ) else {
             return attested.committee_reject("aggregate bad signature");
         };
+        if !local || attested.is_ready() {
+            self.detection.record_aggregate(parsed.aggregate_bytes, committee);
+        }
         self.seen_aggregates.record(
             parsed.agg_slot,
             committee_index as u64,
@@ -1979,7 +1982,9 @@ impl BeaconStateTile {
                 feedback
             }
             GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
-            GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
+            GossipTopic::BeaconAggregateAndProof => {
+                self.handle_aggregate_and_proof(data, m.stream_id == LOCAL_GOSSIP_STREAM_ID)
+            }
             GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
             GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
             GossipTopic::AttesterSlashing => self.handle_attester_slashing(data),

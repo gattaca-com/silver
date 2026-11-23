@@ -83,20 +83,39 @@ impl BeaconStateTile {
 
     /// At most one proof of each kind per call, so the tile loop paces them.
     pub(super) fn publish_slashings(&mut self, producers: &mut Producers) {
-        if !self.detection.has_proofs() {
+        let wall_slot = self.ticker.current_slot();
+        if !self.detection.has_proofs(wall_slot) {
             return;
         }
         let head = self.state.read_view(self.canonical_state_id());
-        let proposers = &self.seen_proposer_slashings;
+        let (proposers, attesters) = (&self.seen_proposer_slashings, &self.seen_attester_slashed);
         let (events, stalled) = (&mut self.events_producer, &mut self.proof_handoff_stalled);
 
         let slashable_proposer = |index| slashable(&head, proposers, index);
         if let Some(proof) = self.detection.proposals.next_proof(slashable_proposer) {
             let slot = ProposerSlashingView::h1_slot(proof);
             let proposer_index = ProposerSlashingView::h1_proposer_index(proof);
-            if publish_gossip(events, stalled, GossipTopic::ProposerSlashing, proof, producers) {
+            let (len, write) = (proof.len(), |ssz: &mut [u8]| ssz.copy_from_slice(proof));
+            if publish_gossip(events, stalled, GossipTopic::ProposerSlashing, len, write, producers)
+            {
                 silver_log::info!(slot, proposer_index, "detected a double proposal");
                 self.detection.proposals.pop_proof();
+            }
+        }
+
+        let slashable_attester = |index| slashable(&head, attesters, index);
+        let verifiable =
+            |epoch| self.spec.fork_version_at(epoch) == head.epoch.fork_version_at(epoch);
+        if let Some(proof) =
+            self.detection.next_attester_proof(wall_slot, slashable_attester, verifiable)
+        {
+            let validator_index = proof.offenders().next();
+            let offenders = proof.offenders().count();
+            let (len, write) = (proof.slashing_len(), |ssz: &mut [u8]| proof.write_slashing(ssz));
+            if publish_gossip(events, stalled, GossipTopic::AttesterSlashing, len, write, producers)
+            {
+                silver_log::info!(validator_index, offenders, "detected a double vote");
+                self.detection.pop_attester_proof();
             }
         }
     }
@@ -117,10 +136,11 @@ fn publish_gossip(
     events: &mut TProducer,
     stalled: &mut bool,
     topic: GossipTopic,
-    ssz: &[u8],
+    len: usize,
+    write: impl FnOnce(&mut [u8]),
     producers: &mut Producers,
 ) -> bool {
-    let Some(ssz_read) = events.write_with(ssz.len(), |buffer| buffer.copy_from_slice(ssz)) else {
+    let Some(ssz_read) = events.write_with(len, write) else {
         if !std::mem::replace(stalled, true) {
             silver_log::error!(?topic, "beacon_state tcache full; originated message deferred");
         }
