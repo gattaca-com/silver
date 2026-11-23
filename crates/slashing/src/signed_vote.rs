@@ -1,5 +1,8 @@
 use silver_beacon_state_data::Epoch;
-use silver_ssz::ssz_view::{ATTESTATION_DATA_SIZE, AttestationDataView, INDEXED_ATTESTATION_FIXED};
+use silver_ssz::ssz_view::{
+    ATTESTATION_DATA_SIZE, AttestationDataView, INDEXED_ATTESTATION_FIXED, SINGLE_ATT_SIZE,
+    SingleAttestationView,
+};
 
 use crate::Offence;
 
@@ -15,6 +18,10 @@ impl SignedVote {
         vote[..ATTESTATION_DATA_SIZE].copy_from_slice(data.as_bytes());
         vote[ATTESTATION_DATA_SIZE..].copy_from_slice(signature);
         Self(vote)
+    }
+
+    pub(crate) fn of(single: &[u8; SINGLE_ATT_SIZE]) -> Self {
+        Self::new(SingleAttestationView::data(single), SingleAttestationView::signature(single))
     }
 
     pub(crate) fn data(&self) -> AttestationDataView<'_> {
@@ -44,7 +51,8 @@ impl IndexedVote {
     }
 }
 
-/// Two verified votes; their common signers committed the offence.
+/// Two verified votes; their common signers committed the offence. A
+/// surround proof needs the surrounding vote first.
 pub struct AttesterProof {
     pub offence: Offence,
     first: IndexedVote,

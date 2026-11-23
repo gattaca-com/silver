@@ -520,11 +520,17 @@ impl BeaconStateTile {
         let mut committed_ptc = false;
         self.votes.pending.reverse();
         while let Some((m, p, sig)) = self.votes.pending.pop() {
+            if let PreparedVote::Attestation(p) = &p &&
+                let Some(offence) = self.local_conflict(&m, &p.buf)
+            {
+                Self::local_verdict(&m, Feedback::Slashable(offence), producers);
+                continue;
+            }
             // Deduplicate only against votes whose signatures have already
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
             if p.is_seen(self) {
-                Self::local_verdict(&m, self.seen_vote_feedback(&m, p.message()), producers);
+                Self::local_verdict(&m, Feedback::AlreadySeen, producers);
                 continue;
             }
             let (pk, root) = p.pubkey_and_root();
@@ -601,7 +607,14 @@ impl BeaconStateTile {
                     self.reject_gossip(&vote, data, reason, producers)
                 }
                 Err(Feedback::AlreadySeen) => {
-                    Self::local_verdict(&vote, self.seen_vote_feedback(&vote, data), producers)
+                    let conflict = match (vote.topic, data.try_into()) {
+                        (GossipTopic::BeaconAttestation(_), Ok(single)) => {
+                            self.local_conflict(&vote, single)
+                        }
+                        _ => None,
+                    };
+                    let feedback = conflict.map_or(Feedback::AlreadySeen, Feedback::Slashable);
+                    Self::local_verdict(&vote, feedback, producers)
                 }
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
@@ -622,11 +635,17 @@ impl BeaconStateTile {
             // Pair only the first candidate for each dedup key, but retain
             // later candidates. If that representative makes the batch fail,
             // fallback verification can still find a later valid candidate
-            // for the same key. A sync message on several subnets carries one
+            // for the same key. An API-verified representative is never
+            // paired, and may be refused, so it vouches for no later
+            // candidate. A sync message on several subnets carries one
             // signature, paired once.
             let key = p.dedup_key();
             let (pk, root) = p.pubkey_and_root();
-            let paired = self.votes.pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
+            let paired = self
+                .votes
+                .pending
+                .iter()
+                .any(|(m, q, _)| !m.is_api_verified() && q.dedup_key() == key) ||
                 matches!(p, PreparedVote::SyncMessage(_)) &&
                     self.sig_batch.contains(pk, sig, root);
             if !paired && !vote.is_api_verified() {
@@ -2163,6 +2182,7 @@ impl BeaconStateTile {
             Feedback::Slashable(offence) => Err(match offence {
                 Offence::DoubleProposal => LocalGossipFailure::ConflictingProposal,
                 Offence::DoubleVote => LocalGossipFailure::ConflictingAttestation,
+                Offence::SurroundVote => LocalGossipFailure::SurroundVote,
             }),
             Feedback::TooOld => Err(LocalGossipFailure::TooOld),
             Feedback::Future => Err(LocalGossipFailure::Future),

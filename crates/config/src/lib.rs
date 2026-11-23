@@ -120,6 +120,8 @@ mod optional_address {
     }
 }
 
+pub const MAX_SURROUND_EPOCHS: u8 = 16;
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct MetricsConfig {
@@ -222,6 +224,14 @@ pub struct Config {
     builder_bid_timeout_ms: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
+    /// Surround detection defaults to one epoch; zero disables it.
+    /// All 64 subnets provide full gossip coverage for retained surrounds.
+    /// Nonzero settings retain that many lanes plus the current epoch's lane.
+    /// Each lane reserves about 236 bytes per validator, rounded to 65,536
+    /// validators. At 2.3 million validators, the default reserves about
+    /// 1.04 GiB.
+    #[serde(default = "default_u8::<1>")]
+    surround_epochs: u8,
     #[serde(default)]
     trusted_peers: Vec<Enr>,
     #[serde(default)]
@@ -291,6 +301,12 @@ impl Config {
         let params = &config.peer_score_params;
         if params.d_out > params.d_low || params.d_out > params.d / 2 {
             return Err(Error::ConfigError("d_out must not exceed d_low or d / 2".into()));
+        }
+        if config.surround_epochs > MAX_SURROUND_EPOCHS {
+            return Err(Error::ConfigError(format!(
+                "surround_epochs = {} exceeds the maximum of {MAX_SURROUND_EPOCHS}",
+                config.surround_epochs
+            )));
         }
         config.apply(overrides);
         Ok(config)
@@ -494,6 +510,10 @@ impl Config {
         self.disable_weak_subjectivity_check
     }
 
+    pub fn surround_epochs(&self) -> u8 {
+        self.surround_epochs
+    }
+
     pub fn attestation_subnet_count(&self) -> u8 {
         self.attestation_subnet_count
     }
@@ -545,6 +565,18 @@ mod tests {
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
         assert_eq!(cfg.gossip_max_bytes_per_second(), 50_000_000);
         assert_eq!(cfg.max_inbound_streams_per_second(), 50);
+        assert_eq!(cfg.surround_epochs(), 1);
+    }
+
+    #[test]
+    fn surround_epochs_are_capped() {
+        let config = |surround_epochs: u8| {
+            Config::from_toml(&format!("surround_epochs = {surround_epochs}"), Overrides::default())
+        };
+
+        assert_eq!(config(MAX_SURROUND_EPOCHS).unwrap().surround_epochs(), MAX_SURROUND_EPOCHS);
+        assert_eq!(config(0).unwrap().surround_epochs(), 0);
+        assert!(config(MAX_SURROUND_EPOCHS + 1).is_err());
     }
 
     #[test]

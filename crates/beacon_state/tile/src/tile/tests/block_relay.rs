@@ -2,6 +2,63 @@ use silver_common::{BroadcastValidation, LOCAL_GOSSIP_STREAM_ID, LocalGossipFail
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Receipt {
+    slot: Slot,
+    block_root: B256,
+    stage: BlockStage,
+    source: BlockSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Relayed {
+    slot: Slot,
+    block_root: B256,
+}
+
+fn fulu_relayed(bytes: &[u8]) -> Relayed {
+    Relayed { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
+}
+
+impl GossipPublications {
+    fn relays(&self) -> Vec<Relayed> {
+        let blocks = self.relayed.iter().filter(|(topic, _)| *topic == GossipTopic::BeaconBlock);
+        blocks.map(|(_, bytes)| fulu_relayed(bytes)).collect()
+    }
+
+    fn relayed_slashings(&self) -> Vec<&[u8]> {
+        let is_slashing =
+            |topic| matches!(topic, GossipTopic::ProposerSlashing | GossipTopic::AttesterSlashing);
+        let slashings = self.relayed.iter().filter(|(topic, _)| is_slashing(*topic));
+        slashings.map(|(_, bytes)| bytes.as_slice()).collect()
+    }
+
+    fn receipts(&self) -> Vec<Receipt> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockReceived { slot, block_root, stage, source, .. } => {
+                    Some(Receipt { slot, block_root, stage, source })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn rejected(&self, block: &[u8]) -> Vec<BlockSource> {
+        let root = block_root_fulu(block);
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockRejected { block_root, source } if block_root == root => {
+                    Some(source)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 fn fulu_from_genesis() -> SpecConfig {
     SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() }
 }
@@ -165,7 +222,7 @@ fn a_gossip_relay_names_the_block_in_either_sync_mode() {
         rig.on_gossip(&block_ssz);
 
         let published = rig.drain();
-        assert_eq!(published.relays, [expected], "{target:?}");
+        assert_eq!(published.relays(), [expected], "{target:?}");
         if target.is_following() {
             assert!(published.receipts().contains(&Receipt {
                 slot: expected.slot,
@@ -188,7 +245,7 @@ fn an_rpc_block_is_imported_without_a_gossip_notification() {
         rig.on_rpc_block(&block_ssz);
 
         let published = rig.drain();
-        assert!(published.relays.is_empty(), "{target:?}: RPC never requests relay");
+        assert!(published.relays().is_empty(), "{target:?}: RPC never requests relay");
         assert!(
             published
                 .receipts()
@@ -226,12 +283,12 @@ fn a_blob_block_is_relayed_once_across_staging_and_import() {
 
     rig.on_gossip(&block_ssz);
     let published = rig.drain();
-    assert_eq!(published.relays, [expected]);
+    assert_eq!(published.relays(), [expected]);
     assert_eq!(stages_of(&published.receipts()), [BlockStage::AwaitData]);
 
     rig.on_gossip(&block_ssz);
     let repeated = rig.drain();
-    assert!(repeated.relays.is_empty());
+    assert!(repeated.relays().is_empty());
 
     rig.tile.handle_data_columns_available(
         expected.block_root,
@@ -240,7 +297,7 @@ fn a_blob_block_is_relayed_once_across_staging_and_import() {
     );
     let imported = rig.drain();
     assert_eq!(stages_of(&imported.receipts()), [BlockStage::Applied]);
-    assert!(imported.relays.is_empty(), "DA completion does not relay the block again");
+    assert!(imported.relays().is_empty(), "DA completion does not relay the block again");
 }
 
 /// `drain_awaiting_payload` disables relay when retrying a Gloas block.
@@ -256,7 +313,7 @@ fn disabling_relay_suppresses_the_gossip_notification() {
         rig.on_gossip_unrelayed(&block_ssz);
 
         let published = rig.drain();
-        assert!(published.relays.is_empty(), "{target:?}: relay is disabled");
+        assert!(published.relays().is_empty(), "{target:?}: relay is disabled");
         if target.is_following() {
             assert!(
                 published.receipts().iter().any(|r| {
@@ -284,12 +341,12 @@ fn parked_blocks_keep_their_source_and_relay_when_admitted() {
         submit(&mut rig, &second);
         let parked = rig.drain();
         assert_eq!(stages_of(&parked.receipts()), [BlockStage::AwaitParent]);
-        assert!(parked.relays.is_empty(), "the missing parent prevents validation");
+        assert!(parked.relays().is_empty(), "the missing parent prevents validation");
         let child = parked.receipts()[0].block_root;
 
         submit(&mut rig, &first);
         let released = rig.drain();
-        assert_eq!(released.relays, [fulu_relayed(&first), fulu_relayed(&second)]);
+        assert_eq!(released.relays(), [fulu_relayed(&first), fulu_relayed(&second)]);
         let of_child =
             released.receipts().into_iter().filter(|r| r.block_root == child).collect::<Vec<_>>();
         assert_eq!(stages_of(&of_child), [BlockStage::Applied]);
@@ -306,7 +363,7 @@ fn a_relay_request_does_not_imply_successful_import() {
     rig.on_gossip(&block_ssz);
     let published = rig.drain();
     let expected = fulu_relayed(&block_ssz);
-    assert_eq!(published.relays, [expected]);
+    assert_eq!(published.relays(), [expected]);
     assert!(published.receipts().is_empty());
     assert!(
         published.events.iter().any(|event| matches!(event,
@@ -330,7 +387,7 @@ fn a_block_with_a_bad_signature_reports_nothing() {
         rig.on_gossip(&forged);
         let published = rig.drain();
         assert!(published.receipts().is_empty(), "{target:?}");
-        assert!(published.relays.is_empty(), "{target:?}: a bad signature cannot be relayed");
+        assert!(published.relays().is_empty(), "{target:?}: a bad signature cannot be relayed");
     }
 }
 
@@ -344,12 +401,12 @@ fn local_block_skips_its_signature_check() {
 
     let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
     rig.on_gossip(&forged);
-    assert!(rig.drain().relays.is_empty(), "from the network, the forgery is caught");
+    assert!(rig.drain().relays().is_empty(), "from the network, the forgery is caught");
 
     let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
     rig.on_local(&forged, BroadcastValidation::Gossip);
     let published = rig.drain();
-    assert_eq!(published.relays, [fulu_relayed(&block_ssz)]);
+    assert_eq!(published.relays(), [fulu_relayed(&block_ssz)]);
     assert_eq!(published.verdicts(), [Ok(())]);
 }
 
@@ -367,7 +424,7 @@ fn a_replayed_block_reports_no_gossip() {
     );
     let published = rig.drain();
     assert!(published.receipts().is_empty(), "replay emits no block receipts");
-    assert!(published.relays.is_empty(), "replay requests no gossip relay");
+    assert!(published.relays().is_empty(), "replay requests no gossip relay");
 }
 
 impl BlockPublications {
@@ -391,7 +448,7 @@ fn consensus_validation_relays_a_local_block_once_its_transition_passes() {
         let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
         rig.on_local(&block_ssz, validation);
         let published = rig.drain();
-        assert_eq!(published.relays, [fulu_relayed(&block_ssz)], "{validation:?}");
+        assert_eq!(published.relays(), [fulu_relayed(&block_ssz)], "{validation:?}");
         assert_eq!(published.verdicts(), [Ok(())], "{validation:?}");
         assert_eq!(stages_of(&published.receipts()), [BlockStage::Applied], "{validation:?}");
     }
@@ -405,7 +462,7 @@ fn consensus_validation_never_relays_a_block_its_transition_rejects() {
 
     rig.on_local(&block_ssz, BroadcastValidation::Consensus);
     let published = rig.drain();
-    assert!(published.relays.is_empty(), "gossip validation alone no longer relays it");
+    assert!(published.relays().is_empty(), "gossip validation alone no longer relays it");
     assert_eq!(published.verdicts(), [Err(LocalGossipFailure::Invalid)]);
 }
 
@@ -418,7 +475,7 @@ fn a_gossip_validated_block_that_fails_import_is_relayed_then_rejected() {
 
     rig.on_local(&block_ssz, BroadcastValidation::Gossip);
     let published = rig.drain();
-    assert_eq!(published.relays, [fulu_relayed(&block_ssz)]);
+    assert_eq!(published.relays(), [fulu_relayed(&block_ssz)]);
     assert_eq!(published.verdicts()[0], Ok(()));
     assert!(published.events.iter().any(|event| matches!(
         event,
@@ -449,7 +506,7 @@ fn consensus_validation_relays_a_blob_block_before_its_columns_arrive() {
 
     rig.on_local(&block_ssz, BroadcastValidation::Consensus);
     let published = rig.drain();
-    assert_eq!(published.relays, [fulu_relayed(&block_ssz)]);
+    assert_eq!(published.relays(), [fulu_relayed(&block_ssz)]);
     assert_eq!(published.verdicts(), [Ok(())]);
     assert_eq!(stages_of(&published.receipts()), [BlockStage::AwaitData]);
 }
@@ -474,7 +531,7 @@ fn equivocation_check_refuses_another_root_from_the_same_proposer_and_slot() {
     let applied = Feedback::BlockImported([7; 32]);
     rig.tile.relay_once_applied(&m, &block_ssz, applied, &mut rig.adapter.producers);
     let published = rig.drain();
-    assert!(published.relays.is_empty());
+    assert!(published.relays().is_empty());
     assert_eq!(published.verdicts(), [Err(LocalGossipFailure::ConflictingProposal)]);
 
     let m = NewGossipMsg { validation: BroadcastValidation::Consensus, ..m };
@@ -519,7 +576,7 @@ fn block_staged_from_gossip_is_published_with_its_root() {
 
         rig.on_local(&block_ssz, validation);
         let published = rig.drain();
-        assert_eq!(published.relays, [fulu_relayed(&block_ssz)], "{validation:?}");
+        assert_eq!(published.relays(), [fulu_relayed(&block_ssz)], "{validation:?}");
         let verdicts: Vec<_> = published
             .events
             .iter()
@@ -557,14 +614,14 @@ fn verified_sources_reserve_and_public_pairs_round_trip() {
         if matches!(first, Path::Gossip | Path::Rpc) {
             rig.on_block(first, &sibling_of(&block_ssz));
             let invalid = rig.drain();
-            assert!(invalid.receipts().is_empty() && invalid.relays.is_empty());
+            assert!(invalid.receipts().is_empty() && invalid.relays().is_empty());
         }
         rig.on_block(first, &block_ssz);
         let accepted = rig.drain();
         let relays = usize::from(matches!(first, Path::Gossip | Path::Local));
-        assert_eq!(accepted.relays.len(), relays);
+        assert_eq!(accepted.relays().len(), relays);
         if relays > 0 {
-            assert_eq!(accepted.relays, [fulu_relayed(&block_ssz)]);
+            assert_eq!(accepted.relays(), [fulu_relayed(&block_ssz)]);
         }
         if matches!(first, Path::Rpc | Path::Replay) || target.is_following() {
             assert_eq!(rig.tile.head_state_slot(), SignedBeaconBlockView::slot(&block_ssz));
@@ -575,7 +632,7 @@ fn verified_sources_reserve_and_public_pairs_round_trip() {
         rig.on_gossip(&third);
 
         let published = rig.drain();
-        assert!(published.relays.is_empty(), "{target:?}: conflicts are not relayed");
+        assert!(published.relays().is_empty(), "{target:?}: conflicts are not relayed");
         assert!(published.receipts().is_empty(), "{target:?}");
         assert!(published.rejected(&equivocation).is_empty(), "{target:?}: no STF ran");
         assert_eq!(published.invalid_msgs, 0, "{target:?}");
@@ -585,7 +642,11 @@ fn verified_sources_reserve_and_public_pairs_round_trip() {
         assert!(rig.drain().originated.is_empty(), "{target:?}: proven once");
 
         rig.on_local_gossip(GossipTopic::ProposerSlashing, slashing);
-        assert_eq!(rig.drain().relayed_slashings, [slashing.as_slice()], "{target:?}: it verifies");
+        assert_eq!(
+            rig.drain().relayed_slashings(),
+            [slashing.as_slice()],
+            "{target:?}: it verifies"
+        );
         let pooled_slashing: [u8; PROPOSER_SLASHING_SIZE] = slashing[..].try_into().unwrap();
         assert_eq!(pooled(&rig.tile).0, [pooled_slashing], "{target:?}");
 
@@ -593,7 +654,7 @@ fn verified_sources_reserve_and_public_pairs_round_trip() {
         rig.on_gossip(&nth_sibling_of(&block_ssz, 2));
         let later = rig.drain();
         assert_eq!(later.invalid_msgs, 0, "{target:?}: a closed key ignores unverified blocks");
-        assert!(later.relays.is_empty() && later.originated.is_empty(), "{target:?}");
+        assert!(later.relays().is_empty() && later.originated.is_empty(), "{target:?}");
     }
 }
 
@@ -628,7 +689,7 @@ fn closed_gossip_keys_skip_hashing_but_reject_malformed_blocks() {
             rig.on_gossip(&malformed);
             let result = rig.drain();
             assert_eq!(result.invalid_msgs, 1, "{cause}: {target:?}: malformed at any key");
-            assert!(result.relays.is_empty() && result.originated.is_empty());
+            assert!(result.relays().is_empty() && result.originated.is_empty());
             if closed {
                 rig.on_gossip(&block);
                 assert!(
@@ -663,7 +724,7 @@ fn block_beyond_the_lookahead_takes_the_place() {
     rig.on_gossip(&equivocation);
 
     let published = rig.drain();
-    assert!(published.relays.is_empty());
+    assert!(published.relays().is_empty());
     assert_eq!(published.rejected(&unrelayable), [BlockSource::Gossip], "the fixture is sound");
     assert!(published.rejected(&equivocation).is_empty(), "no STF ran");
     assert!(matches!(&published.originated[..], [(GossipTopic::ProposerSlashing, _)]));
@@ -716,7 +777,7 @@ fn local_double_proposal_is_refused_only_against_public_evidence() {
             let published = rig.drain();
             let case = format!("{target:?}, first by {first:?}");
             assert_eq!(published.verdicts(), [verdict], "{case}");
-            assert!(published.relays.is_empty(), "{case}: not published");
+            assert!(published.relays().is_empty(), "{case}: not published");
             assert!(published.receipts().is_empty(), "{case}: not applied");
             assert!(published.originated.is_empty(), "{case}: not reported");
         }
@@ -738,7 +799,7 @@ fn local_proposals_become_evidence_only_after_publication() {
             rig.on_block(first, &block);
             let initial = rig.drain();
             let relayed = matches!(first, Path::Local);
-            assert_eq!(initial.relays.len(), usize::from(relayed));
+            assert_eq!(initial.relays().len(), usize::from(relayed));
             assert!(initial.originated.is_empty());
             if target.is_following() {
                 assert_eq!(rig.tile.head_state_slot(), SignedBeaconBlockView::slot(&block));
@@ -755,7 +816,7 @@ fn local_proposals_become_evidence_only_after_publication() {
             }
             rig.on_gossip(&conflict);
             let result = rig.drain();
-            assert!(result.relays.is_empty());
+            assert!(result.relays().is_empty());
             assert_eq!(result.invalid_msgs, 0);
             if relayed || copy.is_some() {
                 assert!(matches!(&result.originated[..], [(GossipTopic::ProposerSlashing, _)]));
@@ -774,7 +835,7 @@ fn consensus_validated_local_block_becomes_evidence_once_relayed() {
     let mut rig = BlockPublications::new(&pre, &block, SyncUpdate::Following);
     let conflict = rig.equivocation_of(&block);
     rig.on_local(&block, BroadcastValidation::Consensus);
-    assert_eq!(rig.drain().relays, [fulu_relayed(&block)]);
+    assert_eq!(rig.drain().relays(), [fulu_relayed(&block)]);
 
     rig.on_gossip(&conflict);
     assert!(matches!(&rig.drain().originated[..], [(GossipTopic::ProposerSlashing, _)]));

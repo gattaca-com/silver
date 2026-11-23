@@ -266,6 +266,7 @@ impl Harness {
                 None,
                 EngineConfig::default().get_payload_timeout(),
                 ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+                0,
             )
         });
         h.gloas = gloas;

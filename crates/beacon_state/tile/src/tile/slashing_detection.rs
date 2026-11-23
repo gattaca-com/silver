@@ -2,13 +2,13 @@ use flux::spine::SpineProducers;
 use silver_beacon_state_data::{Slot, StateReadView};
 use silver_common::{
     BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, TCacheProducer, TProducer,
-    ssz_view::{ProposerSlashingView, SignedBeaconBlockView, SingleAttestationView},
+    ssz_view::{
+        ProposerSlashingView, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
+    },
 };
 use silver_slashing::{Observation, Offence, SignedHeader};
 
-use super::{
-    BeaconStateTile, Feedback, Producers, block::ParsedBlock, seen_validators::SeenIndices,
-};
+use super::{BeaconStateTile, Producers, block::ParsedBlock, seen_validators::SeenIndices};
 use crate::error::PrecheckError;
 
 impl BeaconStateTile {
@@ -57,28 +57,21 @@ impl BeaconStateTile {
         }
     }
 
-    /// A local vote at a seen key is refused when it conflicts with a public
-    /// one. The API verified its signature under the spec's fork version, as
-    /// gossip verified the public one. Refusal needs the head to verify both
-    /// the same way.
-    pub(super) fn seen_vote_feedback(&self, m: &NewGossipMsg, vote: &[u8]) -> Feedback {
-        let (GossipTopic::BeaconAttestation(_), Ok(single)) = (m.topic, vote.try_into()) else {
-            return Feedback::AlreadySeen;
-        };
+    /// The API verified a local vote's signature under the spec's fork
+    /// version, as gossip verified the public one. Refusal publishes nothing,
+    /// so the head's fork schedule does not matter.
+    pub(super) fn local_conflict(
+        &self,
+        m: &NewGossipMsg,
+        single: &[u8; SINGLE_ATT_SIZE],
+    ) -> Option<Offence> {
         if !m.is_api_verified() {
-            return Feedback::AlreadySeen;
+            return None;
         }
-        let head = self.state.read_view(self.canonical_state_id());
-        let verifiable =
-            |epoch| self.spec.fork_version_at(epoch) == head.epoch.fork_version_at(epoch);
-        match self.detection.conflicts_with_public(single, verifiable) {
-            Some(offence) => {
-                let validator_index = SingleAttestationView::attester_index(single);
-                refuse_local(offence, validator_index, SingleAttestationView::slot(single));
-                Feedback::Slashable(offence)
-            }
-            None => Feedback::AlreadySeen,
-        }
+        let offence = self.detection.conflicts_with_public(single)?;
+        let validator_index = SingleAttestationView::attester_index(single);
+        refuse_local(offence, validator_index, SingleAttestationView::slot(single));
+        Some(offence)
     }
 
     /// At most one proof of each kind per call, so the tile loop paces them.
@@ -109,12 +102,17 @@ impl BeaconStateTile {
         if let Some(proof) =
             self.detection.next_attester_proof(wall_slot, slashable_attester, verifiable)
         {
-            let validator_index = proof.offenders().next();
+            let (offence, validator_index) = (proof.offence, proof.offenders().next());
             let offenders = proof.offenders().count();
             let (len, write) = (proof.slashing_len(), |ssz: &mut [u8]| proof.write_slashing(ssz));
             if publish_gossip(events, stalled, GossipTopic::AttesterSlashing, len, write, producers)
             {
-                silver_log::info!(validator_index, offenders, "detected a double vote");
+                silver_log::info!(
+                    ?offence,
+                    validator_index,
+                    offenders,
+                    "detected an attester offence"
+                );
                 self.detection.pop_attester_proof();
             }
         }

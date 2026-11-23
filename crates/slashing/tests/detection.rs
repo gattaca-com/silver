@@ -1,6 +1,7 @@
 use silver_slashing::{DoubleProposals, Observation, Offence, SignedHeader, SlashingDetection};
 use silver_ssz::ssz_view::{
-    ATTESTATION_FIXED, ProposerSlashingView, SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE,
+    ATTESTATION_FIXED, AttesterSlashingView, ProposerSlashingView, SIGNED_BEACON_BLOCK_MIN,
+    SINGLE_ATT_SIZE, SingleAttestationView,
 };
 
 #[test]
@@ -62,7 +63,7 @@ fn attestation(slot: u64, source_epoch: u64, signers: &[usize], len: usize) -> V
 
 #[test]
 fn proofs_publish_within_a_slot_budget() {
-    let mut detection = SlashingDetection::default();
+    let mut detection = SlashingDetection::new(0, 0);
     let budget = 16;
     let (unverifiable, unslashable) = (budget + 1, budget + 2);
     for validator_index in 0..=unslashable {
@@ -90,7 +91,7 @@ fn proofs_publish_within_a_slot_budget() {
 
 #[test]
 fn full_queue_leaves_a_double_vote_provable() {
-    let mut detection = SlashingDetection::default();
+    let mut detection = SlashingDetection::new(0, 0);
     let committee: Vec<_> = (0..128).collect();
     let record = |detection: &mut SlashingDetection, source_epoch, signers: &[usize]| {
         let attestation = attestation(64, source_epoch, signers, committee.len());
@@ -115,28 +116,64 @@ fn full_queue_leaves_a_double_vote_provable() {
 
 #[test]
 fn local_vote_conflicts_with_retained_public_votes() {
-    let mut detection = SlashingDetection::default();
+    let mut detection = SlashingDetection::new(0, 0);
     let public = vote(7, 0, 2);
     let mut next_slot = vote(7, 1, 2);
     next_slot[16..24].copy_from_slice(&65u64.to_le_bytes());
-    let conflict = |detection: &SlashingDetection, verifiable| {
-        detection.conflicts_with_public(&next_slot, |_| verifiable)
-    };
     detection.record_vote(&public);
-    assert_eq!(conflict(&detection, true), Some(Offence::DoubleVote), "either slot");
-    assert_eq!(detection.conflicts_with_public(&public, |_| true), None, "a repeat");
-    assert_eq!(conflict(&detection, false), None, "unverifiable under the head");
+    let conflict = detection.conflicts_with_public(&next_slot);
+    assert_eq!(conflict, Some(Offence::DoubleVote), "either slot");
+    assert_eq!(detection.conflicts_with_public(&public), None, "a repeat");
     for slot in [66u64, 67] {
         let mut later = vote(8, 0, 2);
         later[16..24].copy_from_slice(&slot.to_le_bytes());
         detection.record_vote(&later);
     }
-    assert_eq!(conflict(&detection, true), None, "two newer slots evict it");
+    assert_eq!(detection.conflicts_with_public(&next_slot), None, "two newer slots evict it");
+}
+
+#[test]
+fn surrounds_use_strict_bounds_and_preserve_evidence_before_lane_reuse() {
+    for (index, first_span, second_span, found) in [
+        (7, (1, 4), (2, 3), true),
+        (7, (2, 3), (1, 4), true),
+        (7, (2, 3), (1, 5), true),
+        (3 * 65536 + 5, (2, 3), (1, 4), true),
+        (7, (1, 0), (0, 1), true),
+        (7, (1, 2), (2, 3), false),
+        (7, (1, 2), (1, 3), false),
+        (7, (1, 3), (2, 3), false),
+        (7, (1, 5), (2, u64::from(u32::MAX) + 3), false),
+    ] {
+        let mut detection = SlashingDetection::new(1, 0);
+        let first = vote(index, first_span.0, first_span.1);
+        let second = vote(index, second_span.0, second_span.1);
+        detection.record_vote(&first);
+        assert_eq!(detection.conflicts_with_public(&second) == Some(Offence::SurroundVote), found);
+        assert_eq!(detection.conflicts_with_public(&vote(index + 1, 0, 6)), None);
+        detection.record_vote(&second);
+        let proof = detection.next_attester_proof(10, |_| true, |_| true);
+        assert_eq!(proof.is_some(), found);
+        if let Some(proof) = proof {
+            let [outer, inner] =
+                if first_span.0 < second_span.0 { [first, second] } else { [second, first] };
+            let mut slashing = vec![0; proof.slashing_len()];
+            proof.write_slashing(&mut slashing);
+            let data = [
+                AttesterSlashingView::att1_data(&slashing),
+                AttesterSlashingView::att2_data(&slashing),
+            ];
+            assert_eq!(
+                data.map(|d| *d.as_bytes()),
+                [&outer, &inner].map(|v| *SingleAttestationView::data(v).as_bytes())
+            );
+        }
+    }
 }
 
 #[test]
 fn double_vote_is_proven_within_one_committee_record() {
-    let mut votes = SlashingDetection::default();
+    let mut votes = SlashingDetection::new(0, 0);
     let (committee, reshuffled) = ([5, 9, 7, 3], [4, 9, 7, 3]);
     let mut record = |slot, source_epoch, signers: &[usize], committee: &[u32]| {
         let attestation = attestation(slot, source_epoch, signers, committee.len());

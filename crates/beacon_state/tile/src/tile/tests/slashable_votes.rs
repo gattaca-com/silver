@@ -26,10 +26,11 @@ struct Votes {
 }
 
 impl Votes {
-    fn at(wall_slot: Slot) -> Self {
+    fn at(wall_slot: Slot, surround_epochs: u8) -> Self {
         let state = BeaconState::empty_test(0);
         let (mut tile, gossip, _rpc, _replay) =
             make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+        tile.detection = SlashingDetection::new(surround_epochs, 0);
         let (mut spine, adapter) = spine_adapter(&tile);
         seed_tile_with_keys(&mut tile, 128, 0);
         anchor_at_header_root(&mut tile);
@@ -47,8 +48,8 @@ impl Votes {
     }
 
     /// Votes in epochs 0 and 1 are current at this wall slot.
-    fn started() -> Self {
-        let mut rig = Self::at(2 * SLOTS_PER_EPOCH - 1);
+    fn started(surround_epochs: u8) -> Self {
+        let mut rig = Self::at(2 * SLOTS_PER_EPOCH - 1, surround_epochs);
         rig.step();
         rig
     }
@@ -153,12 +154,12 @@ impl Votes {
 #[test]
 fn repeat_vote_is_ignored_without_verification() {
     for one_batch in [true, false] {
-        let mut rig = Votes::started();
+        let mut rig = Votes::started(0);
         let (first, subnet) = rig.vote_in(1, 0);
         let (conflicting, _) = rig.vote_in(1, 1);
         rig.submit(&first, subnet, false);
         if !one_batch {
-            assert_eq!(rig.step().relayed_votes, 1);
+            assert_eq!(rig.step().relayed_votes(), 1);
         }
         rig.submit(&conflicting, subnet, false);
         rig.submit(&rig.forged(conflicting), subnet, false);
@@ -166,15 +167,103 @@ fn repeat_vote_is_ignored_without_verification() {
         let drained = rig.step();
 
         let case = format!("one batch: {one_batch}");
-        assert_eq!(drained.relayed_votes, usize::from(one_batch), "{case}: only the first relays");
+        assert_eq!(
+            drained.relayed_votes(),
+            usize::from(one_batch),
+            "{case}: only the first relays"
+        );
         assert_eq!(drained.invalid_msgs, 0, "{case}: no repeat is verified");
         assert!(drained.originated.is_empty(), "{case}");
     }
 }
 
+/// A vote is public once verified from the network or relayed by us. A local
+/// vote on an unknown root is buffered, not relayed.
+#[test]
+fn public_surrounds_publish_only_when_enabled_and_useful() {
+    for (history, inner_by, covered, slashed, expected) in [
+        (1, Origin::Network, false, false, true),
+        (0, Origin::Network, false, false, false),
+        (1, Origin::Local, false, false, true),
+        (1, Origin::LocalUnrelayed, false, false, false),
+        (1, Origin::Network, true, false, false),
+        (1, Origin::Network, false, true, false),
+    ] {
+        for one_batch in [false, true] {
+            let mut rig = Votes::started(history);
+            if slashed {
+                slash_head(&mut rig.tile, 0);
+            }
+            if covered {
+                let proof = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &rig.imm);
+                rig.gossip_in(&proof, GossipTopic::AttesterSlashing, false);
+                rig.step();
+                assert_eq!(pooled(&rig.tile).1.as_deref(), Some(proof.as_slice()));
+            }
+            if inner_by == Origin::LocalUnrelayed {
+                rig.attested = Some([0xAA; 32]);
+            }
+            let (inner, inner_subnet) = rig.vote_in(0, 1);
+            rig.attested = None;
+            let (outer, outer_subnet) = rig.vote_in(1, 0);
+            rig.submit(&inner, inner_subnet, inner_by != Origin::Network);
+            if !one_batch {
+                rig.step();
+            }
+            rig.submit(&outer, outer_subnet, false);
+            let drained = rig.step();
+            let case = format!("{inner_by:?}, history {history}, one batch: {one_batch}");
+            assert_eq!(drained.originated.len(), usize::from(expected), "{case}");
+            if expected {
+                let (topic, proof) = &drained.originated[0];
+                assert_eq!(*topic, GossipTopic::AttesterSlashing);
+                let actual = [
+                    AttesterSlashingView::att1_data(proof),
+                    AttesterSlashingView::att2_data(proof),
+                ];
+                assert_eq!(
+                    actual.map(|d| *d.as_bytes()),
+                    [&outer, &inner].map(|v| *SingleAttestationView::data(v).as_bytes())
+                );
+                rig.gossip_in(proof, *topic, false);
+                rig.step();
+                assert_eq!(pooled(&rig.tile).1.as_ref(), Some(proof));
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Network,
+    Local,
+    LocalUnrelayed,
+}
+
+/// Refusal commits nothing, so a forged copy of the refused vote is no repeat.
+/// It must verify on its own signature.
+#[test]
+fn refused_local_surround_leaves_no_vote_unverified() {
+    let mut rig = Votes::started(1);
+    let (inner, inner_subnet) = rig.vote_in(0, 1);
+    let (outer, outer_subnet) = rig.vote_in(1, 0);
+    let forged = rig.forged(outer);
+    rig.submit(&inner, inner_subnet, false);
+    assert_eq!(rig.step().relayed_votes(), 1);
+    rig.submit(&outer, outer_subnet, true);
+    rig.submit(&forged, outer_subnet, false);
+
+    let drained = rig.step();
+
+    assert_eq!(drained.verdicts(), [Err(LocalGossipFailure::SurroundVote)]);
+    assert_eq!(drained.relayed_votes(), 0);
+    assert_eq!(drained.invalid_msgs, 1, "the forged vote is rejected");
+    assert!(drained.originated.is_empty());
+}
+
 #[test]
 fn failed_handoff_keeps_the_attester_proof_queued() {
-    let mut rig = Votes::started();
+    let mut rig = Votes::started(0);
     let [x, y, _] = peers(&mut rig);
     for (source, aggregator) in [(0, x), (1, y)] {
         let aggregate = rig.aggregate(&[0], source, aggregator);
@@ -199,24 +288,51 @@ fn failed_handoff_keeps_the_attester_proof_queued() {
 /// refused without a signature check.
 #[test]
 fn local_vote_is_refused_only_against_public_evidence() {
-    let refused = Err(LocalGossipFailure::ConflictingAttestation);
+    let double = Err(LocalGossipFailure::ConflictingAttestation);
+    let surround = Err(LocalGossipFailure::SurroundVote);
     // Votes are (target epoch, source epoch).
-    for (public_at, local_at, verdict) in [((1, 0), (1, 1), refused), ((1, 0), (1, 0), Ok(()))] {
-        for one_batch in [true, false] {
-            let mut rig = Votes::started();
+    for (surround_epochs, public_at, local_at, verdict) in [
+        (0, (1, 0), (1, 1), double),
+        (0, (1, 0), (1, 0), Ok(())),
+        (1, (0, 1), (1, 0), surround),
+        (1, (0, 1), (1, 1), Ok(())),
+        (0, (0, 1), (1, 0), Ok(())),
+    ] {
+        for (one_batch, first_local) in [(true, false), (false, false), (true, true), (false, true)]
+        {
+            let mut rig = Votes::started(surround_epochs);
             let (public, public_subnet) = rig.vote_in(public_at.0, public_at.1);
             let (local, local_subnet) = rig.vote_in(local_at.0, local_at.1);
-            rig.submit(&public, public_subnet, false);
+            rig.submit(&public, public_subnet, first_local);
             if !one_batch {
-                rig.step();
+                assert_eq!(rig.step().relayed_votes(), 1);
             }
             rig.submit(&local, local_subnet, true);
 
             let drained = rig.step();
 
-            let case = format!("public {public_at:?}, local {local_at:?}, one batch: {one_batch}");
-            assert_eq!(drained.verdicts(), [verdict], "{case}");
+            let case = format!(
+                "surround_epochs {surround_epochs}, public {public_at:?}, local {local_at:?}, \
+                 one batch: {one_batch}, first local: {first_local}"
+            );
+            let expected =
+                if one_batch && first_local { vec![Ok(()), verdict] } else { vec![verdict] };
+            assert_eq!(drained.verdicts(), expected, "{case}");
+            let local_relays = verdict == Ok(()) && public_at.0 != local_at.0;
+            assert_eq!(
+                drained.relayed_votes(),
+                usize::from(one_batch) + usize::from(local_relays),
+                "{case}: only accepted votes relay"
+            );
             assert!(drained.originated.is_empty(), "{case}: not reported");
+            if verdict == surround {
+                rig.submit(&local, local_subnet, false);
+                let reported = rig.step().originated;
+                assert!(
+                    matches!(&reported[..], [(GossipTopic::AttesterSlashing, _)]),
+                    "{case}: reported once public: {reported:?}"
+                );
+            }
         }
     }
 }
@@ -235,7 +351,7 @@ fn peers(rig: &mut Votes) -> [u32; 3] {
 fn aggregates_prove_only_public_conflicting_overlaps_once() {
     let cases = ["double", "same", "disjoint", "local first", "local second", "local unrelayed"];
     for case in cases {
-        let mut rig = Votes::started();
+        let mut rig = Votes::started(0);
         let [x, y, z] = peers(&mut rig);
         let first = rig.aggregate(&[0, x], 0, x);
         let second_signers = if case == "disjoint" { vec![y] } else { vec![0, y] };
@@ -249,7 +365,7 @@ fn aggregates_prove_only_public_conflicting_overlaps_once() {
         rig.gossip_in(&second, GossipTopic::BeaconAggregateAndProof, second_local);
         let drained = rig.step();
         let relayed = if case == "local unrelayed" { 1 } else { 2 };
-        assert_eq!(drained.relayed_votes, relayed, "{case}: relayable ones are accepted");
+        assert_eq!(drained.relayed_votes(), relayed, "{case}: relayable ones are accepted");
         let proves = matches!(case, "double" | "local first" | "local second");
         assert_eq!(drained.originated.len(), usize::from(proves), "{case}");
         if !proves {
@@ -270,4 +386,108 @@ fn aggregates_prove_only_public_conflicting_overlaps_once() {
         rig.step();
         assert_eq!(pooled(&rig.tile).1.as_ref(), Some(slashing));
     }
+}
+
+fn signed_epoch(
+    tile: &mut BeaconStateTile,
+    validators: usize,
+) -> Vec<([u8; SINGLE_ATT_SIZE], u64)> {
+    let bbr = tile.head_block_root();
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let request = ShufflingRequest::new(&view, 0).expect("epoch 0 shuffling");
+    let shuffling = tile.shuffling_cache.get(request);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        view.epoch.fork_version_at(0),
+        &view.imm.genesis_validators_root,
+    );
+    let mut votes = Vec::with_capacity(validators);
+    for slot in 0..SLOTS_PER_EPOCH {
+        for ci in 0..shuffling.committees_per_slot {
+            let subnet = compute_subnet_for_attestation(
+                shuffling.committees_per_slot as u64,
+                slot,
+                ci as u64,
+            );
+            for &validator in shuffling.committee(slot, ci) {
+                let imm = Immutable::default();
+                let mut vote = test_signing::sign_single_attestation(
+                    0,
+                    validator as u64,
+                    ci as u64,
+                    slot,
+                    bbr,
+                    0,
+                    bbr,
+                    &imm,
+                );
+                let data = SingleAttestationView::data(&vote).as_bytes();
+                let signing_root =
+                    bls::compute_signing_root(&ssz_hash::hash_attestation_data(data), &domain);
+                let key = pyspec_key(validator as u64);
+                vote[144..].copy_from_slice(&key.sign(&signing_root, bls::DST, &[]).to_bytes());
+                votes.push((vote, subnet));
+            }
+        }
+    }
+    votes
+}
+
+fn tile_with_distinct_keys(validators: usize, surround_epochs: u8) -> Votes {
+    let mut rig = Votes::at(31, surround_epochs);
+    let (epoch_base, mut seeds) = build_seed_finalized(validators, false);
+    for (i, seed) in seeds.iter_mut().enumerate() {
+        seed.pubkey = pyspec_key(i as u64).sk_to_pk().to_bytes();
+    }
+    arm_tile(&mut rig.tile, epoch_base, &seeds, 0);
+    // Production sizes the history for the checkpoint's registry; this one
+    // is armed after construction.
+    rig.tile.detection = SlashingDetection::new(surround_epochs, validators);
+    rig
+}
+
+// Includes gossip tcache writes and initial history population for epoch 0.
+// Fixture signing and tile construction are outside the timed interval.
+#[test]
+#[ignore = "opt-in timing harness"]
+fn vote_flush_timing() {
+    const VALIDATORS: usize = 8192;
+    const ROUNDS: usize = 4;
+    const SETTINGS: [u8; 3] = [0, 1, 16];
+
+    let votes = signed_epoch(&mut tile_with_distinct_keys(VALIDATORS, 0).tile, VALIDATORS);
+    let mut totals = [Duration::ZERO; SETTINGS.len()];
+    for round in 0..ROUNDS {
+        for k in 0..SETTINGS.len() {
+            let setting = (round + k) % SETTINGS.len();
+            let mut rig = tile_with_distinct_keys(VALIDATORS, SETTINGS[setting]);
+
+            let start = std::time::Instant::now();
+            for (vote, subnet) in &votes {
+                let message =
+                    gossip_msg(&mut rig.gossip, vote, GossipTopic::BeaconAttestation(*subnet));
+                rig.tile.defer_vote(message, &mut rig.adapter.producers);
+                if rig.tile.votes.batch.is_empty() {
+                    rig.tile.reader.free();
+                }
+            }
+            rig.tile.flush_votes(&mut rig.adapter.producers);
+            rig.tile.publish_slashings(&mut rig.adapter.producers);
+            totals[setting] += start.elapsed();
+
+            let accepted = (0..VALIDATORS).filter(|&v| rig.tile.seen_attesters.contains(0, v));
+            assert_eq!(accepted.count(), VALIDATORS, "every vote verifies");
+        }
+    }
+    for (setting, total) in SETTINGS.iter().zip(totals) {
+        let per_vote = total / (ROUNDS * VALIDATORS) as u32;
+        eprintln!("surround_epochs = {setting:2}: {per_vote:?} per accepted single");
+    }
+}
+
+/// Pyspec validator `index` signs with the scalar `index + 1`.
+fn pyspec_key(index: u64) -> blst::min_pk::SecretKey {
+    let mut scalar = [0u8; 32];
+    scalar[24..].copy_from_slice(&(index + 1).to_be_bytes());
+    blst::min_pk::SecretKey::from_bytes(&scalar).unwrap()
 }

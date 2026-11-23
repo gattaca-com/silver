@@ -150,6 +150,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         None,
         EngineConfig::default().get_payload_timeout(),
         ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+        0,
     );
     tile.open_tcaches().unwrap();
     tile
@@ -194,6 +195,7 @@ fn make_tile_with_producers(
         None,
         EngineConfig::default().get_payload_timeout(),
         ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+        0,
     );
     tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, delivery_p)
@@ -5704,26 +5706,10 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Receipt {
-    slot: Slot,
-    block_root: B256,
-    stage: BlockStage,
-    source: BlockSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Relayed {
-    slot: Slot,
-    block_root: B256,
-}
-
 struct GossipPublications {
     events: Vec<BeaconStateEvent>,
-    relays: Vec<Relayed>,
-    relayed_slashings: Vec<Vec<u8>>,
+    relayed: Vec<(GossipTopic, Vec<u8>)>,
     originated: Vec<(GossipTopic, Vec<u8>)>,
-    relayed_votes: usize,
     invalid_msgs: usize,
 }
 
@@ -5742,41 +5728,27 @@ impl GossipPublications {
             }
             events.push(event)
         });
-        let mut relays = Vec::new();
-        let mut relayed_slashings = Vec::new();
+        let mut relayed = Vec::new();
         let mut invalid_msgs = 0;
-        let mut relayed_votes = 0;
         sink.consume(|event: PeerEvent, _| match event {
             PeerEvent::SendGossip { topic, ssz, .. } => {
-                let relayed = gossip.acquire(ssz);
-                let (bytes, _) = relayed.buffer().expect("relayed bytes readable");
-                match topic {
-                    GossipTopic::BeaconBlock => relays.push(fulu_relayed(bytes)),
-                    GossipTopic::ProposerSlashing | GossipTopic::AttesterSlashing => {
-                        relayed_slashings.push(bytes.to_vec())
-                    }
-                    GossipTopic::BeaconAttestation(_) | GossipTopic::BeaconAggregateAndProof => {
-                        relayed_votes += 1
-                    }
-                    _ => panic!("unexpected relay on {topic:?}"),
-                }
+                let bytes = gossip.acquire(ssz);
+                relayed.push((topic, bytes.buffer().expect("relayed bytes readable").0.to_vec()));
             }
             PeerEvent::P2pGossipInvalidMsg { .. } => invalid_msgs += 1,
             _ => {}
         });
-        Self { events, relays, relayed_slashings, originated, invalid_msgs, relayed_votes }
+        Self { events, relayed, originated, invalid_msgs }
     }
 
-    fn receipts(&self) -> Vec<Receipt> {
-        self.events
-            .iter()
-            .filter_map(|event| match *event {
-                BeaconStateEvent::BlockReceived { slot, block_root, stage, source, .. } => {
-                    Some(Receipt { slot, block_root, stage, source })
-                }
-                _ => None,
-            })
-            .collect()
+    fn relayed_votes(&self) -> usize {
+        let is_vote = |topic| {
+            matches!(
+                topic,
+                GossipTopic::BeaconAttestation(_) | GossipTopic::BeaconAggregateAndProof
+            )
+        };
+        self.relayed.iter().filter(|(topic, _)| is_vote(*topic)).count()
     }
 
     fn verdicts(&self) -> Vec<LocalGossipResult> {
@@ -5788,23 +5760,6 @@ impl GossipPublications {
             })
             .collect()
     }
-
-    fn rejected(&self, block: &[u8]) -> Vec<BlockSource> {
-        let root = block_root_fulu(block);
-        self.events
-            .iter()
-            .filter_map(|event| match *event {
-                BeaconStateEvent::BlockRejected { block_root, source } if block_root == root => {
-                    Some(source)
-                }
-                _ => None,
-            })
-            .collect()
-    }
-}
-
-fn fulu_relayed(bytes: &[u8]) -> Relayed {
-    Relayed { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
 }
 
 fn slash_head(tile: &mut BeaconStateTile, validator: u32) {
