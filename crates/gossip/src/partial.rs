@@ -376,7 +376,7 @@ mod tests {
     ) -> (Vec<CacheSegment>, Vec<CacheSegment>, Option<CacheSegment>, Vec<u8>) {
         let len = k * (BYTES_PER_CELL + BYTES_PER_KZG_PROOF) + header_bytes;
         let mut reservation = producer.reserve(len, true).unwrap();
-        let read = reservation.read();
+        let read = reservation.descriptor();
         {
             let buf = reservation.buffer().unwrap();
             for (i, byte) in buf.iter_mut().enumerate() {
@@ -485,7 +485,7 @@ mod tests {
             let mut consumer =
                 TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
             let mut reservation = producer.reserve(reference.len(), true).unwrap();
-            let read = reservation.read();
+            let read = reservation.descriptor();
             reservation.buffer().unwrap().copy_from_slice(&reference);
             reservation.increment_offset(reference.len());
 

@@ -216,9 +216,9 @@ fn ordinary_reservations_commit_or_abort() {
     };
     assert_eq!(producer.read_buffer(read).unwrap(), b"cell");
     let aborted = {
-        let write = producer.reserve(4, false).unwrap();
+        let mut write = producer.reserve(4, false).unwrap();
         write.buffer().unwrap().fill(0xcc);
-        write.read()
+        write.descriptor()
     };
     assert!(producer.read_buffer(aborted).unwrap().is_empty());
     assert!(producer.reserve(4, false).is_some());

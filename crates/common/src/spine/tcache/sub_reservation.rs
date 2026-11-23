@@ -115,7 +115,7 @@ impl SubReservationRef {
         prefix_len: usize,
         middle_len: usize,
     ) -> Self {
-        let read = reservation.read();
+        let read = reservation.descriptor();
         let cache = reservation.cache;
         let slot_ptr = unsafe { cache.data_ptr().add(cache.index(read.seq)).cast::<Slot>() };
         // The sole allocator owns this unpublished record during initialization.

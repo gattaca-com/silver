@@ -30,7 +30,7 @@ impl SubReservationList {
             producer.reserve(count * ENTRY_BYTES, false).ok_or(SubReservationError::CacheFull)?;
         let bytes = reservation.buffer().map_err(|_| SubReservationError::Stale)?;
         let mut written = 0;
-        let mut read = reservation.read();
+        let mut floor = u64::MAX;
         for (index, entry) in entries.enumerate() {
             let entry = entry.into().ok_or(SubReservationError::InvalidLayout)?;
             if index >= count || entry.read.id != producer.cache_ref().id() {
@@ -41,13 +41,15 @@ impl SubReservationList {
             out[8..].copy_from_slice(&(entry.header_bytes as u64).to_le_bytes());
             // Entries committed before this reserve may sit below the sampled
             // floor; the list carries them, so its promise must cover them.
-            read.floor = read.floor.min(entry.read.seq);
+            floor = floor.min(entry.read.seq);
             written += 1;
         }
         if written != count {
             return Err(SubReservationError::InvalidLayout);
         }
         reservation.flush().map_err(|_| SubReservationError::Stale)?;
+        let mut read = reservation.read();
+        read.floor = read.floor.min(floor);
         Ok(Self { read, count })
     }
 

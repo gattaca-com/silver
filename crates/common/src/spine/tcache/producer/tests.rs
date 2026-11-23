@@ -235,8 +235,8 @@ fn sub_reservations_use_separate_padding_when_needed() {
 fn reservation_read_stamps_the_emitter_and_the_reserve_time_floor() {
     let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
     let mut first = producer.reserve(32, false).unwrap();
-    assert_eq!(first.read().emitter, PRODUCER_EMITTER);
-    assert_eq!(first.read().floor, 0);
+    assert_eq!(first.descriptor().emitter, PRODUCER_EMITTER);
+    assert_eq!(first.descriptor().floor, 0);
     producer.reserve(32, true).unwrap().write_all(&[0xbb; 32]).unwrap();
     let mut third = producer.reserve(32, false).unwrap();
     producer.reserve(32, true).unwrap().write_all(&[0xdd; 32]).unwrap();
@@ -246,19 +246,19 @@ fn reservation_read_stamps_the_emitter_and_the_reserve_time_floor() {
     first.flush().unwrap();
     // Stamped from the loop-start sample: the oldest reservation still
     // uncommitted when the loop began, not the tail.
-    let next = producer.reserve(32, false).unwrap();
-    assert_eq!(next.read().floor, 0, "no loop has started since the first commit");
+    let mut next = producer.reserve(32, false).unwrap();
+    assert_eq!(next.descriptor().floor, 0, "no loop has started since the first commit");
     drop(next);
     producer.loop_start();
-    let next = producer.reserve(32, false).unwrap();
-    assert_eq!(next.read().floor, third.seq());
-    assert!(next.read().floor <= next.seq());
+    let mut next = producer.reserve(32, false).unwrap();
+    assert_eq!(next.descriptor().floor, third.seq());
+    assert!(next.descriptor().floor <= next.seq());
 
     // A commit inside the loop does not move the stamp; the next loop does.
     third.flush().unwrap();
     drop(next);
-    let later = producer.reserve(32, false).unwrap();
-    assert_eq!(later.read().floor, third.seq());
+    let mut later = producer.reserve(32, false).unwrap();
+    assert_eq!(later.descriptor().floor, third.seq());
 }
 
 #[test]
@@ -282,4 +282,70 @@ fn blocking_reservation_names_the_oldest_unfinished_write_once_consumers_passed_
 
     drop(held);
     assert_eq!(producer.blocking_reservation(), None);
+}
+
+#[test]
+fn abort_of_the_newest_reservation_returns_its_space() {
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
+    producer.reserve(32, true).unwrap().write_all(&[0xaa; 32]).unwrap();
+    let (head, space) = (producer.next_seq(), producer.state.space);
+
+    for _ in 0..16 {
+        let reservation = producer.reserve(64, false).unwrap();
+        assert_eq!(reservation.seq(), head);
+        producer.abort(reservation);
+        assert_eq!(producer.next_seq(), head);
+        assert!(producer.state.space >= space);
+    }
+
+    let mut reused = producer.reserve(16, true).unwrap();
+    assert_eq!(reused.seq(), head);
+    reused.write_all(&[0xbb; 16]).unwrap();
+    assert_eq!(producer.read_buffer(reused.read()).unwrap(), &[0xbb; 16]);
+}
+
+#[test]
+fn abort_across_the_wrap_returns_the_padding_with_the_payload() {
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
+    producer.reserve(160, false).unwrap().flush().unwrap();
+    let (head, space) = (producer.next_seq(), producer.state.space);
+
+    let wrapped = producer.reserve(96, false).unwrap();
+    assert_eq!(wrapped.seq(), head);
+    producer.abort(wrapped);
+    assert_eq!(producer.next_seq(), head);
+    assert!(producer.state.space >= space);
+    assert_eq!(producer.reserve(8, false).unwrap().seq(), head);
+}
+
+#[test]
+fn abort_skips_a_reservation_that_cannot_be_unreserved() {
+    // Not the newest.
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
+    let older = producer.reserve(32, false).unwrap();
+    let newer = producer.reserve(32, false).unwrap();
+    let head = producer.next_seq();
+    producer.abort(older);
+    assert_eq!(producer.next_seq(), head);
+    producer.abort(newer);
+    assert_eq!(producer.next_seq(), head - 64);
+
+    // Named: a message may carry its sequence.
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
+    let mut named = producer.reserve(32, false).unwrap();
+    let read = named.descriptor();
+    producer.abort(named);
+    assert_eq!(producer.next_seq(), 64);
+    assert!(producer.read_buffer(read).unwrap().is_empty());
+
+    // Under a published head: a consumer may have taken it as its tail.
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
+    let covered = producer.reserve(32, false).unwrap();
+    let head = producer.next_seq();
+    producer.state.publish(unsafe { &*producer.cache });
+    producer.abort(covered);
+    assert_eq!(producer.next_seq(), head);
+    assert_eq!(producer.state.min_allocation, 0);
+    producer.loop_start();
+    assert_eq!(producer.state.min_allocation, head);
 }

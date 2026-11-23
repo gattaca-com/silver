@@ -91,22 +91,35 @@ pub(super) fn handle_incoming(
         }
     };
 
-    let msg_id = decompress_to_reservation(publish, snappy_data, &mut reservation, topic_string)
-        .inspect_err(|e| {
-            if !matches!(e, Error::SnappyError(_)) {
-                silver_log::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg");
-                return;
-            }
-            let hash = msg_id_invalid_snappy(topic_string, snappy_data);
-            if dedup_cache.insert(fast_id, hash) {
-                silver_log::warn!(?stream_id, ?topic, ?e, "gossip rejected: bad snappy body");
-                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
-                    p2p_peer: stream_id.peer(),
-                    topic,
-                    hash,
-                }));
-            }
-        })?;
+    let decompressed =
+        decompress_to_reservation(publish, snappy_data, &mut reservation, topic_string)
+            .inspect_err(|e| {
+                if !matches!(e, Error::SnappyError(_)) {
+                    silver_log::error!(
+                        ?stream_id,
+                        ?e,
+                        topic_string,
+                        "failed to decompress gossip msg"
+                    );
+                    return;
+                }
+                let hash = msg_id_invalid_snappy(topic_string, snappy_data);
+                if dedup_cache.insert(fast_id, hash) {
+                    silver_log::warn!(?stream_id, ?topic, ?e, "gossip rejected: bad snappy body");
+                    emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
+                        p2p_peer: stream_id.peer(),
+                        topic,
+                        hash,
+                    }));
+                }
+            });
+    let msg_id = match decompressed {
+        Ok(msg_id) => msg_id,
+        Err(e) => {
+            publish.abort(reservation);
+            return Err(e);
+        }
+    };
 
     if !dedup_cache.insert(fast_id, msg_id) {
         // Second dedup check. Different snappy bytes can decompress to the same message
@@ -117,10 +130,10 @@ pub(super) fn handle_incoming(
             hash: msg_id,
             recv_ts,
         }));
+        publish.abort(reservation);
         return Ok(());
     }
 
-    let ssz_read = reservation.read();
     // A full relay cache only costs the relay: the message is still processed
     // and stays deduplicated, so other peers' copies count as duplicates
     // rather than retrying the copy.
@@ -148,6 +161,7 @@ pub(super) fn handle_incoming(
 
     // Flush the reservation matching the gossip message available downstream.
     reservation.flush()?;
+    let ssz_read = reservation.read();
 
     emit(GossipHandlerEvent::NewGossip(NewGossipMsg {
         stream_id: *stream_id,
@@ -384,6 +398,60 @@ mod tests {
         .unwrap();
         let message = message.unwrap();
         assert_eq!(message.ssz_cache, SszCache::Gossip);
+        assert_eq!(ssz.read_buffer(message.ssz).unwrap(), bytes);
+    }
+
+    /// A body that fails to decompress leaves the SSZ ring as it found it:
+    /// frames that declare most of the ring and carry nothing cannot fill it.
+    #[test]
+    fn rejected_bodies_return_their_ssz_reservation() {
+        let mut ssz = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let _held = Box::new(TCacheReader::single(ssz.cache_ref(), "", TReadMode::Strict).unwrap());
+        let mut protobuf = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let topic = GossipTopic::DataColumnSidecar(0);
+        let domains = ActiveDomains::new(Some(GossipDomain::new([0; 4], ForkName::Fulu)));
+        let wire = topic.to_wire("00000000");
+        let stream = P2pStreamId::new(1, 3, StreamProtocol::GossipSubV13, true);
+        let mut dedup = DedupCache::default();
+        let mut deliver = |ssz: &mut TProducer, data: &[u8]| {
+            let mut events = Vec::new();
+            let result = handle_incoming(
+                &wire,
+                domains.parse(&wire),
+                data,
+                &stream,
+                Nanos::now(),
+                &mut dedup,
+                ssz,
+                None,
+                &mut protobuf,
+                &mut |event| events.push(event),
+            );
+            (result, events)
+        };
+
+        let declared = 40_000usize;
+        assert!(declared >= topic.min_uncompressed_size() && 2 * declared > 1 << 16);
+        let head = ssz.next_seq();
+        for unique in 0..8u8 {
+            // The length, then a one-byte literal: the body is short of it.
+            let mut bogus = snappy_length_prefix(declared);
+            bogus.extend([0x00, unique]);
+            let (result, events) = deliver(&mut ssz, &bogus);
+            assert!(matches!(result, Err(Error::SnappyError(_))));
+            assert!(matches!(events.as_slice(), [GossipHandlerEvent::PeerEvent(
+                PeerEvent::P2pGossipInvalidMsg { p2p_peer: 1, .. }
+            )]));
+            assert_eq!(ssz.next_seq(), head);
+        }
+
+        let bytes = vec![0x33; declared];
+        let compressed = snap::raw::Encoder::new().compress_vec(&bytes).unwrap();
+        let (result, events) = deliver(&mut ssz, &compressed);
+        result.unwrap();
+        let [GossipHandlerEvent::NewGossip(message), _] = events.as_slice() else {
+            panic!("expected the message and its arrival, got {} events", events.len());
+        };
         assert_eq!(ssz.read_buffer(message.ssz).unwrap(), bytes);
     }
 
