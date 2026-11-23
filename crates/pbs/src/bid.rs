@@ -455,7 +455,7 @@ mod tests {
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let config = PbsConfig::new(format!("http://{}", listener.local_addr().unwrap()));
-            let server = thread::spawn(move || {
+            let mut server = Some(thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 let mut request = Vec::new();
@@ -470,7 +470,7 @@ mod tests {
                     format!("HTTP/1.1 200 OK\r\n{metadata}Content-Length: {}\r\n\r\n", body.len());
                 stream.write_all(head.as_bytes()).unwrap();
                 stream.write_all(&body).unwrap();
-            });
+            }));
             let spec = SpecConfig::mainnet();
             let mut readiness = Readiness::new(16);
             let mut fetch = HeaderFetch::new(
@@ -492,16 +492,21 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut answer = None;
             while answer.is_none() {
+                if server.as_ref().is_some_and(|server| server.is_finished()) {
+                    server.take().unwrap().join().unwrap();
+                }
                 assert!(Instant::now() < deadline, "no header response");
                 readiness.wait(Duration::from_millis(5));
                 fetch.spin(readiness.events(), readiness.registry(), &mut |request, bid| {
                     assert_eq!(request.slot, 1);
                     assert_eq!(request.parent_hash, PARENT_HASH);
-                    answer = Some(bid.unwrap().to_vec());
+                    answer = Some(bid.map(|bid| bid.to_vec()));
                 });
             }
-            assert_eq!(answer.unwrap(), expected);
-            server.join().unwrap();
+            if let Some(server) = server {
+                server.join().unwrap();
+            }
+            assert_eq!(answer.unwrap().unwrap(), expected);
         }
     }
 

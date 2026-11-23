@@ -52,12 +52,12 @@ impl JsonBid {
     /// The response's `SignedBuilderBid` as SSZ, empty when a JSON body does
     /// not decode.
     pub(crate) fn ssz_bid<'s>(&'s mut self, response: ClientResponse<'s>) -> DecodedBid<'s> {
-        self.version = None;
         let version = response.header(CONSENSUS_VERSION);
         let is_json = response
             .header("Content-Type")
             .is_some_and(|value| value.starts_with(b"application/json"));
         if !is_json {
+            self.version = None;
             return DecodedBid { bytes: response.body, version };
         }
         if self.reencode(response.body, version.is_none()).is_none() {
@@ -81,7 +81,10 @@ impl JsonBid {
             buffer.clear();
         }
         let mut deserializer = serde_json::Deserializer::from_slice(json);
-        let mut version = None;
+        let mut version = self.version.take();
+        if !capture_version {
+            version = None;
+        }
         let capture = capture_version.then_some(&mut version);
         if let Err(error) = Envelope(SignedBid(self), capture).deserialize(&mut deserializer) {
             silver_log::warn!(%error, "sidecar bid is not a Fulu SignedBuilderBid");
@@ -121,6 +124,16 @@ impl JsonBid {
     }
 }
 
+struct StringSeed<'a>(&'a mut String);
+
+impl<'de> DeserializeSeed<'de> for StringSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        String::deserialize_in_place(deserializer, self.0)
+    }
+}
+
 /// `{ "version": .., "data": <signed bid> }`
 pub(crate) struct Envelope<'a, S>(pub(crate) S, pub(crate) Option<&'a mut Option<String>>);
 
@@ -142,6 +155,7 @@ impl<'de, S: DeserializeSeed<'de, Value = ()>> Visitor<'de> for Envelope<'_, S> 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let mut data = Some(self.0);
         let mut version = self.1;
+        let mut has_version = false;
         while let Some(key) = map.next_key::<&str>()? {
             if key == "data" &&
                 let Some(seed) = data.take()
@@ -150,13 +164,17 @@ impl<'de, S: DeserializeSeed<'de, Value = ()>> Visitor<'de> for Envelope<'_, S> 
             } else if key == "version" &&
                 let Some(output) = version.as_mut()
             {
-                if output.is_some() {
+                if has_version {
                     return Err(de::Error::duplicate_field("version"));
                 }
-                **output = Some(map.next_value::<String>()?);
+                map.next_value_seed(StringSeed(output.get_or_insert_with(String::new)))?;
+                has_version = true;
             } else {
                 map.next_value::<IgnoredAny>()?;
             }
+        }
+        if !has_version && let Some(output) = version {
+            *output = None;
         }
         match data {
             Some(_) => Err(de::Error::missing_field("data")),
@@ -518,6 +536,28 @@ mod tests {
 
         let again = decoder.reencode(json.as_bytes(), false).unwrap();
         assert_eq!(again, &ssz[..], "reused buffers start clean");
+    }
+
+    #[test]
+    fn headerless_json_reuses_the_version_buffer() {
+        let json = bid_json();
+        let mut decoder = JsonBid::new();
+        decoder.version = Some(String::with_capacity(64));
+        let buffer = decoder.version.as_ref().unwrap().as_ptr();
+        let capacity = decoder.version.as_ref().unwrap().capacity();
+
+        for json in [json.clone(), json.replace("\"fulu\"", r#""f\u0075lu""#)] {
+            let mut body = json.into_bytes();
+            let decoded = decoder.ssz_bid(ClientResponse {
+                status: 200,
+                headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+                body: &mut body,
+            });
+            assert_eq!(decoded.version, Some(b"fulu".as_slice()));
+            let version = decoder.version.as_ref().unwrap();
+            assert_eq!(version.as_ptr(), buffer);
+            assert_eq!(version.capacity(), capacity);
+        }
     }
 
     #[test]
