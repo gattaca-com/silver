@@ -495,12 +495,8 @@ impl PendingQuery {
 }
 
 fn disk_ring() -> Result<DiskIo, Error> {
-    let unavailable = |e: Error| {
-        let needs = "needs Linux 5.15+ and a seccomp profile that allows io_uring";
-        Error::new(e.kind(), format!("io_uring unavailable ({needs}): {e}"))
-    };
-    let mut disk = DiskIo::new(DiskConfig::default()).map_err(unavailable)?;
-    disk.limit_io_workers(IO_WORKERS, 0).map_err(unavailable)?;
+    let mut disk = DiskIo::new(DiskConfig::default())?;
+    disk.limit_io_workers(IO_WORKERS, 0)?;
     Ok(disk)
 }
 

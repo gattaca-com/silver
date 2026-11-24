@@ -110,14 +110,14 @@ silver_peer = {path = "crates/peer" }
 silver_preset = { path = "crates/preset" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd"}
-flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd"}
-flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd"}
-flux-network = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd"}
-type-hash = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd"}
-type-hash-derive = { git = "https://github.com/gattaca-com/flux", rev = "72e5e9062c73ecf8d42012cd29fce521b514c8cd"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f"}
+flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f"}
+flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f"}
+flux-network = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f"}
+type-hash = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f"}
+type-hash-derive = { git = "https://github.com/gattaca-com/flux", rev = "53e86f30d2836880fe40f76bdf47d3c15f3a727f"}
 
 # External
 backtrace = "0.3"
@@ -181,7 +181,7 @@ secp256k1 = { version = "0.30", features = ["global-context", "rand", "hashes"] 
 smallvec = "1.15.2"
 rustls = "0.23.37"
 serde = { version = "1.0.228", features = ["derive"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1.0.135"
 serde_yml = "0.0.12"
 simd-json = "0.17.0"

@@ -302,14 +302,12 @@ fn api_envelopes<const N: usize>(
         store.queue_envelope_request(request_id as u64, lookup);
     }
     let mut api = vec![];
-    store
-        .file_io(|_| [1, 2, 3, 4], producer, &mut |s| match s {
-            IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block }) => {
-                api.push((request_id, block))
-            }
-            other => panic!("api requests answer the api alone, got {other:?}"),
-        })
-        .unwrap();
+    serve(store, |_| [1, 2, 3, 4], producer, &mut |s| match s {
+        IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block }) => {
+            api.push((request_id, block))
+        }
+        other => panic!("api requests answer the api alone, got {other:?}"),
+    });
     let mut reader =
         TCacheReader::single(producer.cache_ref(), "api_envelopes", TReadMode::Sliding).unwrap();
     std::array::from_fn(|i| {

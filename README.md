@@ -7,8 +7,8 @@ A high-performance Ethereum consensus client.
 
 Silver runs Fulu and Gloas. Prebuilt binaries are linux-x86_64 only.
 
-Storage uses io_uring, so Silver needs Linux 5.15 or newer. It does not start
-where io_uring is blocked, such as under gVisor.
+Storage uses io_uring on Linux 5.15 or newer. Where io_uring is unavailable or
+blocked, it falls back to a thread pool.
 
 ## Quick start (mainnet)
 
@@ -189,8 +189,8 @@ docker pull ghcr.io/gattaca-com/silver:latest
 `latest` follows the newest release. Pin a release tag, such as `v0.1.0-alpha.17`, to stay on one version.
 
 Images contain the same Linux amd64 `silver` and `silver_surfer` binaries attached to the corresponding release.
-Recent Docker releases block io_uring in their default seccomp profile. Run Silver with a profile that allows
-`io_uring_setup`, `io_uring_enter` and `io_uring_register`.
+Recent Docker releases block io_uring in their default seccomp profile. Silver then falls back to a thread pool for
+disk I/O. To keep io_uring, use a profile that allows `io_uring_setup`, `io_uring_enter` and `io_uring_register`.
 Each release links to its image tag and digest. Set `LOG_STDOUT=1` and `RUST_LOG` to configure container logs.
 
 The image runs as UID 65532. Bind-mounted data directories must be writable by that UID, or by the user selected with `--user`.

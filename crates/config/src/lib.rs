@@ -250,6 +250,9 @@ impl Config {
                 None => self.pbs = Some(PbsConfig::new(endpoint)),
             }
         }
+        if let Some(bind) = overrides.beacon_api_bind {
+            self.beacon_api_bind = bind;
+        }
     }
 }
 
@@ -261,6 +264,7 @@ pub struct Overrides {
     pub jwt_secret: Option<String>,
     pub unsafe_no_el: bool,
     pub pbs_endpoint: Option<String>,
+    pub beacon_api_bind: Option<Vec<String>>,
 }
 
 impl Config {
@@ -591,6 +595,16 @@ mod tests {
         let cfg = Config::from_toml("", flag).unwrap();
         assert_eq!(cfg.pbs().unwrap().get_header_timeout(), Duration::from_millis(1200));
         assert_eq!(cfg.pbs().unwrap().submit_blinded_block_timeout(), Duration::from_millis(5000));
+    }
+
+    #[test]
+    fn beacon_api_bind_flag_overrides_the_file() {
+        let toml = "beacon_api_bind = [\"127.0.0.1:6000\"]\n";
+        let flag = Overrides {
+            beacon_api_bind: Some(vec!["0.0.0.0:5051".into()]),
+            ..Overrides::default()
+        };
+        assert_eq!(Config::from_toml(toml, flag).unwrap().beacon_api_bind(), ["0.0.0.0:5051"]);
     }
 
     #[test]

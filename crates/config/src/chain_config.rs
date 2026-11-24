@@ -174,6 +174,7 @@ mod tests {
             bootstrap_enrs: Vec::new(),
             spec: SpecConfig::reference(),
             genesis_validators_root: [0; 32],
+            genesis_unix_secs: None,
             data_dir: data_dir.to_str().unwrap().to_owned(),
         }
     }
