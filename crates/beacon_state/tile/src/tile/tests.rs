@@ -5722,9 +5722,10 @@ impl GossipPublications {
         let mut events = Vec::new();
         let mut originated = Vec::new();
         sink.consume(|event: BeaconStateEvent, _| {
-            if let BeaconStateEvent::PublishGossip { topic, ssz } = event {
+            if let BeaconStateEvent::PublishSlashing { kind, ssz } = event {
                 let bytes = handoff.acquire(ssz);
-                originated.push((topic, bytes.buffer().expect("originated bytes").0.to_vec()));
+                let ssz = bytes.buffer().expect("originated bytes").0.to_vec();
+                originated.push((kind.topic(), ssz));
             }
             events.push(event)
         });

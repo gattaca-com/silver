@@ -1,7 +1,7 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{Slot, StateReadView};
 use silver_common::{
-    BeaconStateEvent, BlockSource, GossipTopic, LOCAL_GOSSIP_STREAM_ID, NewGossipMsg,
+    BeaconStateEvent, BlockSource, LOCAL_GOSSIP_STREAM_ID, NewGossipMsg, SlashingKind,
     TCacheProducer, TProducer,
     ssz_view::{
         ProposerSlashingView, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
@@ -82,8 +82,7 @@ impl BeaconStateTile {
             let slot = ProposerSlashingView::h1_slot(proof);
             let proposer_index = ProposerSlashingView::h1_proposer_index(proof);
             let (len, write) = (proof.len(), |ssz: &mut [u8]| ssz.copy_from_slice(proof));
-            if publish_gossip(events, stalled, GossipTopic::ProposerSlashing, len, write, producers)
-            {
+            if publish_slashing(events, stalled, SlashingKind::Proposer, len, write, producers) {
                 silver_log::info!(slot, proposer_index, "detected a double proposal");
                 self.detection.proposals.pop_proof();
             }
@@ -98,8 +97,7 @@ impl BeaconStateTile {
             let (offence, validator_index) = (proof.offence, proof.offenders().next());
             let offenders = proof.offenders().count();
             let (len, write) = (proof.slashing_len(), |ssz: &mut [u8]| proof.write_slashing(ssz));
-            if publish_gossip(events, stalled, GossipTopic::AttesterSlashing, len, write, producers)
-            {
+            if publish_slashing(events, stalled, SlashingKind::Attester, len, write, producers) {
                 silver_log::info!(
                     ?offence,
                     validator_index,
@@ -123,22 +121,22 @@ fn refuse_local(offence: Offence, validator_index: u64, slot: Slot) {
 
 /// False when the tcache has no room this loop; the caller keeps the message.
 /// A stall is logged once, not on every retry.
-fn publish_gossip(
+fn publish_slashing(
     events: &mut TProducer,
     stalled: &mut bool,
-    topic: GossipTopic,
+    kind: SlashingKind,
     len: usize,
     write: impl FnOnce(&mut [u8]),
     producers: &mut Producers,
 ) -> bool {
     let Some(ssz_read) = events.write_with(len, write) else {
         if !std::mem::replace(stalled, true) {
-            silver_log::error!(?topic, "beacon_state tcache full; originated message deferred");
+            silver_log::error!(?kind, "beacon_state tcache full; slashing publication deferred");
         }
         return false;
     };
     *stalled = false;
-    producers.produce(BeaconStateEvent::PublishGossip { topic, ssz: ssz_read });
+    producers.produce(BeaconStateEvent::PublishSlashing { kind, ssz: ssz_read });
     true
 }
 

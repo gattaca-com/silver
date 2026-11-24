@@ -665,8 +665,8 @@ impl Tile<SilverSpine> for Controller {
                 BeaconStateEvent::CustodyChange { custody_group_count, columns, from_slot } => {
                     self.grow_custody(from_slot, custody_group_count, columns, producers)
                 }
-                BeaconStateEvent::PublishGossip { topic, ssz } => {
-                    self.originated.push((topic, ssz))
+                BeaconStateEvent::PublishSlashing { kind, ssz } => {
+                    self.originated.push((kind.topic(), ssz))
                 }
                 _ => {}
             }

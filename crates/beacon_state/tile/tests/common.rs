@@ -148,7 +148,7 @@ pub enum OutboundKind {
     PoolChange,
     PayloadAttributes,
     CustodyChange,
-    PublishGossip,
+    PublishSlashing,
     NewPayload,
     NewPayloadEnvelope,
     Fcu,
@@ -175,7 +175,7 @@ impl OutboundKind {
             "proposed_payload" => Self::ProposedPayload,
             "pool_change" => Self::PoolChange,
             "payload_attributes" => Self::PayloadAttributes,
-            "publish_gossip" => Self::PublishGossip,
+            "publish_slashing" => Self::PublishSlashing,
             "new_payload" => Self::NewPayload,
             "new_payload_envelope" => Self::NewPayloadEnvelope,
             "fcu" => Self::Fcu,
@@ -199,7 +199,7 @@ impl OutboundKind {
             BeaconStateEvent::PoolChange(_) => Self::PoolChange,
             BeaconStateEvent::PayloadAttributes(_) => Self::PayloadAttributes,
             BeaconStateEvent::CustodyChange { .. } => Self::CustodyChange,
-            BeaconStateEvent::PublishGossip { .. } => Self::PublishGossip,
+            BeaconStateEvent::PublishSlashing { .. } => Self::PublishSlashing,
         }
     }
 

@@ -5,8 +5,8 @@ use silver_common::{
     BeaconApiResponse, BroadcastValidation, ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut,
     GossipTraffic, GossipTrafficBytes, HeadChange, IpBytes, Keypair, LOCAL_GOSSIP_STREAM_ID,
     MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, RpcOffence,
-    RpcSeverity, SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead,
-    TCacheReader, TCacheTable, TProducer, TReadMode,
+    RpcSeverity, SlashingKind, SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer,
+    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
     ssz_view::{
         PAYLOAD_ATTESTATION_MESSAGE_SIZE, PROPOSER_SLASHING_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE,
     },
@@ -623,32 +623,32 @@ fn assert_no_syncing_publication(origin: ColumnOrigin) {
 
 #[test]
 fn originated_message_is_copied_into_gossip_and_waits_for_validation() {
-    let topic = GossipTopic::ProposerSlashing;
-    let mut capture = GossipPublications::new(topic, b"unrelated frame");
+    let kind = SlashingKind::Proposer;
+    let mut capture = GossipPublications::new(kind.topic(), b"unrelated frame");
     capture.observer.consume(|_: NewGossipMsg, _| {});
     let ssz = write_bytes(&mut capture.rpc, &[0x5a; PROPOSER_SLASHING_SIZE]);
 
-    capture.observer.produce(BeaconStateEvent::PublishGossip { topic, ssz });
+    capture.observer.produce(BeaconStateEvent::PublishSlashing { kind, ssz });
     capture.crank();
 
     let mut messages = Vec::new();
     capture.observer.consume(|message: NewGossipMsg, _| messages.push(message));
     let [message] = messages[..] else { panic!("one message enters validation") };
     assert_eq!(message.stream_id, LOCAL_GOSSIP_STREAM_ID);
-    assert_eq!(message.topic, topic);
+    assert_eq!(message.topic, GossipTopic::ProposerSlashing);
     assert_eq!(message.ssz.id(), TCacheId::ControlProcessing);
     assert!(capture.sent().is_empty(), "nothing is published before validation");
 }
 
 #[test]
 fn originated_message_is_retried_until_gossip_is_ready() {
-    let topic = GossipTopic::ProposerSlashing;
-    let mut capture = GossipPublications::attach_on(topic, &[], None);
+    let kind = SlashingKind::Proposer;
+    let mut capture = GossipPublications::attach_on(kind.topic(), &[], None);
     capture.crank();
     capture.observer.consume(|_: NewGossipMsg, _| {});
     let ssz = write_bytes(&mut capture.rpc, &[0x5a; PROPOSER_SLASHING_SIZE]);
 
-    capture.observer.produce(BeaconStateEvent::PublishGossip { topic, ssz });
+    capture.observer.produce(BeaconStateEvent::PublishSlashing { kind, ssz });
     let mut injected = 0;
     for ready in [false, true, true] {
         if ready {
