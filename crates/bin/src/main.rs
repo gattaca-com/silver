@@ -74,6 +74,7 @@ const _: () = assert!(
     "two held proposals must fit without wrapping"
 );
 
+/// Free core allocated for blocking disk io operations.
 const DISK_IO_CORE: usize = 0;
 
 /// The commit stays first: telemetry reads the first field as the commit.
@@ -326,6 +327,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         long_lived_syncnets,
     )?;
     control_tile = control_tile
+        .with_io_worker_cores(&[DISK_IO_CORE])
         .with_data_columns_cache(
             cell_config.clone(),
             das_custody_groups,
