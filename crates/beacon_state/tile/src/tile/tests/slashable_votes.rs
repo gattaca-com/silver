@@ -54,13 +54,18 @@ impl Votes {
 
     /// Validator 0's attestation duty in `epoch`.
     fn duty(&mut self, epoch: Epoch) -> Duty {
+        self.duty_where(epoch, |_, committee| committee.contains(&0))
+    }
+
+    /// The first committee in `epoch` that `wanted` accepts.
+    fn duty_where(&mut self, epoch: Epoch, wanted: impl Fn(Slot, &[u32]) -> bool) -> Duty {
         let view = self.tile.state.read_view(self.tile.canonical_state_id());
         let request = ShufflingRequest::new(&view, epoch).expect("shuffling");
         let shuffling = self.tile.shuffling_cache.get(request);
         let (slot, ci) = (epoch * SLOTS_PER_EPOCH..(epoch + 1) * SLOTS_PER_EPOCH)
             .flat_map(|slot| (0..shuffling.committees_per_slot).map(move |ci| (slot, ci)))
-            .find(|&(slot, ci)| shuffling.committee(slot, ci).contains(&0))
-            .expect("validator 0 attests once per epoch");
+            .find(|&(slot, ci)| wanted(slot, shuffling.committee(slot, ci)))
+            .expect("a committee in the epoch");
         let committees = shuffling.committees_per_slot as u64;
         Duty {
             slot,
@@ -317,6 +322,36 @@ fn local_vote_is_refused_only_against_public_evidence() {
                 );
             }
         }
+    }
+}
+
+/// Public singles are retained for the latest two vote slots. A conflict
+/// with an evicted vote is not refused.
+#[test]
+fn local_double_vote_against_an_evicted_public_vote_is_accepted() {
+    for (evicted, verdict) in
+        [(false, Err(LocalGossipFailure::ConflictingAttestation)), (true, Ok(()))]
+    {
+        let mut rig = Votes::started(0);
+        let (public, subnet) = rig.vote_in(1, 0);
+        let (local, _) = rig.vote_in(1, 1);
+        rig.submit(&public, subnet, false);
+        assert_eq!(rig.step().relayed_votes(), 1);
+        if evicted {
+            let public_slot = SingleAttestationView::slot(&public);
+            let later =
+                rig.duty_where(1, |slot, _| slot > public_slot && (slot - public_slot) % 2 == 0);
+            let newer = rig.signed_vote(&later, later.committee[0], 0);
+            rig.submit(&newer, later.subnet, false);
+            assert_eq!(rig.step().relayed_votes(), 1, "the newer vote is public");
+        }
+
+        rig.submit(&local, subnet, true);
+        let drained = rig.step();
+
+        assert_eq!(drained.verdicts(), [verdict], "evicted: {evicted}");
+        assert_eq!(drained.relayed_votes(), 0, "evicted: {evicted}: a repeat key never relays");
+        assert!(drained.originated.is_empty(), "evicted: {evicted}");
     }
 }
 
