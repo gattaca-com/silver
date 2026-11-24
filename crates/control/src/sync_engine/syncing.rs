@@ -34,6 +34,10 @@ impl Syncing {
         }
     }
 
+    pub(super) fn grow_custody(&mut self, columns: u128) {
+        self.ranges.set_columns(columns);
+    }
+
     pub(super) fn target(&self) -> SyncUpdate {
         self.target
     }

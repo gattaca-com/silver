@@ -1,7 +1,7 @@
 use std::{io::Error, path::Path};
 
 use silver_beacon_state_data::SpecConfig;
-use silver_common::{DataKind, Prefill, SyncNeed, merkle::B256};
+use silver_common::{Custody, DataKind, Prefill, SyncNeed, merkle::B256};
 
 use super::{
     Payload,
@@ -39,8 +39,12 @@ impl Finalized {
         &self.coverage
     }
 
-    pub(super) fn custody(&self) -> u128 {
+    pub(super) fn custody(&self) -> &Custody {
         self.coverage.custody()
+    }
+
+    pub(super) fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        self.coverage.grow_custody(from_slot, columns);
     }
 
     pub(super) fn slot_of(&self, root: &B256) -> Option<u64> {
@@ -133,10 +137,7 @@ impl Finalized {
         slot: u64,
         parent_slot: Option<u64>,
     ) -> SyncNeed {
-        let columns = match kind {
-            DataKind::Columns => self.coverage.custody() & !self.coverage.columns_missing(slot),
-            DataKind::Block | DataKind::Envelope => 0,
-        };
-        SyncNeed::Persisted { kind, slot, columns, parent_slot }
+        let columns_covered = kind == DataKind::Columns && self.coverage.columns_missing(slot) == 0;
+        SyncNeed::Persisted { kind, slot, columns_covered, parent_slot }
     }
 }

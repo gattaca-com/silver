@@ -2,16 +2,16 @@ use std::time::{Duration, Instant};
 
 use flux::spine::SpineProducers;
 use silver_common::{
-    DataColumnsEvent, DataKind, IngestionTime, SilverSpineProducers, SyncNeed, Wheel,
+    Custody, DataColumnsEvent, DataKind, IngestionTime, SilverSpineProducers, SyncNeed, Wheel,
     ssz_view::NUMBER_OF_COLUMNS,
 };
 
 use crate::{BlockRoot, DataColumnCounters};
 
 #[derive(Clone, Copy)]
-struct Custody(u128);
+struct CustodyMask(u128);
 
-impl Custody {
+impl CustodyMask {
     fn contains_any(self, columns: u128) -> bool {
         self.0 & columns != 0
     }
@@ -54,13 +54,21 @@ pub(crate) struct ColumnTracker {
 
 impl ColumnTracker {
     pub(crate) fn new(custody_columns: u128, retention: Duration) -> Self {
-        Self { custody: Custody(custody_columns), blocks: Wheel::new(retention) }
+        Self { custody: Custody::new(custody_columns), blocks: Wheel::new(retention) }
+    }
+
+    pub(crate) fn grow_custody(&mut self, from_slot: u64, columns: u128) -> bool {
+        self.custody.grow(from_slot, columns)
+    }
+
+    fn custody_at(&self, slot: u64) -> CustodyMask {
+        CustodyMask(self.custody.at(slot))
     }
 
     /// Returns `(data_available, custody_complete)` edges — each true only on
     /// the call that crosses its threshold, so both fire once per block.
-    pub(crate) fn record(&mut self, root: BlockRoot, columns: u128) -> (bool, bool) {
-        let custody = self.custody;
+    pub(crate) fn record(&mut self, root: BlockRoot, slot: u64, columns: u128) -> (bool, bool) {
+        let custody = self.custody_at(slot);
         let block = self.blocks.entry(root).or_default();
         let before = block.validated;
         block.validated |= columns;
@@ -80,7 +88,7 @@ impl ColumnTracker {
         recv_ts: IngestionTime,
         producers: &mut SilverSpineProducers,
     ) {
-        let (available, custody_complete) = self.record(block_root, columns);
+        let (available, custody_complete) = self.record(block_root, slot, columns);
         if available {
             DataColumnCounters::DataColumnsAvailableEmitted.inc();
             silver_log::info!(block = hex::encode(block_root), slot, "DataColumnsAvailable");
@@ -102,29 +110,30 @@ impl ColumnTracker {
         slot: u64,
         producers: &mut SilverSpineProducers,
     ) {
-        self.record_and_notify(block_root, slot, self.custody.0, IngestionTime::now(), producers);
+        let custody = self.custody.at(slot);
+        self.record_and_notify(block_root, slot, custody, IngestionTime::now(), producers);
     }
 
-    pub(crate) fn becomes_available(&self, root: &BlockRoot, columns: u128) -> bool {
-        self.custody.becomes_available(self.validated(root), columns)
+    pub(crate) fn becomes_available(&self, root: &BlockRoot, slot: u64, columns: u128) -> bool {
+        self.custody_at(slot).becomes_available(self.validated(root), columns)
     }
 
     /// Custody columns not yet validated for `root` — what a chase should ask
     /// for.
-    pub(crate) fn to_request(&self, root: &BlockRoot) -> u128 {
-        self.custody.missed_from_custody(self.validated(root))
+    pub(crate) fn to_request(&self, root: &BlockRoot, slot: u64) -> u128 {
+        self.custody_at(slot).missed_from_custody(self.validated(root))
     }
 
-    pub(crate) fn custody_complete(&self, root: &BlockRoot) -> bool {
-        self.custody.is_covered_by(self.validated(root))
+    pub(crate) fn custody_complete(&self, root: &BlockRoot, slot: u64) -> bool {
+        self.custody_at(slot).is_covered_by(self.validated(root))
     }
 
-    pub(crate) fn custody_columns(&self) -> u128 {
-        self.custody.0
+    pub(crate) fn custody_columns(&self, slot: u64) -> u128 {
+        self.custody.at(slot)
     }
 
-    pub(crate) fn is_custody(&self, column: u64) -> bool {
-        self.custody.contains_any(1u128 << column)
+    pub(crate) fn is_custody(&self, slot: u64, column: u64) -> bool {
+        self.custody_at(slot).contains_any(1u128 << column)
     }
 
     pub(crate) fn holds(&self, root: &BlockRoot, column: u64) -> bool {
@@ -181,7 +190,7 @@ mod tests {
     fn supernode_declares_data_at_half_and_custody_at_all() {
         let mut tracker = tracker(u128::MAX);
         let edges: Vec<_> = (0..NUMBER_OF_COLUMNS)
-            .map(|i| (i, tracker.record(ROOT, column(i))))
+            .map(|i| (i, tracker.record(ROOT, 0, column(i))))
             .filter(|(_, edges)| *edges != (false, false))
             .collect();
         assert_eq!(edges, vec![(HALF - 1, (true, false)), (NUMBER_OF_COLUMNS - 1, (false, true))]);
@@ -190,8 +199,22 @@ mod tests {
     #[test]
     fn small_node_declares_both_on_its_last_custody_column() {
         let mut tracker = tracker(column(3) | column(7));
-        assert_eq!(tracker.record(ROOT, column(3)), (false, false));
-        assert_eq!(tracker.record(ROOT, column(7)), (true, true));
-        assert_eq!(tracker.record(ROOT, column(7)), (false, false), "edges fire once");
+        assert_eq!(tracker.record(ROOT, 0, column(3)), (false, false));
+        assert_eq!(tracker.record(ROOT, 0, column(7)), (true, true));
+        assert_eq!(tracker.record(ROOT, 0, column(7)), (false, false), "edges fire once");
+    }
+
+    #[test]
+    fn blocks_before_a_custody_change_owe_the_old_columns() {
+        let mut tracker = tracker(column(3));
+        assert!(tracker.grow_custody(32, column(3) | column(7)));
+        let late = [2; 32];
+        assert_eq!(tracker.record(ROOT, 31, column(3)), (true, true));
+        assert_eq!(tracker.record(late, 32, column(3)), (false, false));
+        assert_eq!(tracker.to_request(&ROOT, 31), 0);
+        assert_eq!(tracker.to_request(&late, 32), column(7));
+        assert!(!tracker.is_custody(31, 7));
+        assert!(tracker.is_custody(32, 7));
+        assert_eq!(tracker.record(late, 32, column(7)), (true, true));
     }
 }

@@ -34,6 +34,7 @@ const ROWS: usize = 4;
 
 struct Rig {
     config: CellStoreConfig,
+    custody: u128,
     request: AssemblyRequest,
     columns: Box<TCacheReader>,
     network: Box<TCacheReader>,
@@ -64,7 +65,7 @@ impl Rig {
             blob_schedule: Vec::new(),
             ..SpecConfig::mainnet()
         });
-        let config = CellStoreConfig::new(spec, layout, custody, Duration::from_secs(11)).unwrap();
+        let config = CellStoreConfig::new(spec, layout, Duration::from_secs(11)).unwrap();
         let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let columns =
             Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
@@ -76,9 +77,9 @@ impl Rig {
         ])));
         network.open(TCacheId::ControlSlot, "", TReadMode::Strict).unwrap();
         network.open(TCacheId::ControlGossip, "", TReadMode::Strict).unwrap();
-        let exchange = PartialExchange::new(&config, 0, now, PartialColumnsMode::SendOnly);
-        let mut ingress = CellIngress::new(config.clone(), producer, 0, now).unwrap();
-        let mut store = CellStore::new(config.clone(), 0, now).unwrap();
+        let exchange = PartialExchange::new(&config, custody, 0, now, PartialColumnsMode::SendOnly);
+        let mut ingress = CellIngress::new(config.clone(), custody, producer, 0, now).unwrap();
+        let mut store = CellStore::new(config.clone(), custody, 0, now).unwrap();
         let domain = GossipDomain::new([0; 4], format);
         let header = [0; 208];
         let proof = [0x33; 128];
@@ -135,6 +136,7 @@ impl Rig {
         );
         Self {
             config,
+            custody,
             request,
             columns,
             network,
@@ -163,7 +165,7 @@ impl Rig {
         for event in events {
             self.peers.handle_event(event, self.now, &mut |_| {});
         }
-        for column in columns_of(self.config.custody()) {
+        for column in columns_of(self.custody) {
             self.peers.handle_event(
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: peer,

@@ -228,6 +228,7 @@ impl CellHandler {
 
     pub(super) fn new(
         config: CellStoreConfig,
+        custody: u128,
         tcaches: TCacheTable,
         slot: u64,
         slot_start: Instant,
@@ -237,15 +238,21 @@ impl CellHandler {
             return Err(StoreError::CacheTooSmall);
         }
         Ok(Self {
-            pending: PendingCells::new(config.cell_capacity()),
+            pending: PendingCells::new(config.cell_capacity(custody)),
             headers: PendingHeaders::new(slot_start),
-            store: CellStore::new(config, slot, slot_start)?,
+            store: CellStore::new(config, custody, slot, slot_start)?,
             reader: TCacheReader::new(tcaches),
         })
     }
 
     pub(super) fn open_tcaches(&mut self) -> Result<(), TCacheError> {
         self.reader.open_forwarder(TileId::Columns, TCacheId::ControlSlot, TReadMode::Strict)
+    }
+
+    pub(super) fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        if self.store.grow_custody(from_slot, columns) {
+            self.pending.limit = self.store.cell_capacity();
+        }
     }
 
     #[inline]
@@ -467,7 +474,7 @@ impl CellHandler {
                         context,
                         request.domain,
                         data,
-                        tracker.to_request(&context.block_root),
+                        tracker.to_request(&context.block_root, context.slot),
                     );
                     if self.admit_current_context(context, request.domain, data, producers) {
                         DataColumnCounters::PartialHeadersAccepted.inc();
@@ -620,7 +627,7 @@ impl CellHandler {
                 },
                 recv_ts,
             );
-            if tracker.is_custody(column as u64) {
+            if tracker.is_custody(available.slot, column as u64) {
                 producers.produce(DataColumnsEvent::Persist {
                     ssz,
                     origin: ColumnOrigin::Assembly,

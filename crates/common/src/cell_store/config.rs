@@ -4,7 +4,7 @@ use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 
 use super::StoreError;
 use crate::{
-    SubLayout,
+    Custody, SubLayout,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
         partial_column::PARTIAL_HEADER_FIXED,
@@ -15,7 +15,6 @@ use crate::{
 pub struct CellStoreConfig {
     spec: Arc<SpecConfig>,
     layout: u128,
-    custody: u128,
     column_indices: Box<[usize]>,
     max_blobs: usize,
     slot_duration: Duration,
@@ -28,14 +27,13 @@ impl CellStoreConfig {
     pub fn new(
         spec: Arc<SpecConfig>,
         layout: u128,
-        custody: u128,
         delivery_retention: Duration,
     ) -> Result<Self, StoreError> {
         let max_blobs = spec.max_scheduled_blobs_per_block();
         if max_blobs > u128::BITS as u64 {
             return Err(StoreError::UnsupportedBlobCount(max_blobs));
         }
-        if custody == 0 || custody & !layout != 0 || spec.slot_duration_ms() == 0 {
+        if layout == 0 || spec.slot_duration_ms() == 0 {
             return Err(StoreError::InvalidConfig);
         }
 
@@ -95,7 +93,6 @@ impl CellStoreConfig {
         Ok(Self {
             spec,
             layout,
-            custody,
             column_indices: (0..u128::BITS as usize)
                 .filter(|column| layout & (1u128 << column) != 0)
                 .collect(),
@@ -113,18 +110,15 @@ impl CellStoreConfig {
     }
 
     #[inline]
-    pub fn custody(&self) -> u128 {
-        self.custody
+    pub fn layout(&self) -> u128 {
+        self.layout
     }
 
-    #[inline]
-    pub fn custodies(&self, column: usize) -> bool {
-        column < u128::BITS as usize && self.custody & (1u128 << column) != 0
-    }
-
-    #[inline]
-    fn custody_count(&self) -> usize {
-        self.custody.count_ones() as usize
+    pub fn custody(&self, columns: u128) -> Result<Custody, StoreError> {
+        if columns == 0 || columns & !self.layout != 0 {
+            return Err(StoreError::InvalidConfig);
+        }
+        Ok(Custody::new(columns))
     }
 
     #[inline]
@@ -153,13 +147,13 @@ impl CellStoreConfig {
     }
 
     #[inline]
-    pub fn cell_capacity(&self) -> usize {
-        self.live_blocks * self.custody_count() * self.max_blobs
+    pub fn cell_capacity(&self, custody: u128) -> usize {
+        self.column_capacity(custody) * self.max_blobs
     }
 
     #[inline]
-    pub fn column_capacity(&self) -> usize {
-        self.live_blocks * self.custody_count()
+    pub fn column_capacity(&self, custody: u128) -> usize {
+        self.live_blocks * custody.count_ones() as usize
     }
 
     #[inline]

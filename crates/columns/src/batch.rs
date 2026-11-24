@@ -104,12 +104,13 @@ impl KzgBatch {
     /// all of them when none does.
     pub fn columns_until_available(&self, tracker: &ColumnTracker) -> usize {
         let root = self.pending[0].block_root;
+        let slot = self.pending[0].slot;
         let mut held = 0;
         for (i, p) in self.pending.iter().enumerate() {
             if p.block_root == root {
                 held |= 1u128 << p.column_index;
             }
-            if tracker.becomes_available(&root, held) {
+            if tracker.becomes_available(&root, slot, held) {
                 return i + 1;
             }
         }

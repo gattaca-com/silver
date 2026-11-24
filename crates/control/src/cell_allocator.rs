@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
-    ForkName, GossipDomain, SLOTS_PER_EPOCH, SubLayout, SubReservationError, SubReservationList,
-    TCacheProducer, TCacheRead, TProducer,
+    Custody, ForkName, GossipDomain, SLOTS_PER_EPOCH, SubLayout, SubReservationError,
+    SubReservationList, TCacheProducer, TCacheRead, TProducer,
     cell_store::{
         AssemblyRequest, AssemblySet, CellKey, CellStoreConfig, ColumnRef, CommitmentContext,
         PendingCell, RetentionEvent, StoreError,
@@ -18,6 +18,7 @@ use silver_common::{
 pub struct CellAllocator {
     producer: TProducer,
     config: CellStoreConfig,
+    custody: Custody,
     allocations: FxHashMap<[u8; 32], Allocation>,
     provisional_peers: FxHashSet<usize>,
     provisional_count: usize,
@@ -42,6 +43,7 @@ impl CellAllocator {
 
     pub fn new(
         config: CellStoreConfig,
+        custody: u128,
         producer: TProducer,
         slot: u64,
         slot_start: Instant,
@@ -49,6 +51,7 @@ impl CellAllocator {
         if producer.cache_ref().capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
+        let custody = config.custody(custody)?;
         // Cells are addressed and re-emitted for as long as their slot is
         // retained, so the retention boundary is this producer's floor.
         let mut producer = producer;
@@ -69,6 +72,7 @@ impl CellAllocator {
             min_slot: 0,
             producer,
             config,
+            custody,
         })
     }
 
@@ -83,8 +87,21 @@ impl CellAllocator {
         (self.slot, self.slot_end)
     }
 
+    pub(super) fn config(&self) -> &CellStoreConfig {
+        &self.config
+    }
+
+    pub(super) fn custody(&self) -> u128 {
+        self.custody.current()
+    }
+
+    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) -> bool {
+        assert!(columns & !self.config.layout() == 0, "custody outside the layout");
+        self.custody.grow(from_slot, columns)
+    }
+
     pub(super) fn handles_column(&self, column: usize) -> bool {
-        self.config.custodies(column)
+        column < u128::BITS as usize && self.custody() & (1u128 << column) != 0
     }
 
     pub(super) fn max_blobs_at(&self, slot: u64) -> usize {
@@ -108,7 +125,7 @@ impl CellAllocator {
         if context.slot > self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
-        if request.columns != self.config.custody() ||
+        if request.columns != self.custody.at(context.slot) ||
             request.domain.format() != context.format ||
             !matches!(context.format, ForkName::Fulu | ForkName::Gloas) ||
             self.config.spec().fork_at_slot(context.slot) != context.format ||
@@ -134,7 +151,8 @@ impl CellAllocator {
         if context.slot != self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
-        let request = AssemblyRequest { id: 0, context, domain, columns: self.config.custody() };
+        let request =
+            AssemblyRequest { id: 0, context, domain, columns: self.custody.at(context.slot) };
         self.check_request(request)?;
         if let Some(allocation) = self.allocations.get_mut(&context.block_root) {
             let matches = allocation.set.request.context == context &&

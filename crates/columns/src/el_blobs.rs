@@ -193,7 +193,7 @@ impl ElBlobFetcher {
                 return None;
             }
             let mut fetch = self.pending.remove(&root)?;
-            fetch.needed = tracker.to_request(&root);
+            fetch.needed = tracker.to_request(&root, fetch.context.slot);
             fetch.start(producers);
             self.attempted.insert(root, ());
             self.pending.insert(root, fetch);
@@ -284,7 +284,8 @@ impl ElBlobFetcher {
         while index < self.responses.len() {
             let pending = &self.responses[index];
             let context = pending.fetch.context;
-            let needed = tracker.to_request(&context.block_root) & pending.fetch.needed;
+            let needed =
+                tracker.to_request(&context.block_root, context.slot) & pending.fetch.needed;
             if now >= pending.fetch.deadline ||
                 context.slot <= sync.data_availability_floor() ||
                 needed == 0

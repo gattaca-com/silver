@@ -181,7 +181,7 @@ pub(super) struct Acquisition {
 }
 
 impl Acquisition {
-    pub fn new(config: &CellStoreConfig, slot: u64, now: Instant) -> Self {
+    pub fn new(config: &CellStoreConfig, custody: u128, slot: u64, now: Instant) -> Self {
         let capacity = config.live_blocks();
         Self {
             blocks: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
@@ -189,21 +189,19 @@ impl Acquisition {
                 config.block_capacity(),
                 Default::default(),
             ),
-            changed: Vec::with_capacity(capacity * config.custody().count_ones() as usize * 3),
+            changed: Vec::with_capacity(capacity * custody.count_ones() as usize * 3),
             peer_load: FxHashMap::with_capacity_and_hasher(
-                capacity * config.custody().count_ones() as usize,
+                capacity * custody.count_ones() as usize,
                 Default::default(),
             ),
             broken_offers: FxHashSet::with_capacity_and_hasher(
-                capacity * config.custody().count_ones() as usize,
+                capacity * custody.count_ones() as usize,
                 Default::default(),
             ),
-            pending_penalties: Vec::with_capacity(
-                capacity * config.custody().count_ones() as usize,
-            ),
+            pending_penalties: Vec::with_capacity(capacity * custody.count_ones() as usize),
             capacity,
             completion_capacity: config.block_capacity(),
-            columns: config.custody(),
+            columns: custody,
             slot,
             next_poll: now,
         }
@@ -228,6 +226,10 @@ impl Acquisition {
             entry.insert(BlockAcquisition::new(request, columns, expires, now));
         }
         self.wake(now);
+    }
+
+    pub fn grow_custody(&mut self, columns: u128) {
+        self.columns = columns;
     }
 
     pub fn validated(&mut self, event: DataColumnsEvent, now: Instant) {

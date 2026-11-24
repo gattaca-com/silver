@@ -330,6 +330,14 @@ impl SyncEngine {
         std::mem::take(&mut self.just_synced)
     }
 
+    pub fn grow_custody(&mut self, columns: u128) {
+        assert!(self.ctx.custody_columns & !columns == 0, "custody only grows");
+        self.ctx.custody_columns = columns;
+        if let Phase::Syncing(syncing) = &mut self.phase {
+            syncing.grow_custody(columns);
+        }
+    }
+
     pub fn set_clock_slot(&mut self, slot: u64) {
         self.ctx.clock_slot = Some(slot);
     }
@@ -390,14 +398,8 @@ impl SyncEngine {
                 DataKind::Envelope => self.on_envelope_covered(slot, root),
                 DataKind::Block => debug_assert!(false, "a block arrives as `BlockReceived`"),
             },
-            SyncNeed::Persisted { kind, slot, columns, parent_slot } => {
-                self.ctx.backfill.on_persisted(
-                    kind,
-                    slot,
-                    columns,
-                    parent_slot,
-                    self.ctx.custody_columns,
-                );
+            SyncNeed::Persisted { kind, slot, columns_covered, parent_slot } => {
+                self.ctx.backfill.on_persisted(kind, slot, columns_covered, parent_slot);
             }
             SyncNeed::BackfillPrefill(prefill) => self.ctx.backfill.on_prefill(prefill),
         }

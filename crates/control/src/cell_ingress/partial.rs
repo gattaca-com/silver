@@ -36,14 +36,21 @@ pub(super) struct PartialBudget {
 }
 
 impl PartialBudget {
-    pub(super) fn new(config: &CellStoreConfig) -> Self {
-        Self {
+    pub(super) fn new(config: &CellStoreConfig, custody: u128) -> Self {
+        let mut budget = Self {
             peers: FxHashMap::with_capacity_and_hasher(256, Default::default()),
             cells: 0,
             headers: 0,
-            max_cells: 2 * config.cell_capacity(),
-            per_peer: 2 * config.max_blobs() * config.custody().count_ones() as usize,
-        }
+            max_cells: 0,
+            per_peer: 0,
+        };
+        budget.resize(config, custody);
+        budget
+    }
+
+    pub(super) fn resize(&mut self, config: &CellStoreConfig, custody: u128) {
+        self.max_cells = 2 * config.cell_capacity(custody);
+        self.per_peer = 2 * config.max_blobs() * custody.count_ones() as usize;
     }
 
     pub(super) fn clear(&mut self) {

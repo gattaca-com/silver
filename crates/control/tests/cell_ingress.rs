@@ -85,7 +85,7 @@ impl Rig {
             blob_schedule: Vec::new(),
             ..SpecConfig::mainnet()
         });
-        let config = CellStoreConfig::new(spec, 7, 7, Duration::from_secs(11)).unwrap();
+        let config = CellStoreConfig::new(spec, 7, Duration::from_secs(11)).unwrap();
         let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let cache = producer.cache_ref();
         let columns = Box::new(TCacheReader::single(cache, "", TReadMode::Strict).unwrap());
@@ -100,8 +100,8 @@ impl Rig {
             adapter
         });
         Self {
-            control: CellIngress::new(config.clone(), producer, 0, now).unwrap(),
-            store: CellStore::new(config, 0, now).unwrap(),
+            control: CellIngress::new(config.clone(), 7, producer, 0, now).unwrap(),
+            store: CellStore::new(config, 7, 0, now).unwrap(),
             columns,
             network,
             adapters,

@@ -449,6 +449,10 @@ pub(super) struct Store {
 }
 
 impl Store {
+    pub(super) fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        self.finalized.grow_custody(from_slot, columns);
+    }
+
     pub(super) fn load(
         store_dir: String,
         spec: Arc<SpecConfig>,
@@ -719,7 +723,7 @@ impl Store {
                     block,
                     columns_on_disk: self
                         .unfinalized_columns
-                        .has_full_custody(block_root, self.finalized.custody()),
+                        .has_full_custody(block_root, self.finalized.custody().at(slot)),
                     envelope,
                 });
             }

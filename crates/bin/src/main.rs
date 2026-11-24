@@ -252,13 +252,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let partial_columns = config.partial_columns();
 
-    let cell_config = CellStoreConfig::new(
-        spec.clone(),
-        u128::MAX,
-        das_custody_groups,
-        GOSSIP_DELIVERY_RETENTION,
-    )
-    .map_err(|error| format!("cell store configuration: {error:?}"))?;
+    let cell_config = CellStoreConfig::new(spec.clone(), u128::MAX, GOSSIP_DELIVERY_RETENTION)
+        .map_err(|error| format!("cell store configuration: {error:?}"))?;
     let control_slot_producer =
         TCache::producer(TCacheId::ControlSlot, cell_config.cache_capacity());
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();
@@ -329,6 +324,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     control_tile = control_tile
         .with_data_columns_cache(
             cell_config.clone(),
+            das_custody_groups,
             control_slot_producer,
             cell_slot,
             cell_slot_start,
@@ -371,7 +367,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         SlotTicker::new(genesis.unix_secs, &spec, chain_config.playload_lookahead()),
         proposed_columns_producer,
     )
-    .with_data_columns_cache(cell_config, cell_slot, cell_slot_start)
+    .with_data_columns_cache(cell_config, das_custody_groups, cell_slot, cell_slot_start)
     .map_err(|error| format!("cell store construction: {error:?}"))?;
 
     let beacon_api_binds =

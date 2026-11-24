@@ -79,7 +79,7 @@ impl Coverage {
             // The listing settles the common case without opening the block:
             // nothing can be missing for a slot that has everything.
             let present = present_columns[offset as usize];
-            let columns_absent = slot >= floors.columns && self.custody & !present != 0;
+            let columns_absent = slot >= floors.columns && self.custody.at(slot) & !present != 0;
             let envelope_absent = slot >= floors.envelopes && present_envelopes >> offset & 1 == 0;
             if !columns_absent && !envelope_absent {
                 child_read = None;
@@ -112,7 +112,7 @@ impl Coverage {
 
             let needs = facts.needs(is_gloas, child);
             let columns = match needs.columns && columns_absent {
-                true => self.custody & !present,
+                true => self.custody.at(slot) & !present,
                 false => 0,
             };
             self.set_missing(slot, Missing {

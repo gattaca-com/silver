@@ -881,8 +881,8 @@ pub enum SyncNeed {
     Persisted {
         kind: DataKind,
         slot: u64,
-        /// Columns now on disk for `slot`.
-        columns: u128,
+        /// Every column owed for `slot` is on disk.
+        columns_covered: bool,
         /// A block's parent, proving the slots between the two empty. Missing
         /// when we do not hold the parent.
         parent_slot: Option<u64>,

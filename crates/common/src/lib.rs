@@ -25,6 +25,7 @@ mod block_root;
 mod builder_bid;
 pub mod cell_store;
 pub mod column_util;
+mod custody;
 mod enr;
 mod error;
 mod payload_frame;
@@ -44,6 +45,7 @@ mod node_chain;
 mod spine;
 pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};
 pub use builder_bid::{BuilderBid, BuilderTerms};
+pub use custody::{Custody, CustodyChange};
 pub use node_chain::NodeChain;
 pub use payload_frame::PayloadFrame;
 pub use silver_beacon_state_data::{

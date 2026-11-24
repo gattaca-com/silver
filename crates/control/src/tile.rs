@@ -351,16 +351,28 @@ impl Controller {
     pub fn with_data_columns_cache(
         mut self,
         config: CellStoreConfig,
+        custody: u128,
         producer: TProducer,
         slot: u64,
         slot_start: Instant,
         mode: PartialColumnsMode,
     ) -> Result<Self, StoreError> {
-        self.partial_exchange =
-            mode.supports_sending().then(|| PartialExchange::new(&config, slot, slot_start, mode));
+        self.partial_exchange = mode
+            .supports_sending()
+            .then(|| PartialExchange::new(&config, custody, slot, slot_start, mode));
         self.gossip_handler.set_partial_columns_mode(mode);
-        self.cell_ingress = Some(CellIngress::new(config, producer, slot, slot_start)?);
+        self.cell_ingress = Some(CellIngress::new(config, custody, producer, slot, slot_start)?);
         Ok(self)
+    }
+
+    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        self.sync_engine.grow_custody(columns);
+        if let Some(ingress) = &mut self.cell_ingress {
+            ingress.grow_custody(from_slot, columns);
+            if let Some(exchange) = &mut self.partial_exchange {
+                exchange.grow_custody(ingress.config(), columns);
+            }
+        }
     }
 
     pub fn set_gossip_clock(&mut self, ticker: SlotTicker, genesis_validators_root: &[u8; 32]) {

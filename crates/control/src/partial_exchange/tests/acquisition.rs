@@ -10,7 +10,7 @@ use crate::partial_exchange::acquisition::Acquisition;
 
 impl Rig {
     pub(super) fn enable_requests(&mut self) {
-        self.exchange.acquisition = Some(Acquisition::new(&self.config, 0, self.now));
+        self.exchange.acquisition = Some(Acquisition::new(&self.config, self.custody, 0, self.now));
     }
 
     pub(super) fn demand(&mut self, columns: u128) {

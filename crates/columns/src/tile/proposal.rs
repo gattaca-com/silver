@@ -197,7 +197,7 @@ impl DataColumnsTile {
         let (header, inclusion_proof) = fulu_header_and_inclusion_proof(block);
         let block_root = hash_beacon_block_header_bytes(&header);
         // An identical resubmission passes the lock again.
-        if self.tracker.custody_complete(&block_root) {
+        if self.tracker.custody_complete(&block_root, slot) {
             return;
         }
         let Some(commitments) =
@@ -228,7 +228,7 @@ impl DataColumnsTile {
             return;
         };
 
-        let custody = self.tracker.custody_columns();
+        let custody = self.tracker.custody_columns(slot);
         self.tracker.record_and_notify(block_root, slot, custody, IngestionTime::now(), producers);
         let blob_count = contents.blob_count();
         self.proposed.hold(HeldBlock { block_root, slot, domain, blob_count, sidecars });
@@ -287,7 +287,7 @@ impl DataColumnsTile {
             self.proposed.write_sidecars(context, data, blobs, proofs, &mut self.kzg_scratch)?;
         self.proposed.hold(HeldBlock { block_root, slot, domain, blob_count, sidecars });
         self.publish_proposed_columns(&block_root, producers);
-        let custody = self.tracker.custody_columns();
+        let custody = self.tracker.custody_columns(slot);
         self.tracker.record_and_notify(block_root, slot, custody, IngestionTime::now(), producers);
         producers.produce(BeaconApiRequest::LocalGossip {
             request_id: proposal.request_id,
@@ -311,7 +311,7 @@ impl DataColumnsTile {
             return;
         };
         for (column_index, ssz) in (0..).zip(sidecars) {
-            if self.tracker.is_custody(column_index) {
+            if self.tracker.is_custody(slot, column_index) {
                 producers.produce(DataColumnsEvent::Persist {
                     ssz,
                     origin: ColumnOrigin::Assembly,

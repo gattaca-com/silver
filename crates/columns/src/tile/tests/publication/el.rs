@@ -346,7 +346,7 @@ fn failed_assembly_allocation_retries_without_publishing_unwritten_columns() {
     let out = rig.drain();
     assert_eq!(out.validated, 0);
     assert!(out.receipts.is_empty());
-    assert_eq!(rig.tile.tracker.to_request(&root), CUSTODY_COLUMNS);
+    assert_eq!(rig.tile.tracker.to_request(&root, SLOT), CUSTODY_COLUMNS);
     std::thread::sleep(Duration::from_millis(25));
     rig.turn();
     rig.allocate_cells(&mut allocator);

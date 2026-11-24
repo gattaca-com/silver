@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 use silver_common::{
-    GossipDomain, SubReservationError, SubReservationRef, TCacheId, TCacheRead, TCacheReader,
+    Custody, GossipDomain, SubReservationError, SubReservationRef, TCacheId, TCacheRead,
+    TCacheReader,
     cell_store::{
         AssemblyRequest, AssemblySet, CellKey, CellRef, CellStoreConfig, ColumnAvailability,
         ColumnRef, CommitmentContext, ContextData, MAX_CONTEXT_BYTES, StoreError,
@@ -103,6 +104,7 @@ pub struct CellStore {
     blocks: Slab<Block>,
     columns: Box<[Column]>,
     config: CellStoreConfig,
+    custody: Custody,
     roots: FxHashMap<BlockRoot, usize>,
     counts: StoreCounts,
     now: Instant,
@@ -117,9 +119,11 @@ pub struct CellStore {
 impl CellStore {
     pub fn new(
         config: CellStoreConfig,
+        custody: u128,
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
+        let custody = config.custody(custody)?;
         let column_entries = config
             .block_capacity()
             .checked_mul(config.column_indices().len())
@@ -139,6 +143,7 @@ impl CellStore {
             next_request: 0,
             dirty: false,
             changed: Vec::with_capacity(config.block_capacity()),
+            custody,
             config,
         };
         store.publish_gauges();
@@ -245,7 +250,7 @@ impl CellStore {
             id: self.next_request,
             context: block.context,
             domain: block.domain,
-            columns: self.config.custody(),
+            columns: self.custody.at(block.context.slot),
         })
     }
 
@@ -282,7 +287,7 @@ impl CellStore {
         if block.context != request.context ||
             block.domain != request.domain ||
             block.request != Some(request.id) ||
-            request.columns != self.config.custody()
+            request.columns != self.custody.at(block.context.slot)
         {
             return Err(StoreError::ConflictingContext);
         }
@@ -429,7 +434,11 @@ impl CellStore {
 
     pub fn reservations(&self, root: &BlockRoot) -> impl Iterator<Item = ColumnRef> + '_ {
         let root = *root;
-        columns_of(self.config.custody()).filter_map(move |column| {
+        let custody = self
+            .roots
+            .get(&root)
+            .map_or(0, |&index| self.custody.at(self.blocks[index].context.slot));
+        columns_of(custody).filter_map(move |column| {
             let column = column as usize;
             let update = self.availability(&root, column)?;
             Some(ColumnRef {
@@ -455,7 +464,7 @@ impl CellStore {
 
     pub fn column(&self, root: &BlockRoot, column: usize) -> Option<ColumnStatus> {
         let block = *self.roots.get(root)?;
-        if !self.config.custodies(column) {
+        if !self.custodies(block, column) {
             return None;
         }
         let position = self.config.column_position(column)?;
@@ -560,11 +569,25 @@ impl CellStore {
         if !self.blocks[block].active {
             return Err(StoreError::ContextExpired);
         }
-        if !self.config.custodies(column) {
+        if !self.custodies(block, column) {
             return Err(StoreError::UnknownCell);
         }
         let position = self.config.column_position(column).ok_or(StoreError::UnknownCell)?;
         Ok((block, block * self.config.column_indices().len() + position))
+    }
+
+    fn custodies(&self, block: usize, column: usize) -> bool {
+        let custody = self.custody.at(self.blocks[block].context.slot);
+        column < u128::BITS as usize && custody & (1u128 << column) != 0
+    }
+
+    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) -> bool {
+        assert!(columns & !self.config.layout() == 0, "custody outside the layout");
+        self.custody.grow(from_slot, columns)
+    }
+
+    pub fn cell_capacity(&self) -> usize {
+        self.config.cell_capacity(self.custody.current())
     }
 
     fn publish_gauges(&self) {

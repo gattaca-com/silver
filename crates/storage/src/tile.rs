@@ -140,6 +140,10 @@ impl StorageTile {
         }
     }
 
+    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        self.store.grow_custody(from_slot, columns);
+    }
+
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
         self.reader.open(
             TCacheId::NetworkProcessing,

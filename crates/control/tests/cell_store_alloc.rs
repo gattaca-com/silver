@@ -56,15 +56,15 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
         slot_duration_ms: Some(1000),
         ..SpecConfig::mainnet()
     });
-    let config = CellStoreConfig::new(spec, 3, 3, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(spec, 3, Duration::ZERO).unwrap();
     let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
     let mut writer =
         Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let mut network =
         Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let now = Instant::now();
-    let mut allocator = CellAllocator::new(config.clone(), producer, 0, now).unwrap();
-    let mut store = CellStore::new(config, 0, now).unwrap();
+    let mut allocator = CellAllocator::new(config.clone(), 3, producer, 0, now).unwrap();
+    let mut store = CellStore::new(config, 3, 0, now).unwrap();
     let cell = [0x11; BYTES_PER_CELL];
     let proof = [0x22; BYTES_PER_KZG_PROOF];
     let before = ALLOCATION_EVENTS.with(Cell::get);

@@ -171,14 +171,13 @@ impl Rig {
 
     fn attach_cell_store(&mut self, slot: u64, columns: u128) -> CellAllocator {
         let start = Instant::now();
-        let config =
-            CellStoreConfig::new(self.tile.spec.clone(), columns, columns, Duration::ZERO).unwrap();
+        let config = CellStoreConfig::new(self.tile.spec.clone(), columns, Duration::ZERO).unwrap();
         let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let tcaches = TCacheTable::from_iter([producer.cache_ref()]);
-        let mut cells = CellHandler::new(config.clone(), tcaches, slot, start).unwrap();
+        let mut cells = CellHandler::new(config.clone(), columns, tcaches, slot, start).unwrap();
         cells.open_tcaches().unwrap();
         self.tile.cells = Some(cells);
-        CellAllocator::new(config, producer, slot, start).unwrap()
+        CellAllocator::new(config, columns, producer, slot, start).unwrap()
     }
 
     fn cached_gossip(&mut self, read: TCacheRead, column: u64, domain: GossipDomain) {

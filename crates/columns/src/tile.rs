@@ -118,11 +118,20 @@ impl DataColumnsTile {
     pub fn with_data_columns_cache(
         mut self,
         config: CellStoreConfig,
+        custody: u128,
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
-        self.cells = Some(CellHandler::new(config, *self.reader.table(), slot, slot_start)?);
+        self.cells =
+            Some(CellHandler::new(config, custody, *self.reader.table(), slot, slot_start)?);
         Ok(self)
+    }
+
+    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        self.tracker.grow_custody(from_slot, columns);
+        if let Some(cells) = &mut self.cells {
+            cells.grow_custody(from_slot, columns);
+        }
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
@@ -214,7 +223,7 @@ impl DataColumnsTile {
 
         // Custody columns only — silver floors cgc at SAMPLES_PER_SLOT, so the
         // custody set IS the sample set; no beyond-custody sampling needed.
-        let to_request = self.tracker.to_request(&block_root);
+        let to_request = self.tracker.to_request(&block_root, slot);
         if to_request == 0 {
             return Some((block_root, is_gloas));
         }
@@ -243,7 +252,7 @@ impl DataColumnsTile {
         self.drain_pending_gloas_columns(block_root, producers);
         self.drain_parent_pending_columns(block_root, producers);
 
-        let to_request = self.tracker.to_request(&block_root);
+        let to_request = self.tracker.to_request(&block_root, slot);
         if to_request != 0 {
             producers.produce(SyncNeed::missing_columns(block_root, slot, to_request));
         }
@@ -298,7 +307,9 @@ impl DataColumnsTile {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
             ColumnOutcome::AlreadyHeld { block_root, slot } => {
                 let origin = ColumnOrigin::from_protocol(column.stream_id.protocol());
-                if origin != ColumnOrigin::Gossip && self.tracker.custody_complete(&block_root) {
+                if origin != ColumnOrigin::Gossip &&
+                    self.tracker.custody_complete(&block_root, slot)
+                {
                     producers.produce(SyncNeed::Arrived {
                         root: block_root,
                         slot,
@@ -365,7 +376,7 @@ impl DataColumnsTile {
                 context,
                 domain,
                 data,
-                self.tracker.to_request(&block_root),
+                self.tracker.to_request(&block_root, slot),
                 producers,
             );
         }
@@ -399,7 +410,7 @@ impl DataColumnsTile {
                 context,
                 domain,
                 data,
-                self.tracker.to_request(&block_root),
+                self.tracker.to_request(&block_root, slot),
                 producers,
             );
         }
@@ -493,7 +504,7 @@ impl DataColumnsTile {
             },
             recv_ts,
         );
-        if self.tracker.is_custody(column_index) {
+        if self.tracker.is_custody(slot, column_index) {
             producers.produce_with_ingestion(
                 DataColumnsEvent::Persist {
                     ssz: sidecar.to_read(),
@@ -1842,7 +1853,7 @@ mod tests {
             (StreamProtocol::DataColumnSidecarsByRange, "held_rpc", 1),
         ] {
             let mut rig = Rig::new(CUSTODY_COLUMNS);
-            rig.tile.tracker.record(block_root, CUSTODY_COLUMNS);
+            rig.tile.tracker.record(block_root, 7, CUSTODY_COLUMNS);
 
             let (mut consumer, ssz) = produce_block(&blob_block_bytes(7), cache);
             let read = consumer.acquire(ssz);
