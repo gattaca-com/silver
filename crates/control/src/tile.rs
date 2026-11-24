@@ -10,12 +10,12 @@ use flux::{
 };
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, BroadcastValidation, DataColumnsEvent, GossipDomain,
-    GossipTopic, IngestionTime, LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats,
-    RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate,
-    TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer,
-    TReadMode, TileId,
+    BeaconApiRequest, BeaconStateEvent, BroadcastValidation, DataColumnsEvent, Error, GossipDomain,
+    GossipTopic, IngestionTime, LocalGossipFailure, Nanos, P2pSend, PeerControl, PeerEvent,
+    PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SlotSubnets, SyncNeed,
+    SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable,
+    TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         ExecutionPayloadEnvelopeView, ExecutionPayloadView, METADATA_SIZE,
@@ -61,6 +61,8 @@ pub struct Controller {
     rpc_producer: TProducer,
     slashing_protection: SlashingProtectionHandler,
     local_gossip: LocalGossipHandler,
+    /// Originated messages waiting out a transient injection failure.
+    originated: Vec<(GossipTopic, TCacheRead)>,
     last_tick: Instant,
     /// Set by a tick, so the redial runs on the next loop instead of beside
     /// the tick's sweep, and sees the deficits and evictions it leaves.
@@ -125,6 +127,7 @@ impl Controller {
             rpc_producer,
             slashing_protection,
             local_gossip: LocalGossipHandler::default(),
+            originated: Vec::new(),
             last_tick: now,
             redial_due: false,
             last_ping: now,
@@ -292,6 +295,27 @@ impl Controller {
             &mut self.gossip_handler,
             producers,
         );
+    }
+
+    fn publish_originated(&mut self) {
+        let mut originated = std::mem::take(&mut self.originated);
+        originated.retain(|&(topic, ssz_read)| {
+            let acquired = self.reader.acquire(ssz_read);
+            let Ok((ssz, _)) = acquired.buffer() else {
+                silver_log::warn!(?topic, "originated message overwritten before it was injected");
+                return false;
+            };
+            let validation = BroadcastValidation::Gossip;
+            match self.gossip_handler.inject_local(topic, ssz, None, validation, Nanos::now()) {
+                Ok(Some(_)) => false,
+                Ok(None) | Err(Error::BufferTooSmall) => true,
+                Err(error) => {
+                    silver_log::warn!(?error, ?topic, "failed to inject originated message");
+                    false
+                }
+            }
+        });
+        self.originated = originated;
     }
 
     fn on_attestation_subscriptions(&mut self, subscriptions: TCacheRead, wall_slot: u64) {
@@ -641,9 +665,13 @@ impl Tile<SilverSpine> for Controller {
                 BeaconStateEvent::CustodyChange { custody_group_count, columns, from_slot } => {
                     self.grow_custody(from_slot, custody_group_count, columns, producers)
                 }
+                BeaconStateEvent::PublishSlashing { kind, ssz } => {
+                    self.originated.push((kind.topic(), ssz))
+                }
                 _ => {}
             }
         });
+        self.publish_originated();
 
         let wall_slot =
             self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());

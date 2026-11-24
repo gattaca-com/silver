@@ -501,6 +501,7 @@ pub fn ef_tile_with_spec(
         None,
         EngineConfig::default().get_payload_timeout(),
         ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+        0,
     );
     tile.open_tcaches().unwrap();
     tile

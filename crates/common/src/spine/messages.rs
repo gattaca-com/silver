@@ -1281,7 +1281,9 @@ impl From<IpAddr> for IpBytes {
 #[repr(u8)]
 pub enum BlockSource {
     Gossip,
+    /// Includes disk replay.
     Rpc,
+    LocalGossip,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TypeHash)]
@@ -1424,6 +1426,26 @@ pub enum BeaconStateEvent {
     },
     PoolChange(PoolChange),
     PayloadAttributes(PreparedPayloadAttributes),
+    PublishSlashing {
+        kind: SlashingKind,
+        ssz: TCacheRead,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
+#[repr(u8)]
+pub enum SlashingKind {
+    Proposer,
+    Attester,
+}
+
+impl SlashingKind {
+    pub const fn topic(self) -> GossipTopic {
+        match self {
+            Self::Proposer => GossipTopic::ProposerSlashing,
+            Self::Attester => GossipTopic::AttesterSlashing,
+        }
+    }
 }
 
 /// The attributes an EL was just asked to build on.
@@ -1769,6 +1791,7 @@ impl BeaconStateEvent {
             Self::EnvelopeAvailable { .. } => {
                 SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView {})
             }
+            Self::PublishSlashing { kind, .. } => kind.topic().view(),
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
             Self::CustodyChange { .. } |

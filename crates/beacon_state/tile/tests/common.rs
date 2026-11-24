@@ -148,6 +148,7 @@ pub enum OutboundKind {
     PoolChange,
     PayloadAttributes,
     CustodyChange,
+    PublishSlashing,
     NewPayload,
     NewPayloadEnvelope,
     Fcu,
@@ -174,6 +175,7 @@ impl OutboundKind {
             "proposed_payload" => Self::ProposedPayload,
             "pool_change" => Self::PoolChange,
             "payload_attributes" => Self::PayloadAttributes,
+            "publish_slashing" => Self::PublishSlashing,
             "new_payload" => Self::NewPayload,
             "new_payload_envelope" => Self::NewPayloadEnvelope,
             "fcu" => Self::Fcu,
@@ -197,6 +199,7 @@ impl OutboundKind {
             BeaconStateEvent::PoolChange(_) => Self::PoolChange,
             BeaconStateEvent::PayloadAttributes(_) => Self::PayloadAttributes,
             BeaconStateEvent::CustodyChange { .. } => Self::CustodyChange,
+            BeaconStateEvent::PublishSlashing { .. } => Self::PublishSlashing,
         }
     }
 
@@ -263,6 +266,7 @@ impl Harness {
                 None,
                 EngineConfig::default().get_payload_timeout(),
                 ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+                0,
             )
         });
         h.gloas = gloas;

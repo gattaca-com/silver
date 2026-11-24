@@ -352,6 +352,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.suggested_fee_recipient(),
         config.engine_config().get_payload_timeout(),
         ValidatorCustody::new(local_enr.node_id(), custody_group_count),
+        config.surround_epochs(),
     );
     let state_reader = beacon_state_tile.reader();
 

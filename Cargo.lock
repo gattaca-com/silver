@@ -5375,6 +5375,7 @@ name = "silver_slashing"
 version = "0.1.0-alpha.20"
 dependencies = [
  "flux",
+ "rustc-hash",
  "silver_beacon_state_data",
  "silver_common",
  "silver_log",

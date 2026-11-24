@@ -14,8 +14,8 @@ pub use peer_score_params::ScoreParams;
 use serde::{Deserialize, Serialize};
 pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
-    DEFAULT_GOSSIP_MAX_BYTES_PER_SECOND, Enr, Error, GossipTopic, Identify, Keypair,
-    MAX_BLOBS_PER_BLOCK, PeerId, SAMPLES_PER_SLOT, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
+    ATTESTATION_SUBNETS, DEFAULT_GOSSIP_MAX_BYTES_PER_SECOND, Enr, Error, GossipTopic, Identify,
+    Keypair, MAX_BLOBS_PER_BLOCK, PeerId, SAMPLES_PER_SLOT, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
     rpc_rate_limit::DEFAULT_MAX_INBOUND_STREAMS_PER_SECOND,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
@@ -120,6 +120,8 @@ mod optional_address {
     }
 }
 
+pub const MAX_SURROUND_EPOCHS: u8 = 16;
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct MetricsConfig {
@@ -222,6 +224,13 @@ pub struct Config {
     builder_bid_timeout_ms: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
+    /// Surround detection requires ~ 0.5GB of memory per epoch for 2.3M
+    /// validators + another 0.5GB for the current epoch. Maximum is 16 epochs.
+    /// Zero disables surround detection. Default is 1 epoch, i.e. ~ 1GB, when
+    /// `attestation_subnet_count` or `gossip_topics` covers all 64 attestation
+    /// subnets, and zero otherwise.
+    #[serde(default)]
+    surround_epochs: Option<u8>,
     #[serde(default)]
     trusted_peers: Vec<Enr>,
     #[serde(default)]
@@ -292,7 +301,22 @@ impl Config {
         if params.d_out > params.d_low || params.d_out > params.d / 2 {
             return Err(Error::ConfigError("d_out must not exceed d_low or d / 2".into()));
         }
+        if let Some(surround_epochs) = config.surround_epochs &&
+            surround_epochs > MAX_SURROUND_EPOCHS
+        {
+            return Err(Error::ConfigError(format!(
+                "surround_epochs = {surround_epochs} exceeds the maximum of {MAX_SURROUND_EPOCHS}"
+            )));
+        }
         config.apply(overrides);
+        if config.surround_epochs.is_some_and(|epochs| epochs > 0) &&
+            !config.subscribes_all_attestation_subnets()
+        {
+            silver_log::warn!(
+                surround_epochs = config.surround_epochs,
+                "surround detection without all 64 attestation subnets is unreliable"
+            );
+        }
         Ok(config)
     }
 
@@ -494,6 +518,23 @@ impl Config {
         self.disable_weak_subjectivity_check
     }
 
+    pub fn surround_epochs(&self) -> u8 {
+        self.surround_epochs.unwrap_or(u8::from(self.subscribes_all_attestation_subnets()))
+    }
+
+    fn subscribes_all_attestation_subnets(&self) -> bool {
+        if usize::from(self.attestation_subnet_count) >= ATTESTATION_SUBNETS {
+            return true;
+        }
+        let topics =
+            self.gossip_topics.iter().filter_map(|t| GossipTopic::try_from(t.as_str()).ok());
+        let subnets = topics.fold(0u64, |subnets, topic| match topic {
+            GossipTopic::BeaconAttestation(subnet) => subnets | 1 << subnet,
+            _ => subnets,
+        });
+        subnets == u64::MAX
+    }
+
     pub fn attestation_subnet_count(&self) -> u8 {
         self.attestation_subnet_count
     }
@@ -517,8 +558,9 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{fs, ops::Range, path::Path};
 
+    use silver_log::counts;
     use tempfile::TempDir;
 
     use super::*;
@@ -545,6 +587,67 @@ mod tests {
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
         assert_eq!(cfg.gossip_max_bytes_per_second(), 50_000_000);
         assert_eq!(cfg.max_inbound_streams_per_second(), 50);
+        assert_eq!(cfg.surround_epochs(), 0);
+    }
+
+    #[test]
+    fn surround_detection_defaults_on_only_with_all_attestation_subnets() {
+        let config = |toml: &str| Config::from_toml(toml, Overrides::default()).unwrap();
+
+        assert_eq!(config("attestation_subnet_count = 63").surround_epochs(), 0);
+        assert_eq!(config("attestation_subnet_count = 64").surround_epochs(), 1);
+        let listed = |subnets: Range<u64>| {
+            let topics: Vec<_> = subnets.map(|s| format!("\"beacon_attestation_{s}\"")).collect();
+            config(&format!("gossip_topics = [{}]", topics.join(", "))).surround_epochs()
+        };
+        assert_eq!(listed(0..64), 1);
+        assert_eq!(listed(1..64), 0);
+        let explicit = "surround_epochs = 3\nattestation_subnet_count = 2";
+        assert_eq!(config(explicit).surround_epochs(), 3);
+        let explicit = "surround_epochs = 0\nattestation_subnet_count = 64";
+        assert_eq!(config(explicit).surround_epochs(), 0);
+    }
+
+    /// Counts the warning's callsite in a per-process log counters file, as
+    /// `silver_log`'s own test does.
+    #[test]
+    fn surround_detection_warns_only_without_all_attestation_subnets() {
+        let app = format!("silver-config-test-{}", std::process::id());
+        counts::enable(&app).unwrap();
+        let names = counts::LogName::read(&counts::names_path(&app)).unwrap();
+        let site = names
+            .iter()
+            .position(|n| n.file == file!() && n.template.starts_with("surround detection"))
+            .unwrap();
+        let warnings = || {
+            let counters = fs::read(counts::counters_path(&app)).unwrap();
+            u64::from_le_bytes(counters[site * 8..site * 8 + 8].try_into().unwrap())
+        };
+
+        for (toml, warns) in [
+            ("surround_epochs = 1\nattestation_subnet_count = 63", true),
+            ("surround_epochs = 1\nattestation_subnet_count = 64", false),
+            ("surround_epochs = 0\nattestation_subnet_count = 2", false),
+            ("attestation_subnet_count = 2", false),
+        ] {
+            let before = warnings();
+            Config::from_toml(toml, Overrides::default()).unwrap();
+            assert_eq!(warnings() - before, u64::from(warns), "{toml}");
+        }
+
+        let counters = counts::counters_path(&app);
+        fs::remove_dir_all(counters.ancestors().find(|dir| dir.ends_with(&app)).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn surround_epochs_are_capped() {
+        let config = |surround_epochs: u8| {
+            Config::from_toml(&format!("surround_epochs = {surround_epochs}"), Overrides::default())
+        };
+
+        assert_eq!(config(MAX_SURROUND_EPOCHS).unwrap().surround_epochs(), MAX_SURROUND_EPOCHS);
+        assert_eq!(config(0).unwrap().surround_epochs(), 0);
+        assert!(config(MAX_SURROUND_EPOCHS + 1).is_err());
     }
 
     #[test]

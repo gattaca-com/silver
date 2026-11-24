@@ -23,7 +23,7 @@ use silver_common::{
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
 use silver_config::{PendingBounds, SyncingConfig};
-use silver_slashing::SlashingPool;
+use silver_slashing::{Offence, SlashingDetection, SlashingPool};
 
 use crate::{
     fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice},
@@ -80,6 +80,7 @@ mod seen_aggregates;
 mod seen_proposer_preferences;
 mod seen_validators;
 mod shuffling_cache;
+mod slashing_detection;
 mod sync_contribution_pool;
 mod validator_custody;
 
@@ -109,6 +110,8 @@ pub enum Feedback {
     },
     Request(SyncNeed),
     Ignore,
+    /// Ignored: a local message slashable against one seen on public gossip.
+    Slashable(Offence),
     AlreadySeen,
     TooOld,
     Future,
@@ -122,6 +125,7 @@ impl Debug for Feedback {
             Self::Accept => f.write_str("Accept"),
             Self::BlockImported(r) => write!(f, "BlockImported(0x{})", hex32(r)),
             Self::Ignore => f.write_str("Ignore"),
+            Self::Slashable(offence) => write!(f, "Slashable({offence:?})"),
             Self::AlreadySeen => f.write_str("AlreadySeen"),
             Self::TooOld => f.write_str("TooOld"),
             Self::Future => f.write_str("Future"),
@@ -224,6 +228,8 @@ pub struct BeaconStateTile {
     seen_proposer_slashings: SeenIndices,
     seen_attester_slashed: SeenIndices,
     slashing_pool: SlashingPool,
+    detection: SlashingDetection,
+    proof_handoff_stalled: bool,
     exit_pool: ExitPool,
     bls_change_pool: BlsChangePool,
     fork_data_roots: ForkDataRoots,
@@ -298,6 +304,7 @@ impl BeaconStateTile {
         default_fee_recipient: Option<ExecutionAddress>,
         payload_timeout: Duration,
         validator_custody: ValidatorCustody,
+        surround_epochs: u8,
     ) -> Self {
         let (state, expected_root) = match checkpoint {
             CheckpointState::Trusted(state) => (state, None),
@@ -305,6 +312,16 @@ impl BeaconStateTile {
         };
         let mut owner = BeaconStateOwner::new(state);
         let val_cap = owner.state().validators.finalized().capacity();
+        let validators = owner.state().validators.finalized().validator_count();
+        let detection = SlashingDetection::new(surround_epochs, validators);
+        if surround_epochs > 0 {
+            silver_log::info!(
+                surround_epochs,
+                validators,
+                reserved_mib = detection.reserved_bytes() >> 20,
+                "reserved surround vote history"
+            );
+        }
         let (anchor, anchor_header) = Self::roll_anchor(&mut owner, expected_root);
         let mut tile = Self {
             sync_target: SyncUpdate::default(),
@@ -334,6 +351,8 @@ impl BeaconStateTile {
             seen_proposer_slashings: SeenIndices::new(val_cap),
             seen_attester_slashed: SeenIndices::new(val_cap),
             slashing_pool: SlashingPool::default(),
+            detection,
+            proof_handoff_stalled: false,
             exit_pool: ExitPool::default(),
             bls_change_pool: BlsChangePool::default(),
             attestation_root_memo: AttestationRootMemo::default(),
@@ -1070,6 +1089,7 @@ impl BeaconStateTile {
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
         self.flush_votes(&mut adapter.producers);
+        self.publish_slashings(&mut adapter.producers);
         self.reader.free();
 
         self.post_shufflings(|event| adapter.producers.produce(event));
@@ -1316,7 +1336,7 @@ impl BeaconStateTile {
     /// The `beacon_block` gossip verdict: precheck plus proposer signature,
     /// which is what production relays on.
     pub fn ef_gossip_block(&mut self, ssz: &[u8]) -> Feedback {
-        match self.parse_and_verify_block(ssz, false) {
+        match self.admit_block(ssz, BlockSource::Gossip, false) {
             Ok(_) => Feedback::Accept,
             Err(err) => err.feedback(),
         }
@@ -1327,7 +1347,7 @@ impl BeaconStateTile {
     }
 
     pub fn ef_gossip_aggregate_and_proof(&mut self, ssz: &[u8]) -> Feedback {
-        self.handle_aggregate_and_proof(ssz)
+        self.handle_aggregate_and_proof(ssz, false)
     }
 
     pub fn ef_gossip_voluntary_exit(&mut self, ssz: &[u8]) -> Feedback {

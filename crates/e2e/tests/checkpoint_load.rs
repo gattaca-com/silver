@@ -172,6 +172,7 @@ fn finalized_state_loads() {
         None,
         silver_config::EngineConfig::default().get_payload_timeout(),
         ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+        0,
     );
     tile.open_tcaches().unwrap();
 
@@ -324,6 +325,7 @@ fn tile_apply_block_ef_fixture() {
         None,
         silver_config::EngineConfig::default().get_payload_timeout(),
         ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+        0,
     );
     tile.open_tcaches().unwrap();
 

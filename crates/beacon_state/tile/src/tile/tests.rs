@@ -13,10 +13,10 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineFcuResp, EngineGetPayloadResp,
     EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
-    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, NodeId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation,
-    StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer,
-    block_root_fulu,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, LocalGossipResult, MessageId, NodeId, P2pStreamId,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, PoolChange, ProduceBlockFailure,
+    ProposerPreparation, StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheTable, TProducer, block_root_fulu,
     ssz_hash::{BlockFork, HashedBody},
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -150,6 +150,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         None,
         EngineConfig::default().get_payload_timeout(),
         ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+        0,
     );
     tile.open_tcaches().unwrap();
     tile
@@ -194,6 +195,7 @@ fn make_tile_with_producers(
         None,
         EngineConfig::default().get_payload_timeout(),
         ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+        0,
     );
     tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, delivery_p)
@@ -1464,7 +1466,7 @@ fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCac
 #[cfg(feature = "ef_tests")]
 #[test]
 fn api_block_reaches_storage_through_control_and_beacon_state() {
-    use silver_common::{BlockSource, TCacheReader, TReadMode, TileId};
+    use silver_common::{BlockSource, TReadMode, TileId};
     use silver_storage::tile::StorageTile;
 
     let (pre_ssz, block_ssz, _) = sanity_fixture_of("gloas", "empty_block_transition");
@@ -3256,7 +3258,7 @@ fn attestations_from_another_decision_branch_are_ignored() {
                 let bytes = test_signing::sign_aggregate_and_proof(
                     0, 0, slot, epoch, voted, voted, ci, position, size, &imm,
                 );
-                tile.handle_aggregate_and_proof(&bytes)
+                tile.handle_aggregate_and_proof(&bytes, false)
             } else {
                 let bytes = test_signing::sign_single_attestation(
                     0, 0, ci as u64, slot, voted, epoch, voted, &imm,
@@ -3301,7 +3303,7 @@ fn gossip_verification_resolves_shufflings_after_multiple_empty_epochs() {
             let bytes = test_signing::sign_aggregate_and_proof(
                 0, 0, slot, epoch, root, root, ci, position, size, &imm,
             );
-            tile.handle_aggregate_and_proof(&bytes)
+            tile.handle_aggregate_and_proof(&bytes, false)
         } else {
             let bytes = test_signing::sign_single_attestation(
                 0, 0, ci as u64, slot, root, epoch, root, &imm,
@@ -3667,7 +3669,7 @@ fn gossip_reject_carries_its_reason_and_penalizes_the_peer() {
     adapter.consume(|_: PeerEvent, _| {});
 
     assert_eq!(
-        tile.handle_aggregate_and_proof(&[0u8; 10]),
+        tile.handle_aggregate_and_proof(&[0u8; 10], false),
         Feedback::reject("aggregate malformed")
     );
 
@@ -4494,7 +4496,7 @@ fn agg_multi_committee_bits_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = empty_aggregate();
     buf[436] = 0b0000_0011; // two committee bits
-    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Reject {
         block_root: None,
         ..
     }));
@@ -4509,7 +4511,7 @@ fn agg_unknown_block_root_requests_the_block() {
     let unknown = [0xAA; 32];
     let aggregate = build_agg_for_vi0_voting(&tile, unknown);
     assert_eq!(
-        tile.handle_aggregate_and_proof(&aggregate),
+        tile.handle_aggregate_and_proof(&aggregate, false),
         Feedback::Request(SyncNeed::missing_block(unknown, slot))
     );
 }
@@ -4566,7 +4568,7 @@ fn agg_accept_pools_the_aggregate() {
     let mut tile = make_tile_at_wall_slot(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Accept);
 
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let data_root =
@@ -4656,7 +4658,7 @@ fn att_root_memo_dedups_across_single_and_aggregate_paths() {
     assert_eq!(tile.attestation_root_memo.len(), 1);
 
     let agg = build_agg_for_vi0(&tile);
-    assert_eq!(tile.handle_aggregate_and_proof(&agg), Feedback::Accept);
+    assert_eq!(tile.handle_aggregate_and_proof(&agg, false), Feedback::Accept);
     assert_eq!(tile.attestation_root_memo.len(), 1);
 }
 
@@ -4732,7 +4734,7 @@ fn agg_respects_epoch_monotonicity() {
 
     let buf = build_agg_for_vi0(&tile);
     assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Accept);
 
     // Older-epoch aggregate must not overwrite the newer vote.
     assert_eq!(voted_weight(&mut tile, bbr), 0);
@@ -4747,7 +4749,7 @@ fn agg_slot_too_old_ignored() {
     assert!(
         SignedAggregateAndProofView::agg_slot(&buf) / SLOTS_PER_EPOCH + 1 < 100 / SLOTS_PER_EPOCH
     );
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::TooOld);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf, false), Feedback::TooOld);
 }
 
 #[test]
@@ -4757,7 +4759,7 @@ fn agg_slot_too_future_ignored() {
     let mut buf = empty_aggregate();
     buf[436] = 0b0000_0001;
     buf[212] = 5; // slot = 5 > wall (0)
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Future);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Future);
 }
 
 #[test]
@@ -4769,7 +4771,7 @@ fn agg_committee_index_oor_rejected() {
         buf[436 + i] = 0;
     }
     buf[436] = 0b0000_0010; // committee_index 1, OOR for committees_per_slot=1
-    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Reject {
         block_root: None,
         ..
     }));
@@ -4795,7 +4797,7 @@ fn agg_is_aggregator_false_rejected() {
         assert!(b < 256, "no parity-flipping byte found (impossible)");
     }
     buf[sp_off..sp_off + 96].copy_from_slice(&sig_arr);
-    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Reject {
         block_root: None,
         ..
     }));
@@ -4808,8 +4810,8 @@ fn agg_repeat_aggregator_epoch_ignored() {
     let mut tile = make_tile_at_wall_slot(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::AlreadySeen);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Accept);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf, false), Feedback::AlreadySeen);
 }
 
 /// A rejected aggregate must not mark the aggregator seen, or a forged
@@ -4821,11 +4823,11 @@ fn agg_failed_validation_does_not_mark_aggregator() {
     let buf = build_agg_for_vi0(&tile);
     let mut forged = buf.clone();
     forged[50] ^= 0xFF; // outer signature = buf[4..100)
-    assert!(matches!(tile.handle_aggregate_and_proof(&forged), Feedback::Reject {
+    assert!(matches!(tile.handle_aggregate_and_proof(&forged, false), Feedback::Reject {
         block_root: None,
         ..
     }));
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf, false), Feedback::Accept);
 }
 
 /// First committee (skipping the wall slot) holding two members whose
@@ -4901,7 +4903,7 @@ fn pool_aggregate_accepted_by_aggregate_and_proof_path() {
     // Accept requires verify_aggregate_and_proof_sigs: selection proof,
     // outer signature, and the pooled aggregate signature against the two
     // participants' aggregated registry pubkeys.
-    assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Accept);
+    assert_eq!(tile.handle_aggregate_and_proof(&wrapped, false), Feedback::Accept);
 }
 
 /// First-seen keys on (aggregator, target epoch), not message bytes: a
@@ -4915,14 +4917,17 @@ fn agg_repeat_keys_on_aggregator_not_bytes() {
     let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)), Feedback::Accept);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one), false),
+        Feedback::Accept
+    );
 
     // A second participant grows the pooled aggregate: different bytes,
     // fully valid, same (aggregator, target epoch).
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
     assert_ne!(agg_two, agg_one);
     assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)),
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two), false),
         Feedback::AlreadySeen
     );
 }
@@ -4938,10 +4943,16 @@ fn agg_distinct_aggregators_same_data_both_accept() {
     let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)), Feedback::Accept);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one), false),
+        Feedback::Accept
+    );
 
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)), Feedback::Accept);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two), false),
+        Feedback::Accept
+    );
 }
 
 /// Spec [IGNORE]: bits ⊆ an already-seen valid aggregate's — equal or
@@ -4956,16 +4967,19 @@ fn agg_subset_from_other_aggregator_ignored() {
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)), Feedback::Accept);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two), false),
+        Feedback::Accept
+    );
 
     // Both from an aggregator the epoch has not seen, so only the
     // coverage rule can be what ignores them.
     assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)),
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two), false),
         Feedback::AlreadySeen
     );
     assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_one)),
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_one), false),
         Feedback::AlreadySeen
     );
 }
@@ -4983,11 +4997,14 @@ fn agg_superset_gate_precedes_signature_verify() {
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)), Feedback::Accept);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two), false),
+        Feedback::Accept
+    );
 
     let mut forged = wrap_by(&imm, vi_b, &agg_one);
     forged[50] ^= 0xFF; // outer signature = buf[4..100)
-    assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::AlreadySeen);
+    assert_eq!(tile.handle_aggregate_and_proof(&forged, false), Feedback::AlreadySeen);
 }
 
 /// Union-covered bits (inside the OR of seen patterns, ⊆ none singly)
@@ -5007,7 +5024,10 @@ fn agg_union_covered_still_relays() {
     // {a} from aggregator a, then {b} alone from aggregator b: disjoint
     // patterns whose union is {a, b}.
     let agg_a = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_a)), Feedback::Accept);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_a), false),
+        Feedback::Accept
+    );
     let agg_b_only = test_signing::sign_aggregate_and_proof(
         vi_b as usize % 3,
         vi_b as u64,
@@ -5020,11 +5040,14 @@ fn agg_union_covered_still_relays() {
         committee.len(),
         &imm,
     );
-    assert_eq!(tile.handle_aggregate_and_proof(&agg_b_only), Feedback::Accept);
+    assert_eq!(tile.handle_aggregate_and_proof(&agg_b_only, false), Feedback::Accept);
 
     // {a, b} from a third aggregator: within the union, inside neither.
     let agg_ab = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_c, &agg_ab)), Feedback::Accept);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_c, &agg_ab), false),
+        Feedback::Accept
+    );
 }
 
 // ── finalization (deposit append lands on the delta, not the base) ──
@@ -5683,8 +5706,84 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
     }
 }
 
+struct GossipPublications {
+    events: Vec<BeaconStateEvent>,
+    relayed: Vec<(GossipTopic, Vec<u8>)>,
+    originated: Vec<(GossipTopic, Vec<u8>)>,
+    invalid_msgs: usize,
+}
+
+impl GossipPublications {
+    fn drain(
+        sink: &mut SpineAdapter<SilverSpine>,
+        gossip: &mut TCacheReader,
+        handoff: &mut TCacheReader,
+    ) -> Self {
+        let mut events = Vec::new();
+        let mut originated = Vec::new();
+        sink.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::PublishSlashing { kind, ssz } = event {
+                let bytes = handoff.acquire(ssz);
+                let ssz = bytes.buffer().expect("originated bytes").0.to_vec();
+                originated.push((kind.topic(), ssz));
+            }
+            events.push(event)
+        });
+        let mut relayed = Vec::new();
+        let mut invalid_msgs = 0;
+        sink.consume(|event: PeerEvent, _| match event {
+            PeerEvent::SendGossip { topic, ssz, .. } => {
+                let bytes = gossip.acquire(ssz);
+                relayed.push((topic, bytes.buffer().expect("relayed bytes readable").0.to_vec()));
+            }
+            PeerEvent::P2pGossipInvalidMsg { .. } => invalid_msgs += 1,
+            _ => {}
+        });
+        Self { events, relayed, originated, invalid_msgs }
+    }
+
+    fn relayed_votes(&self) -> usize {
+        let is_vote = |topic| {
+            matches!(
+                topic,
+                GossipTopic::BeaconAttestation(_) | GossipTopic::BeaconAggregateAndProof
+            )
+        };
+        self.relayed.iter().filter(|(topic, _)| is_vote(*topic)).count()
+    }
+
+    fn verdicts(&self) -> Vec<LocalGossipResult> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::LocalGossipVerdict { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn slash_head(tile: &mut BeaconStateTile, validator: u32) {
+    let head = tile.canonical_state_id();
+    let validators = {
+        let mut state = tile.state.write();
+        let mut registry = state.validators.roll_from(head.validators_idx);
+        registry.set_slashed(validator, true);
+        registry.commit()
+    };
+    for id in tile.fork_choice.live_state_ids_mut() {
+        if *id == head {
+            id.validators_idx = validators;
+        }
+    }
+    if tile.last_applied == head {
+        tile.last_applied.validators_idx = validators;
+    }
+}
+
 #[cfg(feature = "ef_tests")]
 mod block_relay;
+mod slashable_votes;
 
 fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic> {
     let mut topics = Vec::new();

@@ -159,6 +159,7 @@ impl PmBsHarness {
             None,
             EngineConfig::default().get_payload_timeout(),
             ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
+            0,
         );
         bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);

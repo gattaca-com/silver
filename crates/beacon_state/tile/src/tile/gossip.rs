@@ -29,6 +29,7 @@ use silver_common::{
         SyncCommitteeView,
     },
 };
+use silver_slashing::Offence;
 use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
 use super::{
@@ -519,6 +520,12 @@ impl BeaconStateTile {
         let mut committed_ptc = false;
         self.votes.pending.reverse();
         while let Some((m, p, sig)) = self.votes.pending.pop() {
+            if let PreparedVote::Attestation(p) = &p &&
+                let Some(offence) = self.local_conflict(&m, &p.buf)
+            {
+                Self::local_verdict(&m, Feedback::Slashable(offence), producers);
+                continue;
+            }
             // Deduplicate only against votes whose signatures have already
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
@@ -534,7 +541,13 @@ impl BeaconStateTile {
                 continue;
             }
             committed_ptc |= matches!(p, PreparedVote::Ptc(_));
-            match self.commit_vote(&p, &sig) {
+            let feedback = self.commit_vote(&p, &sig);
+            if let PreparedVote::Attestation(p) = &p &&
+                m.stream_id != LOCAL_GOSSIP_STREAM_ID
+            {
+                self.detection.record_vote(&p.buf);
+            }
+            match feedback {
                 Feedback::Accept => {
                     Self::relay_gossip(&m, None, producers);
                     accepted = true;
@@ -593,6 +606,16 @@ impl BeaconStateTile {
                 Err(Feedback::Reject { reason, .. }) => {
                     self.reject_gossip(&vote, data, reason, producers)
                 }
+                Err(Feedback::AlreadySeen) => {
+                    let conflict = match (vote.topic, data.try_into()) {
+                        (GossipTopic::BeaconAttestation(_), Ok(single)) => {
+                            self.local_conflict(&vote, single)
+                        }
+                        _ => None,
+                    };
+                    let feedback = conflict.map_or(Feedback::AlreadySeen, Feedback::Slashable);
+                    Self::local_verdict(&vote, feedback, producers)
+                }
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
         }
@@ -612,11 +635,17 @@ impl BeaconStateTile {
             // Pair only the first candidate for each dedup key, but retain
             // later candidates. If that representative makes the batch fail,
             // fallback verification can still find a later valid candidate
-            // for the same key. A sync message on several subnets carries one
+            // for the same key. An API-verified representative is never
+            // paired, and may be refused, so it vouches for no later
+            // candidate. A sync message on several subnets carries one
             // signature, paired once.
             let key = p.dedup_key();
             let (pk, root) = p.pubkey_and_root();
-            let paired = self.votes.pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
+            let paired = self
+                .votes
+                .pending
+                .iter()
+                .any(|(m, q, _)| !m.is_api_verified() && q.dedup_key() == key) ||
                 matches!(p, PreparedVote::SyncMessage(_)) &&
                     self.sig_batch.contains(pk, sig, root);
             if !paired && !vote.is_api_verified() {
@@ -1181,7 +1210,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
+    pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8], local: bool) -> Feedback {
         let Some(parsed) = ParsedAggregateAndProof::try_from(data) else {
             return Feedback::reject("aggregate malformed");
         };
@@ -1268,6 +1297,9 @@ impl BeaconStateTile {
         ) else {
             return attested.committee_reject("aggregate bad signature");
         };
+        if !local {
+            self.detection.record_aggregate(parsed.aggregate_bytes, committee);
+        }
         self.seen_aggregates.record(
             parsed.agg_slot,
             committee_index as u64,
@@ -1918,19 +1950,24 @@ impl BeaconStateTile {
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
         let pre_verified = pre_verified || m.is_api_verified();
 
+        let source = if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
+            BlockSource::LocalGossip
+        } else {
+            BlockSource::Gossip
+        };
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
-                match self.parse_and_verify_block(data, pre_verified) {
+                match self.admit_block(data, source, pre_verified) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
                         Self::relay_gossip(&m, Some(parsed.block_root), producers)
                     }
-                    Err(err) if matches!(err.feedback(), Feedback::Reject { .. }) => producers
-                        .produce(PeerEvent::P2pGossipInvalidMsg {
-                            p2p_peer: m.stream_id.peer(),
-                            topic: m.topic,
-                            hash: m.msg_hash,
-                        }),
-                    _ => {}
+                    Ok(_) => {}
+                    Err(err) => match err.feedback() {
+                        Feedback::Reject { reason, .. } => {
+                            self.reject_gossip(&m, data, reason, producers)
+                        }
+                        feedback => Self::local_verdict(&m, feedback, producers),
+                    },
                 }
                 return true;
             }
@@ -1940,7 +1977,7 @@ impl BeaconStateTile {
                 let feedback = self.apply_block(
                     data,
                     &acquired,
-                    BlockSource::Gossip,
+                    source,
                     pre_verified,
                     producers,
                     |block_root, p| {
@@ -1957,7 +1994,9 @@ impl BeaconStateTile {
                 feedback
             }
             GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
-            GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
+            GossipTopic::BeaconAggregateAndProof => {
+                self.handle_aggregate_and_proof(data, m.stream_id == LOCAL_GOSSIP_STREAM_ID)
+            }
             GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
             GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
             GossipTopic::AttesterSlashing => self.handle_attester_slashing(data),
@@ -2004,9 +2043,11 @@ impl BeaconStateTile {
                 producers.produce(need);
                 Self::local_verdict(&m, feedback, producers);
             }
-            Feedback::Ignore | Feedback::AlreadySeen | Feedback::TooOld | Feedback::Future => {
-                Self::local_verdict(&m, feedback, producers)
-            }
+            Feedback::Ignore |
+            Feedback::Slashable(_) |
+            Feedback::AlreadySeen |
+            Feedback::TooOld |
+            Feedback::Future => Self::local_verdict(&m, feedback, producers),
             Feedback::BlockKnown(_) => Self::local_verdict(&m, feedback, producers),
             Feedback::BlockImported(_) | Feedback::AwaitData(_) => {}
         }
@@ -2130,6 +2171,11 @@ impl BeaconStateTile {
             // Already on the network is published, as fallback validator
             // clients that submit to several nodes rely on.
             Feedback::AlreadySeen | Feedback::BlockKnown(_) => Ok(()),
+            Feedback::Slashable(offence) => Err(match offence {
+                Offence::DoubleProposal => LocalGossipFailure::ConflictingProposal,
+                Offence::DoubleVote => LocalGossipFailure::ConflictingAttestation,
+                Offence::SurroundVote => LocalGossipFailure::SurroundVote,
+            }),
             Feedback::TooOld => Err(LocalGossipFailure::TooOld),
             Feedback::Future => Err(LocalGossipFailure::Future),
             _ => Err(LocalGossipFailure::Unverifiable),

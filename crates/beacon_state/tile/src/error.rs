@@ -1,5 +1,6 @@
 use silver_beacon_state_data::{B256, BLSPubkey, BidBuilderError, BlockBodyError, Slot};
 use silver_common::ssz_hash_gloas::RequestCountOutOfBounds;
+use silver_slashing::Offence;
 use thiserror::Error;
 
 use crate::tile::Feedback;
@@ -94,6 +95,10 @@ pub enum PrecheckError {
         b256_hex(block_root)
     )]
     BidNotOnExecutionHead { block_root: B256 },
+    #[error("another block holds the slot: slot={slot} proposer_index={proposer_index}")]
+    SecondProposal { slot: Slot, proposer_index: u64 },
+    #[error("local block conflicts with a public one: slot={slot} proposer_index={proposer_index}")]
+    SlashableProposal { slot: Slot, proposer_index: u64 },
 }
 
 impl PrecheckError {
@@ -109,10 +114,12 @@ impl PrecheckError {
             Self::FutureSlot { .. } |
             Self::UnconfirmedProposer { .. } |
             Self::AwaitingData { .. } |
+            Self::SecondProposal { .. } |
             Self::Rejected { reason: RejectReason::InvalidPayload, .. } |
             Self::ParentRejected { reason: RejectReason::InvalidPayload, .. } => Feedback::Ignore,
             Self::PastSlot { .. } => Feedback::reject("block slot not after parent"),
             Self::BlockKnown { block_root } => Feedback::BlockKnown(block_root),
+            Self::SlashableProposal { .. } => Feedback::Slashable(Offence::DoubleProposal),
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }
