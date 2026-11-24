@@ -250,6 +250,9 @@ impl Config {
                 None => self.pbs = Some(PbsConfig::new(endpoint)),
             }
         }
+        if let Some(bind) = overrides.beacon_api_bind {
+            self.beacon_api_bind = bind;
+        }
     }
 }
 
@@ -261,6 +264,7 @@ pub struct Overrides {
     pub jwt_secret: Option<String>,
     pub unsafe_no_el: bool,
     pub pbs_endpoint: Option<String>,
+    pub beacon_api_bind: Option<Vec<String>>,
 }
 
 impl Config {
@@ -594,6 +598,16 @@ mod tests {
     }
 
     #[test]
+    fn beacon_api_bind_flag_overrides_the_file() {
+        let toml = "beacon_api_bind = [\"127.0.0.1:6000\"]\n";
+        let flag = Overrides {
+            beacon_api_bind: Some(vec!["0.0.0.0:5051".into()]),
+            ..Overrides::default()
+        };
+        assert_eq!(Config::from_toml(toml, flag).unwrap().beacon_api_bind(), ["0.0.0.0:5051"]);
+    }
+
+    #[test]
     fn partial_columns_modes_are_validated() {
         let cfg =
             Config::from_toml("partial_columns = \"send_only\"", Overrides::default()).unwrap();
@@ -803,7 +817,7 @@ mod tests {
         );
         let enr = Network::Mainnet.bootnodes().unwrap()[0].to_base64();
         write_file(dir.path(), "bootstrap_nodes.yaml", &format!("- \"{enr}\"\n"));
-        let mut genesis = vec![0u8; 8];
+        let mut genesis = 1_700_000_000u64.to_le_bytes().to_vec();
         genesis.extend_from_slice(&[0xab; 32]);
         std::fs::write(dir.path().join("genesis.ssz"), genesis).unwrap();
 
@@ -815,10 +829,10 @@ mod tests {
         let chain = cfg.chain().unwrap();
         assert_eq!(chain.spec.seconds_per_slot(), 6);
         assert_eq!(chain.bootstrap_enrs.len(), 1);
-        assert_eq!(chain.boot, BootSource::File {
-            ssz: dir.path().join("genesis.ssz"),
-            pubkeys: None
-        });
-        assert!(chain.data_dir.ends_with("/devnet-abababab"), "named after the genesis root");
+        assert_eq!(chain.boot, BootSource::Genesis(dir.path().join("genesis.ssz")));
+        assert!(
+            chain.data_dir.ends_with("/devnet-abababab-1700000000"),
+            "named after the genesis root and time"
+        );
     }
 }

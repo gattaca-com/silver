@@ -202,6 +202,8 @@ pub struct SpecConfig {
     pub max_request_blob_sidecars_electra: u64,
     #[serde(default = "default_u64::<4096>")]
     pub min_epochs_for_blob_sidecars_requests: u64,
+    #[serde(default = "default_u64::<4096>")]
+    pub min_epochs_for_data_column_sidecars_requests: u64,
     /// Deposit contract identity. Silver follows no eth1 deposit stream, so
     /// nothing here is verified against; it is carried so the node can tell a
     /// validator client which contract the network it joined deposits to.
@@ -621,6 +623,7 @@ impl SpecConfig {
             max_request_blob_sidecars: 768,
             max_request_blob_sidecars_electra: 1152,
             min_epochs_for_blob_sidecars_requests: 4096,
+            min_epochs_for_data_column_sidecars_requests: 4096,
             deposit_chain_id: 560048,
             deposit_network_id: 560048,
             deposit_contract_address: default_deposit_contract_address(),
@@ -691,6 +694,7 @@ impl SpecConfig {
             max_request_blob_sidecars: 768,
             max_request_blob_sidecars_electra: 1152,
             min_epochs_for_blob_sidecars_requests: 4096,
+            min_epochs_for_data_column_sidecars_requests: 4096,
             deposit_chain_id: 11_155_111,
             deposit_network_id: 11_155_111,
             deposit_contract_address: [
@@ -756,6 +760,7 @@ impl SpecConfig {
             max_request_blob_sidecars: 768,
             max_request_blob_sidecars_electra: 1152,
             min_epochs_for_blob_sidecars_requests: 4096,
+            min_epochs_for_data_column_sidecars_requests: 4096,
             deposit_chain_id: 1,
             deposit_network_id: 1,
             deposit_contract_address: default_deposit_contract_address(),

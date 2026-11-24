@@ -29,6 +29,8 @@ LABEL org.opencontainers.image.source="https://github.com/gattaca-com/silver" \
 # Without this the tracing subscriber writes to rolling files under LOG_PATH,
 # where `docker logs` never sees them.
 ENV LOG_STDOUT=1
+# The loopback default is unreachable through `-p 5051:5051`.
+ENV SILVER_BEACON_API_BIND=0.0.0.0:5051
 
 ENTRYPOINT ["/usr/local/bin/silver"]
 

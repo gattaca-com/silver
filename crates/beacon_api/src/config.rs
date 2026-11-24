@@ -214,7 +214,6 @@ const NETWORK_CONFIG: &[(&str, u64)] = &[
     ("CUSTODY_REQUIREMENT", 4),
     ("VALIDATOR_CUSTODY_REQUIREMENT", VALIDATOR_CUSTODY_REQUIREMENT),
     ("BALANCE_PER_ADDITIONAL_CUSTODY_GROUP", BALANCE_PER_ADDITIONAL_CUSTODY_GROUP),
-    ("MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS", 4096),
     // gloas.yaml
     ("MAX_REQUEST_PAYLOADS", 128),
     // EIP7441
@@ -355,6 +354,10 @@ fn configured(spec: &SpecConfig) -> impl IntoIterator<Item = (&'static str, u64)
         ("MAX_REQUEST_BLOB_SIDECARS", spec.max_request_blob_sidecars),
         ("MAX_REQUEST_BLOB_SIDECARS_ELECTRA", spec.max_request_blob_sidecars_electra),
         ("MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS", spec.min_epochs_for_blob_sidecars_requests),
+        (
+            "MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS",
+            spec.min_epochs_for_data_column_sidecars_requests,
+        ),
         ("DEPOSIT_CHAIN_ID", spec.deposit_chain_id),
         ("DEPOSIT_NETWORK_ID", spec.deposit_network_id),
     ]

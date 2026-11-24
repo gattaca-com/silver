@@ -91,6 +91,7 @@ pub struct Controller {
     spec: Arc<SpecConfig>,
     gossip_schedule: Option<GossipSchedule>,
     scheduled_gossip_topics: Vec<GossipTopic>,
+    io_worker_cores: &'static [usize],
 
     // Last: acquired reads above point into it.
     reader: TCacheReader,
@@ -141,6 +142,7 @@ impl Controller {
             spec,
             gossip_schedule: None,
             scheduled_gossip_topics: Vec::new(),
+            io_worker_cores: &[],
             reader: TCacheReader::new(tcaches),
         })
     }
@@ -346,6 +348,11 @@ impl Controller {
         )?;
         self.reader.declare(TCacheId::BeaconStateHandoff, &[TileId::Columns]);
         self.gossip_handler.open_tcaches()
+    }
+
+    pub fn with_io_worker_cores(mut self, cores: &'static [usize]) -> Self {
+        self.io_worker_cores = cores;
+        self
     }
 
     pub fn with_data_columns_cache(
@@ -938,6 +945,11 @@ impl Tile<SilverSpine> for Controller {
 
     fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         self.open_tcaches().expect("tcache wiring");
+        if !self.io_worker_cores.is_empty() &&
+            let Err(error) = flux_disk::pin_io_workers(self.io_worker_cores)
+        {
+            silver_log::warn!(?error, cores = ?self.io_worker_cores, "io workers not pinned");
+        }
         self.last_tick = Instant::now() + Duration::from_millis(700);
         true
     }

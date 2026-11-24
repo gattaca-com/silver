@@ -876,6 +876,9 @@ pub struct Prefill {
     pub envelopes: u32,
     /// Custody columns missing anywhere in the range, for the request mask.
     pub columns_missing: u128,
+    /// The block the chain links to next. It lies below `start` when no block
+    /// fills the range, so only a by-root request reaches it.
+    pub wanted_parent: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]

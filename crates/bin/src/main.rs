@@ -74,6 +74,9 @@ const _: () = assert!(
     "two held proposals must fit without wrapping"
 );
 
+/// Free core allocated for blocking disk io operations.
+const DISK_IO_CORE: usize = 0;
+
 /// The commit stays first: telemetry reads the first field as the commit.
 const BUILD_INFO: &str = concat!(
     env!("SILVER_BUILD_COMMIT"),
@@ -324,6 +327,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         long_lived_syncnets,
     )?;
     control_tile = control_tile
+        .with_io_worker_cores(&[DISK_IO_CORE])
         .with_data_columns_cache(
             cell_config.clone(),
             das_custody_groups,
@@ -359,7 +363,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         spec.clone(),
         chain_config.data_dir.clone(),
         booting_from_local_checkpoint,
-    );
+        &[DISK_IO_CORE],
+    )?;
 
     let state_reader = beacon_state_tile.reader();
     let data_columns_tile = DataColumnsTile::new(

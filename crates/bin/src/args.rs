@@ -29,6 +29,9 @@ pub struct Args {
     /// Builder API URL of the PBS sidecar, e.g. `http://localhost:18550`.
     #[arg(long)]
     pbs_endpoint: Option<String>,
+    /// Beacon API listen addresses, comma-separated, e.g. `0.0.0.0:5051`.
+    #[arg(long, env = "SILVER_BEACON_API_BIND", value_delimiter = ',')]
+    beacon_api_bind: Option<Vec<String>>,
     #[command(subcommand)]
     pub command: Option<ClusterCommand>,
 }
@@ -41,6 +44,7 @@ impl Args {
             jwt_secret: self.jwt_secret,
             unsafe_no_el: self.unsafe_no_el,
             pbs_endpoint: self.pbs_endpoint,
+            beacon_api_bind: self.beacon_api_bind,
         };
         let config = Config::load(self.config.as_deref(), overrides)?;
 

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
-    io::{Error, ErrorKind, Read, Write},
-    path::Path,
+    io::{Error, ErrorKind, Read},
+    path::{Path, PathBuf},
 };
 
 use silver_common::{Custody, CustodyChange, merkle::B256};
@@ -10,7 +10,7 @@ use super::{
     Coverage, Missing,
     chain::{Chain, Span},
 };
-use crate::store::io::{open_file_read, open_file_write};
+use crate::store::io::open_file_read;
 
 const FILE_NAME: &str = "coverage.bin";
 const FORMAT: [u8; 8] = *b"coverag2";
@@ -30,22 +30,14 @@ pub(super) fn load(store_dir: &str, custody: CustodyChange) -> Result<Option<Cov
     Ok(decoded)
 }
 
-/// Written after the data it describes, so a crash leaves it behind the
-/// disk and never ahead of it.
-pub(super) fn persist(
-    coverage: &Coverage,
-    store_dir: &str,
-    scratch: &mut Vec<u8>,
-) -> Result<(), Error> {
-    scratch.clear();
-    encode(coverage, scratch);
-    let path = Path::new(store_dir).join(FILE_NAME);
-    let staged = Path::new(store_dir).join(format!("{FILE_NAME}.partial"));
-    open_file_write(&staged, false)?.write_all(scratch)?;
-    std::fs::rename(&staged, &path)
+/// The file and the staged copy that is renamed over it. Written after the
+/// data it describes, so a crash leaves it behind the disk and never ahead.
+pub(in crate::store) fn files(store_dir: &str) -> (PathBuf, PathBuf) {
+    let dir = Path::new(store_dir);
+    (dir.join(FILE_NAME), dir.join(format!("{FILE_NAME}.partial")))
 }
 
-fn encode(coverage: &Coverage, out: &mut Vec<u8>) {
+pub(super) fn encode(coverage: &Coverage, out: &mut Vec<u8>) {
     out.extend_from_slice(&FORMAT);
     let changes = coverage.custody.changes();
     out.extend_from_slice(&(changes.len() as u32).to_le_bytes());
@@ -128,6 +120,7 @@ fn decode(bytes: &[u8], custody: CustodyChange) -> Option<Coverage> {
         custody: persisted,
         chain: Chain::from_ascending(spans),
         missing,
+        landed_early: BTreeMap::new(),
         examined_below,
         version: 0,
         persisted: 0,

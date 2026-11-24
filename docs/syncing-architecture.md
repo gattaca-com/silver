@@ -111,11 +111,15 @@ A change to a different chain discards the ranges in flight. It also lowers the 
 
 ## 5. Backfill
 
-The storage tile knows which history is missing, because it writes the history. Backfill runs only while `Following`. Storage then publishes the highest window at or below finality that misses data, as `BackfillPrefill(Prefill)`. A `Prefill` describes 32 slots (`PREFILL_SLOTS`): blocks held, slots proven empty, columns and envelopes covered, and the custody columns missing.
+The storage tile knows which history is missing, because it writes the history. Backfill runs only while `Following`. Storage then publishes the highest window at or below finality that misses data, as `BackfillPrefill(Prefill)`. A `Prefill` describes 32 slots (`PREFILL_SLOTS`): blocks held, slots proven empty, columns and envelopes covered, the custody columns missing, and `wanted_parent`: the root of the block the chain links to next.
 
 The engine's `Backfill` seeds its own `SyncWindow` from that description. It then runs the same range machinery as the live chase, with `Origin::Backfill`. Each storage write comes back as `Persisted`, which updates that window. A persisted block's `parent_slot` proves the slots below it empty, as on the live chase. One mechanism covers all three kinds, and the backfill state stays constant for any quantity of history.
 
 **Storage confirms completion; the peer does not.** After a range ends, the engine waits for `Persisted` reports. After `BACKFILL_SETTLE_TIMEOUT` (30 s) without progress, it asks for the range again. This finds a peer that ended a range but served only a part of it. The storage tile can not link across the hole, and backfill data goes to no other tile that could find it. Thus a "done" from the peer has no value here.
+
+**A silent range.** Storage links blocks by root, from `wanted_parent` downward. Thus it proves emptiness only from a block. A range that holds no block gives it nothing to link. A peer that claims the span and serves no block marks the range `Empty` in the engine, and storage can not use that mark. So on that silence the engine also asks for `wanted_parent` by root, with `Origin::Backfill`. Storage accepts that block even below its window. Its parent link then proves the gap empty, and the walk moves below it. The chase ends when a `Prefill` names a different `wanted_parent`.
+
+**Standing still.** A window can have nothing left to ask while storage still describes it. That means the engine took something as done that never reached the disk. A peer can answer silently over blocks it holds, for example. After `BACKFILL_SETTLE_TIMEOUT`, the engine forgets its own marks on the window and asks for it again.
 
 Columns backfill uses a range, not a root, for the same reason as blocks. Storage hands out one dense window at a time. One range covers such a window efficiently.
 
@@ -127,7 +131,7 @@ From the window the engine calculates the block gap: the consecutive slots above
 
 ## 7. Requests by root
 
-A slot range can not name some of the gaps: the missing parent of a block, the missing columns of a parked block, or a missing envelope. **beacon_state**, the **columns** tile and **storage** send `Missing { root, slot, kind, .. }` on `sync_needs`. When the object comes in, `Arrived` (or `BlockReceived` for a block) removes the need. A rejected block removes every need for its root.
+A slot range can not name some of the gaps: the missing parent of a block, the missing columns of a parked block, or a missing envelope. **beacon_state**, the **columns** tile and **storage** send `Missing { root, slot, kind, .. }` on `sync_needs`. When the object comes in, `Arrived` (or `BlockReceived` for a block) removes the need. A rejected block removes every need for its root. The backfill walk adds one need of its own: the `wanted_parent` of a silent range (§5).
 
 The same division is applicable here. Those tiles report what blocks them. The engine decides if, how frequently and how to request it. The engine owns the limit on the set: `max_parents + 2 × max_dc` (512 by default). It does not reuse the limits of the emitters, because the need of the storage tile has no pending buffer behind it. At the limit the engine refuses the newest need. It serves the needs with the oldest slot first, because that need may be blocking the tail. A live column need waits while a column range in flight covers its slot.
 
@@ -146,8 +150,8 @@ crates/control/src/sync_engine/
 ├── syncing.rs      the Syncing phase: tail advance, stall escalation
 ├── ranges.rs       one range per kind: issue, settle, retire (live and backfill)
 ├── sync_window.rs  the 128-slot coverage ring
-├── backfill.rs     the backfill window, seeded from storage's Prefill
-├── by_root.rs      single-object chasing
+├── backfill.rs     the backfill window, seeded from storage's Prefill; silent-range parent chase
+├── by_root.rs      single-object chasing, live and backfill
 └── peers.rs        peer status aggregation, exclusions
 
 crates/peer/src/manager/rpc.rs        request placement, fan-out, liveness, rate limits
