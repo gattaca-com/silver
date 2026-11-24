@@ -8,6 +8,7 @@ use silver_common::{
         AssemblyRequest, AssemblySet, CellKey, CellRef, CellStoreConfig, ColumnAvailability,
         ColumnRef, CommitmentContext, ContextData, MAX_CONTEXT_BYTES, StoreError,
     },
+    column_util::columns_of,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
@@ -77,6 +78,7 @@ struct Block {
     ssz: Option<TCacheRead>,
     request: Option<u64>,
     retry_at: Instant,
+    assembled: bool,
     active: bool,
     changed: u128,
     assembly_bytes: usize,
@@ -185,6 +187,7 @@ impl CellStore {
             block.retention_slot = self.slot;
             block.request = None;
             block.retry_at = self.now;
+            block.assembled = false;
             block.active = true;
             block.assembly_bytes = 0;
             block.full_bytes = 0;
@@ -215,6 +218,7 @@ impl CellStore {
             ssz: None,
             request: None,
             retry_at: self.now,
+            assembled: false,
             active: true,
             changed: 0,
             assembly_bytes: 0,
@@ -231,10 +235,7 @@ impl CellStore {
     pub fn request_assemblies(&mut self, root: &BlockRoot) -> Option<AssemblyRequest> {
         let index = *self.roots.get(root)?;
         let block = &mut self.blocks[index];
-        if !block.active ||
-            block.request.is_some() ||
-            self.now < block.retry_at ||
-            self.columns[index * self.config.column_indices().len()].assembly.is_some()
+        if !block.active || block.request.is_some() || self.now < block.retry_at || block.assembled
         {
             return None;
         }
@@ -244,7 +245,7 @@ impl CellStore {
             id: self.next_request,
             context: block.context,
             domain: block.domain,
-            columns: self.config.columns(),
+            columns: self.config.custody(),
         })
     }
 
@@ -261,9 +262,7 @@ impl CellStore {
     pub(crate) fn awaiting_allocation(&self, root: &BlockRoot) -> bool {
         let Some(&index) = self.roots.get(root) else { return false };
         let block = &self.blocks[index];
-        block.active &&
-            (block.request.is_some() || self.now < block.retry_at) &&
-            self.columns[index * self.config.column_indices().len()].assembly.is_none()
+        block.active && (block.request.is_some() || self.now < block.retry_at) && !block.assembled
     }
 
     pub fn install(
@@ -283,22 +282,22 @@ impl CellStore {
         if block.context != request.context ||
             block.domain != request.domain ||
             block.request != Some(request.id) ||
-            request.columns != self.config.columns()
+            request.columns != self.config.custody()
         {
             return Err(StoreError::ConflictingContext);
         }
-        let start = index * self.config.column_indices().len();
-        if self.columns[start].assembly.is_some() {
+        if block.assembled {
             return Ok(false);
         }
         let list = set.reservations.acquire(reader)?;
-        if list.entries().len() != self.config.column_indices().len() {
+        if list.entries().len() != request.columns.count_ones() as usize {
             return Err(StoreError::InvalidContext);
         }
         let mut bytes = 0;
         let data = ContextData::from_encoded(&block.data[..block.data_len], block.context.format)
             .ok_or(StoreError::InvalidContext)?;
-        for (reference, &column) in list.entries().zip(self.config.column_indices()) {
+        for (reference, column) in list.entries().zip(columns_of(request.columns)) {
+            let column = column as usize;
             let acquired = reference.acquire(reader)?;
             let (prefix, length) = data.column_prefix(block.context, column);
             let middle =
@@ -329,12 +328,13 @@ impl CellStore {
         } else {
             None
         };
-        for (column, reference) in self.columns[start..start + self.config.column_indices().len()]
-            .iter_mut()
-            .zip(list.entries())
-        {
-            column.assembly = Some(reference);
+        let start = index * self.config.column_indices().len();
+        for (column, reference) in columns_of(request.columns).zip(list.entries()) {
+            let position =
+                self.config.column_position(column as usize).expect("custody is inside the layout");
+            self.columns[start + position].assembly = Some(reference);
         }
+        self.blocks[index].assembled = true;
         self.blocks[index].ssz = header;
         self.blocks[index].assembly_bytes = bytes;
         self.counts.bytes += bytes;
@@ -429,7 +429,8 @@ impl CellStore {
 
     pub fn reservations(&self, root: &BlockRoot) -> impl Iterator<Item = ColumnRef> + '_ {
         let root = *root;
-        self.config.column_indices().iter().filter_map(move |&column| {
+        columns_of(self.config.custody()).filter_map(move |column| {
+            let column = column as usize;
             let update = self.availability(&root, column)?;
             Some(ColumnRef {
                 block_root: root,
@@ -454,6 +455,9 @@ impl CellStore {
 
     pub fn column(&self, root: &BlockRoot, column: usize) -> Option<ColumnStatus> {
         let block = *self.roots.get(root)?;
+        if !self.config.custodies(column) {
+            return None;
+        }
         let position = self.config.column_position(column)?;
         let entry = &self.columns[block * self.config.column_indices().len() + position];
         Some(ColumnStatus {
@@ -556,6 +560,9 @@ impl CellStore {
         if !self.blocks[block].active {
             return Err(StoreError::ContextExpired);
         }
+        if !self.config.custodies(column) {
+            return Err(StoreError::UnknownCell);
+        }
         let position = self.config.column_position(column).ok_or(StoreError::UnknownCell)?;
         Ok((block, block * self.config.column_indices().len() + position))
     }
@@ -657,6 +664,7 @@ impl Block {
             return;
         }
         self.active = false;
+        self.assembled = false;
         self.ssz = None;
         self.changed = 0;
         for (column, &index) in columns.iter_mut().zip(indices) {

@@ -5,7 +5,7 @@ use silver_common::{
     SubReservationError, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheRef, TReadMode,
     TReservation,
     cell_store::{AcquiredCell, CELL_RECORD_BYTES, PendingCell},
-    column_util::data_column_sidecar_prefix_fulu,
+    column_util::{columns_of, data_column_sidecar_prefix_fulu},
     test_util::follow_producer_floor,
 };
 use silver_control::cell_allocator::CellAllocator;
@@ -42,9 +42,13 @@ impl Harness {
     }
 
     fn new(rows: u64, columns: u128) -> Self {
-        let config =
-            CellStoreConfig::new(Arc::new(Self::spec(rows)), columns, Duration::from_secs(11))
-                .unwrap();
+        let config = CellStoreConfig::new(
+            Arc::new(Self::spec(rows)),
+            columns,
+            columns,
+            Duration::from_secs(11),
+        )
+        .unwrap();
         Self::configured(config)
     }
 
@@ -101,9 +105,8 @@ impl Harness {
             }
         };
         self.store.install(set, &mut self.consumer)?;
-        for position in 0..self.store.config.column_indices().len() {
-            let column = self.store.config.column_indices()[position];
-            self.refresh(&context.block_root, column)?;
+        for column in columns_of(self.store.config.custody()) {
+            self.refresh(&context.block_root, column as usize)?;
         }
         Ok(admitted)
     }
@@ -251,15 +254,15 @@ fn key(column: usize, row: usize) -> CellKey {
 fn capacity_uses_the_entire_blob_schedule_and_selected_columns() {
     let mut spec = Harness::spec(3);
     spec.blob_schedule = vec![BlobParameters { epoch: 1, max_blobs_per_block: 17 }];
-    let one = CellStoreConfig::new(Arc::new(spec.clone()), 1, Duration::from_secs(11)).unwrap();
-    let two = CellStoreConfig::new(Arc::new(spec), 3, Duration::from_secs(11)).unwrap();
+    let one = CellStoreConfig::new(Arc::new(spec.clone()), 1, 1, Duration::from_secs(11)).unwrap();
+    let two = CellStoreConfig::new(Arc::new(spec), 3, 3, Duration::from_secs(11)).unwrap();
     assert_eq!(one.max_blobs(), 17);
     assert_eq!(one.cell_capacity(), 3 * 17);
     assert_eq!(two.cell_capacity(), one.cell_capacity() * 2);
     assert!(two.cache_capacity() >= one.cache_capacity());
     assert!(two.cache_capacity().is_power_of_two());
 
-    let fallback = CellStoreConfig::new(Arc::new(Harness::spec(3)), 1, Duration::ZERO).unwrap();
+    let fallback = CellStoreConfig::new(Arc::new(Harness::spec(3)), 1, 1, Duration::ZERO).unwrap();
     assert_eq!(fallback.max_blobs(), 3);
     assert_eq!(fallback.cell_capacity(), 2 * 3);
 }
@@ -273,7 +276,8 @@ fn mainnet_and_hoodi_capacity_use_their_configured_schedule() {
             .map(|entry| entry.max_blobs_per_block)
             .fold(spec.max_blobs_per_block_electra, u64::max);
         let config =
-            CellStoreConfig::new(Arc::new(spec), u128::MAX, Duration::from_secs(11)).unwrap();
+            CellStoreConfig::new(Arc::new(spec), u128::MAX, u128::MAX, Duration::from_secs(11))
+                .unwrap();
         assert_eq!(config.max_blobs(), expected as usize);
         assert_eq!(config.cell_capacity(), 3 * 128 * expected as usize);
     }
@@ -282,8 +286,8 @@ fn mainnet_and_hoodi_capacity_use_their_configured_schedule() {
 #[test]
 fn larger_delivery_window_provisions_more_cells() {
     let spec = Arc::new(Harness::spec(21));
-    let short = CellStoreConfig::new(spec.clone(), 3, Duration::ZERO).unwrap();
-    let long = CellStoreConfig::new(spec, 3, Duration::from_secs(60)).unwrap();
+    let short = CellStoreConfig::new(spec.clone(), 3, 3, Duration::ZERO).unwrap();
+    let long = CellStoreConfig::new(spec, 3, 3, Duration::from_secs(60)).unwrap();
     assert!(long.cell_capacity() > short.cell_capacity());
     assert!(long.cache_capacity() >= short.cache_capacity());
 }
@@ -293,11 +297,11 @@ fn unsupported_future_blob_counts_are_rejected_at_construction() {
     let mut spec = Harness::spec(3);
     spec.blob_schedule = vec![BlobParameters { epoch: 100, max_blobs_per_block: 129 }];
     assert!(matches!(
-        CellStoreConfig::new(Arc::new(spec), 1, Duration::ZERO),
+        CellStoreConfig::new(Arc::new(spec), 1, 1, Duration::ZERO),
         Err(StoreError::UnsupportedBlobCount(129))
     ));
     assert!(matches!(
-        CellStoreConfig::new(Arc::new(Harness::spec(129)), 1, Duration::ZERO),
+        CellStoreConfig::new(Arc::new(Harness::spec(129)), 1, 1, Duration::ZERO),
         Err(StoreError::UnsupportedBlobCount(129))
     ));
 }
@@ -307,24 +311,28 @@ fn unscheduled_blob_entries_do_not_inflate_capacity() {
     let mut spec = Harness::spec(3);
     spec.blob_schedule =
         vec![BlobParameters { epoch: FAR_FUTURE_EPOCH, max_blobs_per_block: u64::MAX }];
-    let config = CellStoreConfig::new(Arc::new(spec), 1, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(Arc::new(spec), 1, 1, Duration::ZERO).unwrap();
     assert_eq!(config.max_blobs(), 3);
 }
 
 #[test]
 fn invalid_and_overflowing_configurations_are_rejected() {
     assert!(matches!(
-        CellStoreConfig::new(Arc::new(Harness::spec(3)), 0, Duration::ZERO),
+        CellStoreConfig::new(Arc::new(Harness::spec(3)), 0, 0, Duration::ZERO),
+        Err(StoreError::InvalidConfig)
+    ));
+    assert!(matches!(
+        CellStoreConfig::new(Arc::new(Harness::spec(3)), 1, 2, Duration::ZERO),
         Err(StoreError::InvalidConfig)
     ));
     let mut spec = Harness::spec(3);
     spec.slot_duration_ms = Some(0);
     assert!(matches!(
-        CellStoreConfig::new(Arc::new(spec), 1, Duration::ZERO),
+        CellStoreConfig::new(Arc::new(spec), 1, 1, Duration::ZERO),
         Err(StoreError::InvalidConfig)
     ));
     assert!(matches!(
-        CellStoreConfig::new(Arc::new(Harness::spec(3)), 1, Duration::MAX),
+        CellStoreConfig::new(Arc::new(Harness::spec(3)), 1, 1, Duration::MAX),
         Err(StoreError::CapacityOverflow)
     ));
 }
@@ -332,7 +340,8 @@ fn invalid_and_overflowing_configurations_are_rejected() {
 #[test]
 fn an_undersized_cache_is_rejected() {
     let config =
-        CellStoreConfig::new(Arc::new(Harness::spec(21)), u128::MAX, Duration::ZERO).unwrap();
+        CellStoreConfig::new(Arc::new(Harness::spec(21)), u128::MAX, u128::MAX, Duration::ZERO)
+            .unwrap();
     let producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
     assert_eq!(producer.cache_ref().capacity(), 1 << 16);
     assert!(matches!(
@@ -364,7 +373,8 @@ fn cell_and_proof_share_one_record() {
 #[test]
 fn incremental_counts_track_refresh_duplicates_full_columns_and_expiry() {
     for slot in [0, 64] {
-        let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 3, Duration::ZERO).unwrap();
+        let config =
+            CellStoreConfig::new(Arc::new(Harness::spec(2)), 3, 3, Duration::ZERO).unwrap();
         let mut h = Harness::at_slot(config, slot);
         h.assert_counts();
         let context = h.context(ROOT, slot, 2);
@@ -474,7 +484,7 @@ fn stale_allocation_reply_cannot_resurrect_an_expired_context() {
             id: block.request.unwrap(),
             context: block.context,
             domain: block.domain,
-            columns: h.store.config.columns(),
+            columns: h.store.config.custody(),
         })
         .unwrap();
     h.advance_ms(12_000);
@@ -528,7 +538,7 @@ fn late_slot_admission_expires_at_the_slot_boundary() {
 fn slot_duration_uses_milliseconds_at_fixed_boundaries() {
     let mut spec = Harness::spec(1);
     spec.slot_duration_ms = Some(500);
-    let config = CellStoreConfig::new(Arc::new(spec), 1, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(Arc::new(spec), 1, 1, Duration::ZERO).unwrap();
     let mut h = Harness::configured(config);
     h.context(ROOT, 0, 1);
     h.advance_ms(499);
@@ -649,7 +659,7 @@ fn expired_context_can_get_fresh_assemblies_for_a_late_el_response() {
 fn schedule_and_fork_boundaries_use_the_blocks_slot() {
     let mut spec = Harness::spec(2);
     spec.blob_schedule = vec![BlobParameters { epoch: 1, max_blobs_per_block: 4 }];
-    let config = CellStoreConfig::new(Arc::new(spec), 1, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(Arc::new(spec), 1, 1, Duration::ZERO).unwrap();
     let mut h = Harness::at_slot(config, 31);
     let mut context =
         CommitmentContext { block_root: ROOT, slot: 31, format: ForkName::Fulu, blob_count: 4 };
@@ -674,7 +684,7 @@ fn schedule_and_fork_boundaries_use_the_blocks_slot() {
 
 #[test]
 fn future_and_below_floor_contexts_are_not_admitted() {
-    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, 1, Duration::ZERO).unwrap();
     let mut h = Harness::at_slot(config, 40);
     h.advance(h.start, 40, |_| {});
     for (slot, error) in [(39, StoreError::BelowSlotFloor), (41, StoreError::OutsideServingSlot)] {
@@ -747,8 +757,30 @@ fn sparse_columns_and_invalid_indices_are_isolated() {
 }
 
 #[test]
+fn full_layout_assembles_only_the_custody_columns() {
+    let custody = (1 << 3) | (1 << 127);
+    let config =
+        CellStoreConfig::new(Arc::new(Harness::spec(2)), u128::MAX, custody, Duration::ZERO)
+            .unwrap();
+    assert_eq!(config.cell_capacity(), config.live_blocks() * 2 * 2);
+    let mut h = Harness::configured(config);
+    h.context(ROOT, 0, 2);
+
+    let reserved: Vec<_> = h.store.reservations(&ROOT).map(|column| column.column).collect();
+    assert_eq!(reserved, [3, 127]);
+    assert_eq!(h.store.columns.iter().filter(|column| column.assembly.is_some()).count(), 2);
+    h.insert(key(3, 0));
+    h.insert(key(127, 1));
+    for outside in [key(0, 0), key(64, 1)] {
+        assert!(h.store.column(&ROOT, outside.column).is_none());
+        assert!(matches!(h.admit_cell(outside, &CELL, &PROOF), Err(StoreError::UnknownCell)));
+    }
+    h.assert_counts();
+}
+
+#[test]
 fn admission_pressure_does_not_publish_failed_cells() {
-    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, 1, Duration::ZERO).unwrap();
     let limit = config.live_blocks();
     let mut h = Harness::configured(config);
     h.context(ROOT, 0, 2);
@@ -785,7 +817,7 @@ fn slot_jumps_expire_the_previous_slot() {
 
 #[test]
 fn context_table_pressure_preserves_existing_blocks() {
-    let config = CellStoreConfig::new(Arc::new(Harness::spec(1)), 1, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(Arc::new(Harness::spec(1)), 1, 1, Duration::ZERO).unwrap();
     let limit = config.block_capacity();
     let mut h = Harness::configured(config);
     h.store.blocks.reserve(limit + 4);
@@ -823,7 +855,7 @@ fn expiry_reports_rows_and_slot_floor_prevents_readmission() {
 
 #[test]
 fn block_slot_reuse_does_not_alias_expired_cell_indices() {
-    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, 1, Duration::ZERO).unwrap();
     let mut h = Harness::configured(config);
     h.context(ROOT, 0, 2);
     let index = h.store.roots[&ROOT];
@@ -843,7 +875,7 @@ fn block_slot_reuse_does_not_alias_expired_cell_indices() {
 #[test]
 fn slab_reuses_holes_without_moving_live_blocks() {
     let config =
-        CellStoreConfig::new(Arc::new(Harness::spec(2)), 3, Duration::from_secs(11)).unwrap();
+        CellStoreConfig::new(Arc::new(Harness::spec(2)), 3, 3, Duration::from_secs(11)).unwrap();
     let mut h = Harness::configured(config);
     h.context(ROOT, 0, 2);
     h.advance_ms(12_000);
@@ -1022,7 +1054,8 @@ fn pending_validation_and_writes_survive_slot_expiry_without_publishing() {
 fn full_sidecars_are_retained_without_copying_and_match_completed_assemblies() {
     for slot in [0, 64] {
         let config =
-            CellStoreConfig::new(Arc::new(Harness::spec(2)), 1 << 3, Duration::ZERO).unwrap();
+            CellStoreConfig::new(Arc::new(Harness::spec(2)), 1 << 3, 1 << 3, Duration::ZERO)
+                .unwrap();
         let mut h = Harness::at_slot(config, slot);
         let mut network = Box::new(TCacheReader::single(h.cache, "", TReadMode::Strict).unwrap());
         h.context(ROOT, slot, 2);
@@ -1078,7 +1111,8 @@ fn full_sidecars_are_retained_without_copying_and_match_completed_assemblies() {
 #[test]
 fn mismatched_full_sidecars_cannot_replace_the_context_or_cell_source() {
     for slot in [0, 64] {
-        let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
+        let config =
+            CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, 1, Duration::ZERO).unwrap();
         let mut h = Harness::at_slot(config, slot);
         h.context(ROOT, slot, 2);
         let original = h.insert(key(0, 0)).0;
@@ -1101,7 +1135,8 @@ fn mismatched_full_sidecars_cannot_replace_the_context_or_cell_source() {
 #[test]
 fn expired_context_rejects_full_sidecars_without_changing_state() {
     for slot in [0, 64] {
-        let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
+        let config =
+            CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, 1, Duration::ZERO).unwrap();
         let mut h = Harness::at_slot(config, slot);
         h.context(ROOT, slot, 2);
         h.insert(key(0, 0));

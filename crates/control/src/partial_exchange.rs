@@ -70,7 +70,7 @@ impl PartialExchange {
             untrusted: 0,
             trusted_roots: Vec::with_capacity(config.live_blocks()),
             max_rows: config.max_blobs(),
-            columns: config.columns(),
+            columns: config.custody(),
             slot,
             next_heartbeat: now,
             acquisition: mode.requests().then(|| Acquisition::new(config, slot, now)),

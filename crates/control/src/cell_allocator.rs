@@ -84,7 +84,7 @@ impl CellAllocator {
     }
 
     pub(super) fn handles_column(&self, column: usize) -> bool {
-        self.config.column_position(column).is_some()
+        self.config.custodies(column)
     }
 
     pub(super) fn max_blobs_at(&self, slot: u64) -> usize {
@@ -108,7 +108,7 @@ impl CellAllocator {
         if context.slot > self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
-        if request.columns != self.config.columns() ||
+        if request.columns != self.config.custody() ||
             request.domain.format() != context.format ||
             !matches!(context.format, ForkName::Fulu | ForkName::Gloas) ||
             self.config.spec().fork_at_slot(context.slot) != context.format ||
@@ -134,7 +134,7 @@ impl CellAllocator {
         if context.slot != self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
-        let request = AssemblyRequest { id: 0, context, domain, columns: self.config.columns() };
+        let request = AssemblyRequest { id: 0, context, domain, columns: self.config.custody() };
         self.check_request(request)?;
         if let Some(allocation) = self.allocations.get_mut(&context.block_root) {
             let matches = allocation.set.request.context == context &&
@@ -240,7 +240,8 @@ impl CellAllocator {
             } else {
                 (DATA_COLUMN_SIDECAR_GLOAS_MIN, 0)
             };
-            for reference in &mut references[..self.config.column_indices().len()] {
+            let columns = request.columns.count_ones() as usize;
+            for reference in &mut references[..columns] {
                 *reference = Some(self.producer.uninitialized_sub_reservation(
                     SubLayout {
                         parts: context.blob_count,
@@ -253,7 +254,7 @@ impl CellAllocator {
             }
             let reservations = SubReservationList::write(
                 &mut self.producer,
-                references[..self.config.column_indices().len()].iter().copied(),
+                references[..columns].iter().copied(),
             )?;
             Ok(AssemblySet { request, reservations, header, expires: self.slot_end })
         })();
@@ -279,7 +280,7 @@ impl CellAllocator {
         if key.row >= set.request.context.blob_count || set.request.context.slot < self.min_slot {
             return None;
         }
-        let position = self.config.column_position(key.column)?;
+        let position = set.request.position(key.column)?;
         let reservation = set.reservations.view(&self.producer).ok()?.nth(position)?;
         Some(ColumnRef {
             block_root: key.block_root,

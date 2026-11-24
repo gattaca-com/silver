@@ -52,6 +52,10 @@ impl Rig {
     }
 
     fn with_columns(format: ForkName, column_mask: u128) -> Self {
+        Self::with_layout(format, column_mask, column_mask)
+    }
+
+    fn with_layout(format: ForkName, layout: u128, custody: u128) -> Self {
         let now = Instant::now();
         let spec = Arc::new(SpecConfig {
             fulu_fork_epoch: 0,
@@ -60,7 +64,7 @@ impl Rig {
             blob_schedule: Vec::new(),
             ..SpecConfig::mainnet()
         });
-        let config = CellStoreConfig::new(spec, column_mask, Duration::from_secs(11)).unwrap();
+        let config = CellStoreConfig::new(spec, layout, custody, Duration::from_secs(11)).unwrap();
         let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let columns =
             Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
@@ -122,12 +126,12 @@ impl Rig {
         let peers = PeerManager::new(
             PeerId::default(),
             vec![],
-            columns_of(column_mask).map(GossipTopic::DataColumnSidecar).collect(),
+            columns_of(custody).map(GossipTopic::DataColumnSidecar).collect(),
             Default::default(),
             SyncingConfig::default(),
             [0; 4],
             [0; METADATA_SIZE],
-            column_mask,
+            custody,
         );
         Self {
             config,
@@ -159,7 +163,7 @@ impl Rig {
         for event in events {
             self.peers.handle_event(event, self.now, &mut |_| {});
         }
-        for column in columns_of(self.config.columns()) {
+        for column in columns_of(self.config.custody()) {
             self.peers.handle_event(
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: peer,

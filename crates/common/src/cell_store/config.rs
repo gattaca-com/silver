@@ -14,27 +14,28 @@ use crate::{
 #[derive(Clone)]
 pub struct CellStoreConfig {
     spec: Arc<SpecConfig>,
-    columns: u128,
+    layout: u128,
+    custody: u128,
     column_indices: Box<[usize]>,
     max_blobs: usize,
     slot_duration: Duration,
     block_capacity: usize,
     live_blocks: usize,
-    cell_capacity: usize,
     cache_bytes: usize,
 }
 
 impl CellStoreConfig {
     pub fn new(
         spec: Arc<SpecConfig>,
-        columns: u128,
+        layout: u128,
+        custody: u128,
         delivery_retention: Duration,
     ) -> Result<Self, StoreError> {
         let max_blobs = spec.max_scheduled_blobs_per_block();
         if max_blobs > u128::BITS as u64 {
             return Err(StoreError::UnsupportedBlobCount(max_blobs));
         }
-        if columns == 0 || spec.slot_duration_ms() == 0 {
+        if custody == 0 || custody & !layout != 0 || spec.slot_duration_ms() == 0 {
             return Err(StoreError::InvalidConfig);
         }
 
@@ -52,11 +53,7 @@ impl CellStoreConfig {
             .checked_mul(2)
             .ok_or(StoreError::CapacityOverflow)?;
         let max_blobs = max_blobs as usize;
-        let column_count = columns.count_ones() as usize;
-        let cell_capacity = live_blocks
-            .checked_mul(column_count)
-            .and_then(|n| n.checked_mul(max_blobs))
-            .ok_or(StoreError::CapacityOverflow)?;
+        let column_count = layout.count_ones() as usize;
         let context_bytes = SubLayout {
             parts: 1,
             first_len: PARTIAL_HEADER_FIXED + max_blobs * BYTES_PER_KZG_COMMITMENT,
@@ -97,15 +94,15 @@ impl CellStoreConfig {
             .ok_or(StoreError::CapacityOverflow)?;
         Ok(Self {
             spec,
-            columns,
+            layout,
+            custody,
             column_indices: (0..u128::BITS as usize)
-                .filter(|column| columns & (1u128 << column) != 0)
+                .filter(|column| layout & (1u128 << column) != 0)
                 .collect(),
             max_blobs,
             slot_duration,
             block_capacity,
             live_blocks,
-            cell_capacity,
             cache_bytes,
         })
     }
@@ -116,8 +113,18 @@ impl CellStoreConfig {
     }
 
     #[inline]
-    pub fn columns(&self) -> u128 {
-        self.columns
+    pub fn custody(&self) -> u128 {
+        self.custody
+    }
+
+    #[inline]
+    pub fn custodies(&self, column: usize) -> bool {
+        column < u128::BITS as usize && self.custody & (1u128 << column) != 0
+    }
+
+    #[inline]
+    fn custody_count(&self) -> usize {
+        self.custody.count_ones() as usize
     }
 
     #[inline]
@@ -147,12 +154,12 @@ impl CellStoreConfig {
 
     #[inline]
     pub fn cell_capacity(&self) -> usize {
-        self.cell_capacity
+        self.live_blocks * self.custody_count() * self.max_blobs
     }
 
     #[inline]
     pub fn column_capacity(&self) -> usize {
-        self.live_blocks * self.column_indices.len()
+        self.live_blocks * self.custody_count()
     }
 
     #[inline]
@@ -163,6 +170,6 @@ impl CellStoreConfig {
     #[inline]
     pub fn column_position(&self, column: usize) -> Option<usize> {
         let bit = 1u128.checked_shl(u32::try_from(column).ok()?)?;
-        (self.columns & bit != 0).then(|| (self.columns & (bit - 1)).count_ones() as usize)
+        (self.layout & bit != 0).then(|| (self.layout & (bit - 1)).count_ones() as usize)
     }
 }

@@ -252,9 +252,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let partial_columns = config.partial_columns();
 
-    let cell_config =
-        CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION)
-            .map_err(|error| format!("cell store configuration: {error:?}"))?;
+    let cell_config = CellStoreConfig::new(
+        spec.clone(),
+        u128::MAX,
+        das_custody_groups,
+        GOSSIP_DELIVERY_RETENTION,
+    )
+    .map_err(|error| format!("cell store configuration: {error:?}"))?;
     let control_slot_producer =
         TCache::producer(TCacheId::ControlSlot, cell_config.cache_capacity());
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();

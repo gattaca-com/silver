@@ -139,9 +139,13 @@ impl GossipPublications {
                 (write_bytes(&mut self.rpc, bytes), SszCache::Rpc, Some(test_domain()))
             }
             ColumnOrigin::El | ColumnOrigin::Assembly => {
-                let config =
-                    CellStoreConfig::new(self.controller.spec.clone(), 1 << 5, Duration::ZERO)
-                        .unwrap();
+                let config = CellStoreConfig::new(
+                    self.controller.spec.clone(),
+                    1 << 5,
+                    1 << 5,
+                    Duration::ZERO,
+                )
+                .unwrap();
                 let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
                 let ingress = self
                     .controller

@@ -189,21 +189,21 @@ impl Acquisition {
                 config.block_capacity(),
                 Default::default(),
             ),
-            changed: Vec::with_capacity(capacity * config.columns().count_ones() as usize * 3),
+            changed: Vec::with_capacity(capacity * config.custody().count_ones() as usize * 3),
             peer_load: FxHashMap::with_capacity_and_hasher(
-                capacity * config.columns().count_ones() as usize,
+                capacity * config.custody().count_ones() as usize,
                 Default::default(),
             ),
             broken_offers: FxHashSet::with_capacity_and_hasher(
-                capacity * config.columns().count_ones() as usize,
+                capacity * config.custody().count_ones() as usize,
                 Default::default(),
             ),
             pending_penalties: Vec::with_capacity(
-                capacity * config.columns().count_ones() as usize,
+                capacity * config.custody().count_ones() as usize,
             ),
             capacity,
             completion_capacity: config.block_capacity(),
-            columns: config.columns(),
+            columns: config.custody(),
             slot,
             next_poll: now,
         }

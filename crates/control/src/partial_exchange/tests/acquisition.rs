@@ -325,6 +325,34 @@ fn no_peers_or_no_installed_assembly_recovers_and_rejected_context_does_not() {
 }
 
 #[test]
+fn full_layout_requests_and_recovers_only_the_custody_columns() {
+    let custody = 1 | (1 << 127);
+    let mut rig = Rig::with_layout(ForkName::Fulu, u128::MAX, custody);
+    rig.enable_requests();
+    rig.connect(1, false, true);
+    rig.demand(custody);
+    for column in [0, 127] {
+        rig.availability(column, 0);
+    }
+    assert!(rig.acquire().is_empty());
+    let requested: Vec<_> = rig.requests().iter().map(|request| request.1).collect();
+    assert_eq!(requested.len(), 2);
+    assert!(requested.contains(&0) && requested.contains(&127));
+    rig.now += Duration::from_millis(750);
+    assert!(
+        matches!(rig.acquire().as_slice(), [SyncNeed::Missing { columns, .. }] if *columns == custody)
+    );
+
+    let mut rig = Rig::with_layout(ForkName::Fulu, u128::MAX, custody);
+    rig.enable_requests();
+    rig.demand(u128::MAX);
+    rig.now += Duration::from_millis(750);
+    assert!(
+        matches!(rig.acquire().as_slice(), [SyncNeed::Missing { columns, .. }] if *columns == custody)
+    );
+}
+
+#[test]
 fn dropped_request_retries_without_extending_the_acquisition_deadline() {
     let mut rig = Rig::new(ForkName::Gloas);
     rig.enable_requests();

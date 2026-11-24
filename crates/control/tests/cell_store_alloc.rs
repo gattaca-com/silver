@@ -56,7 +56,7 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
         slot_duration_ms: Some(1000),
         ..SpecConfig::mainnet()
     });
-    let config = CellStoreConfig::new(spec, 3, Duration::ZERO).unwrap();
+    let config = CellStoreConfig::new(spec, 3, 3, Duration::ZERO).unwrap();
     let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
     let mut writer =
         Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());

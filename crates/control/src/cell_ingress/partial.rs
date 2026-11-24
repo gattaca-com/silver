@@ -42,7 +42,7 @@ impl PartialBudget {
             cells: 0,
             headers: 0,
             max_cells: 2 * config.cell_capacity(),
-            per_peer: 2 * config.max_blobs() * config.column_indices().len(),
+            per_peer: 2 * config.max_blobs() * config.custody().count_ones() as usize,
         }
     }
 
