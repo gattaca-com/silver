@@ -40,5 +40,5 @@ COMMIT="$(git -C "$HERE/.." rev-parse --short HEAD)"
 if [ -n "$(git -C "$HERE/.." status --porcelain)" ]; then
   COMMIT="$COMMIT-dirty"
 fi
-exec "${BUILDER[@]}" build --load --progress=plain --tag "$IMAGE" \
+exec "${BUILDER[@]}" build --load --progress=plain --target kurtosis --tag "$IMAGE" \
   --build-arg "SILVER_BUILD_COMMIT=$COMMIT" "$HERE/.."

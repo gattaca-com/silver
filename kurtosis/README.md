@@ -13,7 +13,7 @@ There are two ways to run silver against it:
 
 - `kurtosis` (CLI and engine 1.22.2 or later), `docker`, `curl`, `jq`.
 - Host process: `reth` on `PATH`, and a silver build.
-- Participant: `patch`, `tar` and `sha256sum`.
+- Participant: `tar` and `sha256sum`.
   `build-image.sh` downloads a verified Docker Buildx if the plugin is missing.
 
 Linux only. The host process joins the enclave over the Docker bridge.
@@ -28,9 +28,8 @@ Linux only. The host process joins the enclave over the Docker bridge.
 | `net-vc.yaml` | Fulu, two silver nodes, with a Lighthouse VC and a Prysm VC. |
 | `net-vc-gloas.yaml` | Silver with a Lighthouse VC, crossing Fulu to Gloas at epoch 4. |
 | `gloas-proposals.yaml` | Assertoor test for `net-vc-gloas.yaml`. |
-| `prepare-package.sh` | Downloads the pinned ethereum-package fork and applies the patch. Prints its path. |
-| `ethereum-package.patch` | Local changes to the fork's silver launcher. |
-| `build-image.sh` | Builds the silver image, `silver:proposing` by default. |
+| `prepare-package.sh` | Downloads the pinned ethereum-package and adds the Assertoor test. Prints its path. |
+| `build-image.sh` | Builds the Dockerfile's `kurtosis` target, `silver:proposing` by default. It adds the busybox shell that the launcher's `sh -c` needs. |
 
 `setup.sh` generates `silver-devnet.toml`, `silver-devnet-network/` and `el/`.
 `prepare-package.sh` and `build-image.sh` write to `.cache/`.
@@ -75,13 +74,14 @@ For backfill testing, let the spammer run before launching silver.
 
 ## Participant
 
-The silver launcher lives on the [`ninaiiad/ethereum-package`](https://github.com/ninaiiad/ethereum-package/tree/ng/silver-cl) fork.
-`prepare-package.sh` pins its commit, checks the archive SHA-256, and applies `ethereum-package.patch`.
+The silver launcher is upstream in [`ethpandaops/ethereum-package`](https://github.com/ethpandaops/ethereum-package/tree/main/src/cl/silver).
+`prepare-package.sh` pins a `main` commit and checks the archive SHA-256.
 It also copies `gloas-proposals.yaml` into the package as an Assertoor test.
-Run it again after changing either file.
+Run it again after changing that file.
 
-The patch points silver at the enclave's metadata with `network`.
+The launcher points silver at the enclave's metadata with `network`.
 It sets `disable_weak_subjectivity_check = true`, since the devnet starts from genesis.
+It allows each silver's service name as a beacon API host, so validator clients can reach it.
 It gives each silver container 2 GiB of `/dev/shm`; Docker's 64 MiB default causes `SIGBUS`.
 
 ### Fulu validator clients
