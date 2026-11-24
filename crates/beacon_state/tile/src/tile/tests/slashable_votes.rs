@@ -20,8 +20,6 @@ struct Votes {
     adapter: SpineAdapter<SilverSpine>,
     sink: SpineAdapter<SilverSpine>,
     imm: Immutable,
-    /// Overrides the head as the block new votes attest.
-    attested: Option<B256>,
     _spine: TestSpine,
 }
 
@@ -44,7 +42,7 @@ impl Votes {
         let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
         sink.consume(|_: BeaconStateEvent, _| {});
         let imm = seed_immutable(&tile);
-        Self { tile, gossip, handoff, adapter, sink, imm, attested: None, _spine: spine }
+        Self { tile, gossip, handoff, adapter, sink, imm, _spine: spine }
     }
 
     /// Votes in epochs 0 and 1 are current at this wall slot.
@@ -85,7 +83,7 @@ impl Votes {
             validator.into(),
             duty.committee_index as u64,
             duty.slot,
-            self.attested.unwrap_or(head),
+            head,
             epoch,
             head,
             &self.imm,
@@ -177,17 +175,15 @@ fn repeat_vote_is_ignored_without_verification() {
     }
 }
 
-/// A vote is public once verified from the network or relayed by us. A local
-/// vote on an unknown root is buffered, not relayed.
+/// Only votes verified from the network are evidence.
 #[test]
 fn public_surrounds_publish_only_when_enabled_and_useful() {
-    for (history, inner_by, covered, slashed, expected) in [
-        (1, Origin::Network, false, false, true),
-        (0, Origin::Network, false, false, false),
-        (1, Origin::Local, false, false, true),
-        (1, Origin::LocalUnrelayed, false, false, false),
-        (1, Origin::Network, true, false, false),
-        (1, Origin::Network, false, true, false),
+    for (history, inner_local, covered, slashed, expected) in [
+        (1, false, false, false, true),
+        (0, false, false, false, false),
+        (1, true, false, false, false),
+        (1, false, true, false, false),
+        (1, false, false, true, false),
     ] {
         for one_batch in [false, true] {
             let mut rig = Votes::started(history);
@@ -200,19 +196,16 @@ fn public_surrounds_publish_only_when_enabled_and_useful() {
                 rig.step();
                 assert_eq!(pooled(&rig.tile).1.as_deref(), Some(proof.as_slice()));
             }
-            if inner_by == Origin::LocalUnrelayed {
-                rig.attested = Some([0xAA; 32]);
-            }
             let (inner, inner_subnet) = rig.vote_in(0, 1);
-            rig.attested = None;
             let (outer, outer_subnet) = rig.vote_in(1, 0);
-            rig.submit(&inner, inner_subnet, inner_by != Origin::Network);
+            rig.submit(&inner, inner_subnet, inner_local);
             if !one_batch {
                 rig.step();
             }
             rig.submit(&outer, outer_subnet, false);
             let drained = rig.step();
-            let case = format!("{inner_by:?}, history {history}, one batch: {one_batch}");
+            let case =
+                format!("inner local: {inner_local}, history {history}, one batch: {one_batch}");
             assert_eq!(drained.originated.len(), usize::from(expected), "{case}");
             if expected {
                 let (topic, proof) = &drained.originated[0];
@@ -231,13 +224,6 @@ fn public_surrounds_publish_only_when_enabled_and_useful() {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Origin {
-    Network,
-    Local,
-    LocalUnrelayed,
 }
 
 /// Refusal commits nothing, so a forged copy of the refused vote is no repeat.
@@ -298,12 +284,11 @@ fn local_vote_is_refused_only_against_public_evidence() {
         (1, (0, 1), (1, 1), Ok(())),
         (0, (0, 1), (1, 0), Ok(())),
     ] {
-        for (one_batch, first_local) in [(true, false), (false, false), (true, true), (false, true)]
-        {
+        for one_batch in [true, false] {
             let mut rig = Votes::started(surround_epochs);
             let (public, public_subnet) = rig.vote_in(public_at.0, public_at.1);
             let (local, local_subnet) = rig.vote_in(local_at.0, local_at.1);
-            rig.submit(&public, public_subnet, first_local);
+            rig.submit(&public, public_subnet, false);
             if !one_batch {
                 assert_eq!(rig.step().relayed_votes(), 1);
             }
@@ -313,11 +298,9 @@ fn local_vote_is_refused_only_against_public_evidence() {
 
             let case = format!(
                 "surround_epochs {surround_epochs}, public {public_at:?}, local {local_at:?}, \
-                 one batch: {one_batch}, first local: {first_local}"
+                 one batch: {one_batch}"
             );
-            let expected =
-                if one_batch && first_local { vec![Ok(()), verdict] } else { vec![verdict] };
-            assert_eq!(drained.verdicts(), expected, "{case}");
+            assert_eq!(drained.verdicts(), [verdict], "{case}");
             let local_relays = verdict == Ok(()) && public_at.0 != local_at.0;
             assert_eq!(
                 drained.relayed_votes(),
@@ -349,24 +332,18 @@ fn peers(rig: &mut Votes) -> [u32; 3] {
 
 #[test]
 fn aggregates_prove_only_public_conflicting_overlaps_once() {
-    let cases = ["double", "same", "disjoint", "local first", "local second", "local unrelayed"];
+    let cases = ["double", "same", "disjoint", "local first", "local second"];
     for case in cases {
         let mut rig = Votes::started(0);
         let [x, y, z] = peers(&mut rig);
         let first = rig.aggregate(&[0, x], 0, x);
         let second_signers = if case == "disjoint" { vec![y] } else { vec![0, y] };
-        if case == "local unrelayed" {
-            rig.attested = Some([0xAA; 32]);
-        }
         let second = rig.aggregate(&second_signers, u64::from(case != "same"), y);
-        rig.attested = None;
-        let second_local = matches!(case, "local second" | "local unrelayed");
         rig.gossip_in(&first, GossipTopic::BeaconAggregateAndProof, case == "local first");
-        rig.gossip_in(&second, GossipTopic::BeaconAggregateAndProof, second_local);
+        rig.gossip_in(&second, GossipTopic::BeaconAggregateAndProof, case == "local second");
         let drained = rig.step();
-        let relayed = if case == "local unrelayed" { 1 } else { 2 };
-        assert_eq!(drained.relayed_votes(), relayed, "{case}: relayable ones are accepted");
-        let proves = matches!(case, "double" | "local first" | "local second");
+        assert_eq!(drained.relayed_votes(), 2, "{case}: both are accepted");
+        let proves = case == "double";
         assert_eq!(drained.originated.len(), usize::from(proves), "{case}");
         if !proves {
             continue;

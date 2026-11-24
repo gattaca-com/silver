@@ -543,7 +543,7 @@ impl BeaconStateTile {
             committed_ptc |= matches!(p, PreparedVote::Ptc(_));
             let feedback = self.commit_vote(&p, &sig);
             if let PreparedVote::Attestation(p) = &p &&
-                (m.stream_id != LOCAL_GOSSIP_STREAM_ID || feedback == Feedback::Accept)
+                m.stream_id != LOCAL_GOSSIP_STREAM_ID
             {
                 self.detection.record_vote(&p.buf);
             }
@@ -1297,7 +1297,7 @@ impl BeaconStateTile {
         ) else {
             return attested.committee_reject("aggregate bad signature");
         };
-        if !local || attested.is_ready() {
+        if !local {
             self.detection.record_aggregate(parsed.aggregate_bytes, committee);
         }
         self.seen_aggregates.record(
@@ -1959,8 +1959,7 @@ impl BeaconStateTile {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
                 match self.admit_block(data, source, pre_verified) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
-                        Self::relay_gossip(&m, Some(parsed.block_root), producers);
-                        self.detection.proposals.observe_public_copy(data, &parsed.block_root);
+                        Self::relay_gossip(&m, Some(parsed.block_root), producers)
                     }
                     Ok(_) => {}
                     Err(err) => match err.feedback() {
@@ -1974,7 +1973,7 @@ impl BeaconStateTile {
             }
             GossipTopic::BeaconBlock => {
                 let relay_once_parsed = m.validation == BroadcastValidation::Gossip;
-                let mut relayed = None;
+                let mut relayed = false;
                 let feedback = self.apply_block(
                     data,
                     &acquired,
@@ -1984,18 +1983,12 @@ impl BeaconStateTile {
                     |block_root, p| {
                         if do_relay && relay_once_parsed {
                             Self::relay_gossip(&m, Some(block_root), p);
-                            relayed = Some(block_root);
+                            relayed = true;
                         }
                     },
                 );
-                match relayed {
-                    Some(block_root) => {
-                        self.detection.proposals.observe_public_copy(data, &block_root)
-                    }
-                    None if do_relay && m.stream_id == LOCAL_GOSSIP_STREAM_ID => {
-                        self.relay_once_applied(&m, data, feedback, producers)
-                    }
-                    None => {}
+                if do_relay && !relayed && m.stream_id == LOCAL_GOSSIP_STREAM_ID {
+                    self.relay_once_applied(&m, data, feedback, producers);
                 }
                 do_relay = false; // relayed on callback or once applied.
                 feedback
@@ -2065,7 +2058,7 @@ impl BeaconStateTile {
     /// staged before it arrived, is relayed once its transition has passed; a
     /// block waiting on its columns has passed it.
     pub(super) fn relay_once_applied(
-        &mut self,
+        &self,
         m: &NewGossipMsg,
         data: &[u8],
         feedback: Feedback,
@@ -2090,7 +2083,6 @@ impl BeaconStateTile {
             return;
         }
         Self::relay_gossip(m, Some(block_root), producers);
-        self.detection.proposals.observe_public_copy(data, &block_root);
     }
 
     /// Another block in fork choice from the same proposer for the same slot.

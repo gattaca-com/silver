@@ -6,7 +6,7 @@ use silver_common::{
         ProposerSlashingView, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
     },
 };
-use silver_slashing::{Observation, Offence, SignedHeader};
+use silver_slashing::{Offence, SignedHeader};
 
 use super::{BeaconStateTile, Producers, block::ParsedBlock, seen_validators::SeenIndices};
 use crate::error::PrecheckError;
@@ -33,27 +33,18 @@ impl BeaconStateTile {
                 return Err(PrecheckError::SecondProposal { slot, proposer_index });
             }
         }
-        let parsed = self.parse_and_verify_block(data, pre_verified).inspect_err(|error| {
-            if let PrecheckError::BlockKnown { block_root } |
-            PrecheckError::AwaitingData { block_root } = *error &&
-                source == BlockSource::Rpc
-            {
-                self.detection.proposals.observe_public_copy(data, &block_root);
-            }
-        })?;
+        let parsed = self.parse_and_verify_block(data, pre_verified)?;
         let (slot, proposer_index) = (parsed.header.slot, parsed.header.proposer_index);
         let header = SignedHeader::of_block(data, &parsed.header.body_root);
-        let public = source != BlockSource::LocalGossip;
-        match self.detection.proposals.observe(header, public) {
-            Observation::First | Observation::Repeat => Ok(parsed),
-            Observation::Conflict { .. } if source == BlockSource::Rpc => Ok(parsed),
-            Observation::Conflict { public_first: true } if !public => {
+        let conflict = self.detection.proposals.observe(header, source == BlockSource::LocalGossip);
+        match source {
+            _ if !conflict => Ok(parsed),
+            BlockSource::Rpc => Ok(parsed),
+            BlockSource::LocalGossip => {
                 refuse_local(Offence::DoubleProposal, proposer_index, slot);
                 Err(PrecheckError::SlashableProposal { slot, proposer_index })
             }
-            Observation::Conflict { .. } => {
-                Err(PrecheckError::SecondProposal { slot, proposer_index })
-            }
+            _ => Err(PrecheckError::SecondProposal { slot, proposer_index }),
         }
     }
 
@@ -124,7 +115,7 @@ fn refuse_local(offence: Offence, validator_index: u64, slot: Slot) {
         ?offence,
         validator_index,
         slot,
-        "refused a slashable message from our validator client; conflicting evidence is public"
+        "refused a slashable message from our validator client"
     );
 }
 

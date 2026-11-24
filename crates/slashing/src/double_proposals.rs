@@ -2,12 +2,8 @@ use std::collections::hash_map::Entry;
 
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot};
-use silver_ssz::{
-    ssz_hash::hash_beacon_block_header_bytes,
-    ssz_view::{
-        BEACON_BLOCK_HEADER_SIZE, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
-        SignedBeaconBlockView,
-    },
+use silver_ssz::ssz_view::{
+    BEACON_BLOCK_HEADER_SIZE, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SignedBeaconBlockView,
 };
 
 const SIGNED_HEADER_SIZE: usize = PROPOSER_SLASHING_SIZE / 2;
@@ -55,18 +51,10 @@ impl SignedHeader {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Observation {
-    First,
-    Repeat,
-    Conflict { public_first: bool },
-}
-
 struct Proposal {
     header: SignedHeader,
-    /// Local submissions become evidence only after relay.
-    public: bool,
-    reported: bool,
+    /// Local proposals never enter a proof; a reported first enters one.
+    provable: bool,
 }
 
 #[derive(Default)]
@@ -84,49 +72,28 @@ impl DoubleProposals {
     ) -> bool {
         self.firsts
             .get(&ProposalKey { slot, proposer_index })
-            .is_some_and(|first| !first.public || first.reported || !slashable(proposer_index))
+            .is_some_and(|first| !first.provable || !slashable(proposer_index))
     }
 
-    /// Takes verified headers only; a public header replaces a private first. A
-    /// public header conflicting with a public, unreported first queues one
-    /// proof for the pair.
-    pub fn observe(&mut self, header: SignedHeader, public: bool) -> Observation {
+    /// Takes verified headers only and tells whether `header` conflicts
+    /// with its key's first. A conflict queues one proof per key, pairing two
+    /// headers that are not local.
+    pub fn observe(&mut self, header: SignedHeader, local: bool) -> bool {
         let first = match self.firsts.entry(header.key()) {
             Entry::Vacant(vacant) => {
-                vacant.insert(Proposal { header, public, reported: false });
-                return Observation::First;
+                vacant.insert(Proposal { header, provable: !local });
+                return false;
             }
             Entry::Occupied(occupied) => occupied.into_mut(),
         };
-        if public && !first.public {
-            *first = Proposal { header, public, reported: false };
-        }
         if first.header.message() == header.message() {
-            return Observation::Repeat;
+            return false;
         }
-        if public && first.public && !first.reported && self.proofs.len() < PROOFS_CAPACITY {
-            first.reported = true;
+        if !local && first.provable && self.proofs.len() < PROOFS_CAPACITY {
+            first.provable = false;
             self.proofs.push(first.header.slashing_with(&header));
         }
-        Observation::Conflict { public_first: first.public }
-    }
-
-    /// `block` is not verified, so it makes a private first public only when
-    /// it matches the first's message and signature.
-    pub fn observe_public_copy(&mut self, block: &[u8], block_root: &B256) {
-        let key = ProposalKey {
-            slot: SignedBeaconBlockView::slot(block),
-            proposer_index: SignedBeaconBlockView::proposer_index(block),
-        };
-        if let Some(first) = self.firsts.get_mut(&key) {
-            if !first.public &&
-                first.header.0[BEACON_BLOCK_HEADER_SIZE..] ==
-                    *SignedBeaconBlockView::signature(block) &&
-                hash_beacon_block_header_bytes(first.header.message()) == *block_root
-            {
-                first.public = true;
-            }
-        }
+        true
     }
 
     pub fn has_proofs(&self) -> bool {

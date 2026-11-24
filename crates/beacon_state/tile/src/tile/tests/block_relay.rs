@@ -604,9 +604,8 @@ fn local_block_rejected_while_syncing_gets_a_verdict() {
 fn verified_sources_reserve_and_public_pairs_round_trip() {
     let (pre_ssz, block_ssz) = sanity_fixture("attestation");
     let proposer = SignedBeaconBlockView::proposer_index(&block_ssz);
-    for (target, first) in SYNC_MODES
-        .into_iter()
-        .flat_map(|t| [Path::Gossip, Path::Rpc, Path::Replay, Path::Local].map(|p| (t, p)))
+    for (target, first) in
+        SYNC_MODES.into_iter().flat_map(|t| [Path::Gossip, Path::Rpc, Path::Replay].map(|p| (t, p)))
     {
         let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, target);
         let equivocation = rig.equivocation_of(&block_ssz);
@@ -618,7 +617,7 @@ fn verified_sources_reserve_and_public_pairs_round_trip() {
         }
         rig.on_block(first, &block_ssz);
         let accepted = rig.drain();
-        let relays = usize::from(matches!(first, Path::Gossip | Path::Local));
+        let relays = usize::from(matches!(first, Path::Gossip));
         assert_eq!(accepted.relays().len(), relays);
         if relays > 0 {
             assert_eq!(accepted.relays(), [fulu_relayed(&block_ssz)]);
@@ -668,11 +667,11 @@ fn closed_gossip_keys_skip_hashing_but_reject_malformed_blocks() {
     witness.on_gossip(&conflict);
     let proof = witness.drain().originated.remove(0).1;
     for target in SYNC_MODES {
-        for cause in ["free", "open", "private", "reported", "covered", "slashed"] {
+        for cause in ["free", "open", "local", "reported", "covered", "slashed"] {
             let mut rig = BlockPublications::new(&pre, &block, target);
             if cause != "free" {
                 rig.on_block(
-                    if cause == "private" { Path::LocalUnrelayed } else { Path::Gossip },
+                    if cause == "local" { Path::LocalUnrelayed } else { Path::Gossip },
                     &block,
                 );
             }
@@ -754,19 +753,13 @@ fn conflicting_rpc_block_is_processed_and_reported() {
     }
 }
 
-/// The API verifies local block signatures, so local conflicts differ only
-/// by whether the first block is public.
+/// The API verifies local block signatures, so a local conflict is refused
+/// without a signature check.
 #[test]
-fn local_double_proposal_is_refused_only_against_public_evidence() {
+fn local_double_proposal_is_refused() {
     let (pre_ssz, block_ssz) = sanity_fixture("attestation");
-    let refused = Err(LocalGossipFailure::ConflictingProposal);
     for target in SYNC_MODES {
-        for (first, verdict) in [
-            (Path::Gossip, refused),
-            (Path::Rpc, refused),
-            (Path::Local, refused),
-            (Path::LocalUnrelayed, Err(LocalGossipFailure::Unverifiable)),
-        ] {
+        for first in [Path::Gossip, Path::Rpc, Path::Local, Path::LocalUnrelayed] {
             let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, target);
             let second = rig.equivocation_of(&block_ssz);
             rig.on_block(first, &block_ssz);
@@ -776,7 +769,7 @@ fn local_double_proposal_is_refused_only_against_public_evidence() {
 
             let published = rig.drain();
             let case = format!("{target:?}, first by {first:?}");
-            assert_eq!(published.verdicts(), [verdict], "{case}");
+            assert_eq!(published.verdicts(), [Err(LocalGossipFailure::ConflictingProposal)]);
             assert!(published.relays().is_empty(), "{case}: not published");
             assert!(published.receipts().is_empty(), "{case}: not applied");
             assert!(published.originated.is_empty(), "{case}: not reported");
@@ -784,59 +777,35 @@ fn local_double_proposal_is_refused_only_against_public_evidence() {
     }
 }
 
+/// Our own proposal stays out of proofs once relayed, and once the network
+/// returns a copy. A conflict at its key is still not relayed.
 #[test]
-fn local_proposals_become_evidence_only_after_publication() {
+fn local_proposals_never_become_evidence() {
     let (pre, block) = sanity_fixture("attestation");
     for target in SYNC_MODES {
         for (first, copy) in [
             (Path::Local, None),
-            (Path::LocalUnrelayed, None),
+            (Path::LocalUnrelayed, Some(Path::Gossip)),
             (Path::LocalUnrelayed, Some(Path::Rpc)),
             (Path::LocalUnrelayed, Some(Path::Replay)),
         ] {
+            let case = format!("{target:?}, first by {first:?}, copy by {copy:?}");
             let mut rig = BlockPublications::new(&pre, &block, target);
             let conflict = rig.equivocation_of(&block);
             rig.on_block(first, &block);
-            let initial = rig.drain();
-            let relayed = matches!(first, Path::Local);
-            assert_eq!(initial.relays().len(), usize::from(relayed));
-            assert!(initial.originated.is_empty());
-            if target.is_following() {
-                assert_eq!(rig.tile.head_state_slot(), SignedBeaconBlockView::slot(&block));
-            }
+            let relays = usize::from(matches!(first, Path::Local));
+            assert_eq!(rig.drain().relays().len(), relays, "{case}");
             if let Some(path) = copy {
-                let mut forged = block.clone();
-                forged[4] ^= 0xff;
-                rig.on_block(path, &forged);
-                rig.drain();
-                rig.on_gossip(&conflict);
-                assert!(rig.drain().originated.is_empty(), "a forged copy is not evidence");
                 rig.on_block(path, &block);
-                assert!(rig.drain().originated.is_empty(), "a public copy is not a conflict");
+                rig.drain();
             }
+
             rig.on_gossip(&conflict);
+
             let result = rig.drain();
-            assert!(result.relays().is_empty());
-            assert_eq!(result.invalid_msgs, 0);
-            if relayed || copy.is_some() {
-                assert!(matches!(&result.originated[..], [(GossipTopic::ProposerSlashing, _)]));
-            } else {
-                assert!(result.originated.is_empty());
-                rig.on_gossip(&sibling_of(&block));
-                assert_eq!(rig.drain().invalid_msgs, 0, "a private first keeps its key closed");
-            }
+            assert!(result.relays().is_empty(), "{case}: the conflict is not relayed");
+            assert_eq!(result.invalid_msgs, 0, "{case}");
+            assert!(result.originated.is_empty(), "{case}: not evidence");
         }
     }
-}
-
-#[test]
-fn consensus_validated_local_block_becomes_evidence_once_relayed() {
-    let (pre, block) = sanity_fixture("attestation");
-    let mut rig = BlockPublications::new(&pre, &block, SyncUpdate::Following);
-    let conflict = rig.equivocation_of(&block);
-    rig.on_local(&block, BroadcastValidation::Consensus);
-    assert_eq!(rig.drain().relays(), [fulu_relayed(&block)]);
-
-    rig.on_gossip(&conflict);
-    assert!(matches!(&rig.drain().originated[..], [(GossipTopic::ProposerSlashing, _)]));
 }

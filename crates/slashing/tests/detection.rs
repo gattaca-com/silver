@@ -1,4 +1,4 @@
-use silver_slashing::{DoubleProposals, Observation, Offence, SignedHeader, SlashingDetection};
+use silver_slashing::{DoubleProposals, Offence, SignedHeader, SlashingDetection};
 use silver_ssz::ssz_view::{
     ATTESTATION_FIXED, AttesterSlashingView, ProposerSlashingView, SIGNED_BEACON_BLOCK_MIN,
     SINGLE_ATT_SIZE, SingleAttestationView,
@@ -8,8 +8,8 @@ use silver_ssz::ssz_view::{
 fn proposals_remain_reportable_until_queued_and_prune_only_finalized_keys() {
     let mut proposals = DoubleProposals::default();
     for index in 0..65 {
-        proposals.observe(header(index, 5, 1), true);
-        proposals.observe(header(index, 5, 2), true);
+        proposals.observe(header(index, 5, 1), false);
+        proposals.observe(header(index, 5, 2), false);
     }
     let mut published = Vec::new();
     while let Some(proof) = proposals.next_proof(|_| true) {
@@ -19,7 +19,7 @@ fn proposals_remain_reportable_until_queued_and_prune_only_finalized_keys() {
     published.sort();
     assert_eq!(published, (0..64).collect::<Vec<_>>());
     for index in 0..65 {
-        proposals.observe(header(index, 5, 3), true);
+        proposals.observe(header(index, 5, 3), false);
     }
     assert_eq!(
         proposals.next_proof(|_| true).map(ProposerSlashingView::h1_proposer_index),
@@ -27,10 +27,10 @@ fn proposals_remain_reportable_until_queued_and_prune_only_finalized_keys() {
     );
     proposals.pop_proof();
     assert!(proposals.next_proof(|_| true).is_none());
-    proposals.observe(header(0, 6, 1), true);
+    proposals.observe(header(0, 6, 1), false);
     proposals.prune_finalized(5);
-    assert_eq!(proposals.observe(header(0, 5, 2), true), Observation::First);
-    assert_ne!(proposals.observe(header(0, 6, 2), true), Observation::First);
+    assert!(!proposals.observe(header(0, 5, 2), false), "pruned: a new first");
+    assert!(proposals.observe(header(0, 6, 2), false), "retained: a conflict");
 }
 
 fn vote(index: u64, source: u64, target: u64) -> [u8; SINGLE_ATT_SIZE] {
@@ -192,4 +192,47 @@ fn double_vote_is_proven_within_one_committee_record() {
     let proof = record(64, 2, &[0, 2], &reshuffled).expect("a double vote");
 
     assert_eq!(proof, [4]);
+}
+
+/// A block at one key whose body root and signature are both marked by `tag`.
+fn tagged_block(tag: u8) -> [u8; SIGNED_BEACON_BLOCK_MIN] {
+    let mut block = [0; SIGNED_BEACON_BLOCK_MIN];
+    block[4..100].fill(tag);
+    block[100..108].copy_from_slice(&5u64.to_le_bytes());
+    block[108..116].copy_from_slice(&7u64.to_le_bytes());
+    block
+}
+
+/// Each queued proof pairs headers the network delivered. Exhaustive over
+/// short sequences of observations at one key.
+#[test]
+fn proposal_proofs_pair_only_headers_from_the_network() {
+    let observations = [(1, true), (1, false), (2, true), (2, false), (3, false)];
+    let mut proven = 0;
+    let mut sequences = vec![vec![]];
+    for _ in 0..5 {
+        sequences = sequences
+            .iter()
+            .flat_map(|sequence| {
+                observations
+                    .iter()
+                    .map(|&observation| [sequence.as_slice(), &[observation]].concat())
+            })
+            .collect();
+        for sequence in &sequences {
+            let mut proposals = DoubleProposals::default();
+            let mut from_network = [false; 4];
+            for &(tag, local) in sequence {
+                proposals.observe(SignedHeader::of_block(&tagged_block(tag), &[tag; 32]), local);
+                from_network[usize::from(tag)] |= !local;
+                while let Some(proof) = proposals.next_proof(|_| true) {
+                    let tags = [proof[112], proof[320]];
+                    assert!(tags.iter().all(|&tag| from_network[usize::from(tag)]), "{sequence:?}");
+                    proven += 1;
+                    proposals.pop_proof();
+                }
+            }
+        }
+    }
+    assert!(proven > 0, "some sequence proves a double proposal");
 }
