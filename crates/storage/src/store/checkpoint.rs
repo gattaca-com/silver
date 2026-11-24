@@ -350,7 +350,7 @@ mod tests {
     };
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
-    use silver_common::TCacheId;
+    use silver_common::{CustodyChange, TCacheId};
     use tempfile::TempDir;
 
     use super::{FINALIZED_CHECKPOINTS_DIR, Store};
@@ -431,7 +431,12 @@ mod tests {
         let base = std::env::var("SILVER_BENCH_DIR").unwrap_or_else(|_| "/tmp".to_string());
         let temp = TempDir::new_in(base).unwrap();
         let dir = temp.path().to_str().unwrap().to_owned();
-        let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX), 0).unwrap();
+        let mut store = Store::load(
+            dir.clone(),
+            crate::store::test_spec(u64::MAX),
+            CustodyChange::from_genesis(0),
+        )
+        .unwrap();
 
         const ITERS: u64 = 23;
         const WARMUP: u64 = 3;
@@ -526,7 +531,12 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let dir = temp.path().to_str().unwrap().to_owned();
 
-        let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX), 0).unwrap();
+        let mut store = Store::load(
+            dir.clone(),
+            crate::store::test_spec(u64::MAX),
+            CustodyChange::from_genesis(0),
+        )
+        .unwrap();
         assert_eq!(store.last_persisted_finalized_slot(), 0);
 
         // Commit four slots; only the newest three survive.
@@ -552,7 +562,12 @@ mod tests {
         std::fs::create_dir_all(&incomplete).unwrap();
         std::fs::write(incomplete.join("99.ssz.tmp"), b"partial").unwrap();
 
-        let reloaded = Store::load(dir.clone(), crate::store::test_spec(u64::MAX), 0).unwrap();
+        let reloaded = Store::load(
+            dir.clone(),
+            crate::store::test_spec(u64::MAX),
+            CustodyChange::from_genesis(0),
+        )
+        .unwrap();
         assert_eq!(reloaded.last_persisted_finalized_slot(), 13);
         assert!(!cp.join("99").exists(), "incomplete checkpoint dropped on load");
         assert!(cp.join("13").exists());
@@ -573,7 +588,12 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let dir = temp.path().to_str().unwrap().to_owned();
-        let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX), 0).unwrap();
+        let mut store = Store::load(
+            dir.clone(),
+            crate::store::test_spec(u64::MAX),
+            CustodyChange::from_genesis(0),
+        )
+        .unwrap();
 
         assert!(!store.checkpoint_in_flight());
         store.begin_checkpoint(reader);

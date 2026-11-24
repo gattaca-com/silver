@@ -4,6 +4,12 @@ pub struct CustodyChange {
     pub columns: u128,
 }
 
+impl CustodyChange {
+    pub fn from_genesis(columns: u128) -> Self {
+        Self { from_slot: 0, columns }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Custody {
     changes: Vec<CustodyChange>,
@@ -11,7 +17,7 @@ pub struct Custody {
 
 impl Custody {
     pub fn new(columns: u128) -> Self {
-        Self { changes: vec![CustodyChange { from_slot: 0, columns }] }
+        Self { changes: vec![CustodyChange::from_genesis(columns)] }
     }
 
     pub fn from_changes(changes: Vec<CustodyChange>) -> Option<Self> {

@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, io::Error};
 
 use chain::Chain;
 pub(super) use rebuild::read_block;
-use silver_common::{Custody, PREFILL_SLOTS, Prefill, merkle::B256};
+use silver_common::{Custody, CustodyChange, PREFILL_SLOTS, Prefill, merkle::B256};
 
 use super::{
     Payload,
@@ -95,7 +95,7 @@ impl Coverage {
         }
     }
 
-    pub(super) fn load(store_dir: &str, custody: u128) -> Result<Option<Self>, Error> {
+    pub(super) fn load(store_dir: &str, custody: CustodyChange) -> Result<Option<Self>, Error> {
         codec::load(store_dir, custody)
     }
 
@@ -591,8 +591,13 @@ mod tests {
         coverage.grow_custody(994, 0b1111);
         coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
 
-        assert!(Coverage::load(&store, CUSTODY).unwrap().is_none(), "custody since grew");
-        let reloaded = Coverage::load(&store, 0b1111).unwrap().expect("persisted");
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY)).unwrap().is_none(),
+            "custody since grew"
+        );
+        let reloaded = Coverage::load(&store, CustodyChange::from_genesis(0b1111))
+            .unwrap()
+            .expect("persisted");
         assert_eq!(reloaded.custody, coverage.custody);
         assert_eq!(reloaded.claim(1000, 1, 1), 994);
 
@@ -601,7 +606,32 @@ mod tests {
         let mut old = CUSTODY.to_le_bytes().to_vec();
         old.extend_from_slice(&bytes[8 + 4 + 2 * 24..]);
         std::fs::write(&file, &old).unwrap();
-        assert!(Coverage::load(&store, CUSTODY).unwrap().is_none(), "older format: rebuilt");
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY)).unwrap().is_none(),
+            "older format: rebuilt"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custody_raised_after_the_last_persist_extends_the_coverage() {
+        let dir = std::env::temp_dir().join(format!("silver_coverage_{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = dir.to_string_lossy().into_owned();
+
+        let mut blocks = BlockIndex::default();
+        let mut coverage = Coverage::new(CUSTODY);
+        land(&mut coverage, &mut blocks, &[996, 992], [0; 32], 1000, NOTHING);
+        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
+
+        let raised = |from_slot| CustodyChange { from_slot, columns: 0b1111 };
+        let reloaded = Coverage::load(&store, raised(1024)).unwrap().expect("extended");
+        assert_eq!(reloaded.custody.changes(), [
+            CustodyChange::from_genesis(CUSTODY),
+            raised(1024)
+        ]);
+        assert_eq!(reloaded.columns_missing(996), 0);
+        assert!(Coverage::load(&store, raised(996)).unwrap().is_none(), "raised under held slots");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -620,8 +650,12 @@ mod tests {
         coverage.note_columns(996, 0b1);
         coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
 
-        assert!(Coverage::load(&store, CUSTODY << 1).unwrap().is_none());
-        let reloaded = Coverage::load(&store, CUSTODY).unwrap().expect("persisted");
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY << 1)).unwrap().is_none()
+        );
+        let reloaded = Coverage::load(&store, CustodyChange::from_genesis(CUSTODY))
+            .unwrap()
+            .expect("persisted");
         assert_eq!(reloaded.chain, coverage.chain);
         assert_eq!(reloaded.columns_missing(996), 0b110);
         assert!(reloaded.envelope_missing(996));
@@ -634,7 +668,10 @@ mod tests {
         let mut bytes = std::fs::read(&file).unwrap();
         bytes.push(0);
         std::fs::write(&file, &bytes).unwrap();
-        assert!(Coverage::load(&store, CUSTODY).unwrap().is_none(), "trailing bytes: rebuilt");
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY)).unwrap().is_none(),
+            "trailing bytes: rebuilt"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -49,7 +49,7 @@ pub use builder_bid::{BuilderBid, BuilderTerms};
 pub use custody::{Custody, CustodyChange};
 pub use node_chain::NodeChain;
 pub use payload_frame::PayloadFrame;
-pub use persisted_custody::PersistedCustody;
+pub use persisted_custody::{PersistedCustody, RaisedCustody};
 pub use silver_beacon_state_data::{
     EPOCHS_PER_SYNC_COMMITTEE_PERIOD, FAR_FUTURE_EPOCH, ForkName, SLOTS_PER_EPOCH,
 };

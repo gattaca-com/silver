@@ -1,7 +1,7 @@
 use std::{io::Error, path::Path};
 
 use silver_beacon_state_data::SpecConfig;
-use silver_common::{Custody, DataKind, Prefill, SyncNeed, merkle::B256};
+use silver_common::{Custody, CustodyChange, DataKind, Prefill, SyncNeed, merkle::B256};
 
 use super::{
     Payload,
@@ -17,13 +17,17 @@ pub(super) struct Finalized {
 }
 
 impl Finalized {
-    pub(super) fn load(store_dir: &str, custody: u128, spec: &SpecConfig) -> Result<Self, Error> {
+    pub(super) fn load(
+        store_dir: &str,
+        custody: CustodyChange,
+        spec: &SpecConfig,
+    ) -> Result<Self, Error> {
         let blocks_dir = Path::new(store_dir).join(Payload::Block.finalized_dir_name());
         let blocks = BlockIndex::load(&blocks_dir)?;
         let coverage = match Coverage::load(store_dir, custody)? {
             Some(coverage) => coverage,
             None => {
-                let mut coverage = Coverage::new(custody);
+                let mut coverage = Coverage::new(custody.columns);
                 coverage.rebuild(&blocks, store_dir, spec);
                 coverage
             }

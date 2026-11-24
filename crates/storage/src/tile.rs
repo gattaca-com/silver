@@ -11,11 +11,11 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, DataKind, Origin,
-    P2pSend, PayloadResolution, PeerControl, PeerEvent, PersistedCustody, ReplayBlock, RequestId,
-    RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy,
-    TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
-    block_root,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, CustodyChange, DataColumnsEvent,
+    DataKind, Origin, P2pSend, PayloadResolution, PeerControl, PeerEvent, PersistedCustody,
+    RaisedCustody, ReplayBlock, RequestId, RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed,
+    SyncUpdate, SyncingStrategy, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    TProducer, TReadMode, TileId, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -116,7 +116,13 @@ impl StorageTile {
         replay_from_disk: bool,
     ) -> Self {
         let persisted_custody = PersistedCustody::new(Path::new(&data_store_dir));
-        let store = Store::load(data_store_dir, spec.clone(), custody_group_columns)
+        let custody_from_slot = persisted_custody
+            .load()
+            .expect("failed to load the persisted custody")
+            .map_or(0, |raised| raised.from_slot);
+        let custody =
+            CustodyChange { from_slot: custody_from_slot, columns: custody_group_columns };
+        let store = Store::load(data_store_dir, spec.clone(), custody)
             .expect("failed to load storage store");
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
         let replay_steps = if replay_from_disk {
@@ -153,7 +159,8 @@ impl StorageTile {
 
     fn grow_custody(&mut self, from_slot: u64, custody_group_count: u64, columns: u128) {
         self.store.grow_custody(from_slot, columns);
-        if let Err(e) = self.persisted_custody.store(custody_group_count) {
+        let raised = RaisedCustody { custody_group_count, from_slot };
+        if let Err(e) = self.persisted_custody.store(raised) {
             silver_log::error!(?e, custody_group_count, "custody group count not persisted");
         }
     }
@@ -693,7 +700,8 @@ mod tests {
             from_slot: 64,
         };
         tile.handle_beacon_state_event(change, &mut |_| {});
-        assert_eq!(PersistedCustody::new(Path::new(&store_dir)).load().unwrap(), Some(16));
+        let persisted = PersistedCustody::new(Path::new(&store_dir)).load().unwrap();
+        assert_eq!(persisted, Some(RaisedCustody { custody_group_count: 16, from_slot: 64 }));
         let _ = std::fs::remove_dir_all(&store_dir);
     }
 

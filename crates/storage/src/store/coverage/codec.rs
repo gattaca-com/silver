@@ -15,7 +15,7 @@ use crate::store::io::{open_file_read, open_file_write};
 const FILE_NAME: &str = "coverage.bin";
 const FORMAT: [u8; 8] = *b"coverag2";
 
-pub(super) fn load(store_dir: &str, custody: u128) -> Result<Option<Coverage>, Error> {
+pub(super) fn load(store_dir: &str, custody: CustodyChange) -> Result<Option<Coverage>, Error> {
     let mut file = match open_file_read(Path::new(store_dir).join(FILE_NAME)) {
         Ok(file) => file,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
@@ -69,7 +69,7 @@ fn encode(coverage: &Coverage, out: &mut Vec<u8>) {
     }
 }
 
-fn decode(bytes: &[u8], custody: u128) -> Option<Coverage> {
+fn decode(bytes: &[u8], custody: CustodyChange) -> Option<Coverage> {
     let mut cursor = Cursor { bytes, at: 0 };
     if cursor.take(FORMAT.len())? != FORMAT {
         silver_log::info!("coverage file has an older format");
@@ -79,18 +79,10 @@ fn decode(bytes: &[u8], custody: u128) -> Option<Coverage> {
     for _ in 0..cursor.u32()? {
         changes.push(CustodyChange { from_slot: cursor.u64()?, columns: cursor.u128()? });
     }
-    let Some(persisted) = Custody::from_changes(changes) else {
+    let Some(mut persisted) = Custody::from_changes(changes) else {
         silver_log::warn!("coverage file custody malformed");
         return None;
     };
-    if persisted.current() != custody {
-        silver_log::info!(
-            persisted = format_args!("{:#x}", persisted.current()),
-            current = format_args!("{custody:#x}"),
-            "custody changed since coverage was written"
-        );
-        return None;
-    }
     let examined_below = cursor.u64()?;
     let mut spans = Vec::new();
     for _ in 0..cursor.u32()? {
@@ -113,6 +105,24 @@ fn decode(bytes: &[u8], custody: u128) -> Option<Coverage> {
     if !well_formed {
         silver_log::warn!("coverage file malformed");
         return None;
+    }
+    if persisted.current() != custody.columns {
+        let recorded_to = spans
+            .last()
+            .map_or(0, |span| span.to)
+            .max(missing.last_key_value().map_or(0, |(&slot, _)| slot))
+            .max(examined_below)
+            .max(persisted.last_change_slot());
+        if persisted.current() & !custody.columns != 0 || custody.from_slot <= recorded_to {
+            silver_log::info!(
+                persisted = format_args!("{:#x}", persisted.current()),
+                current = format_args!("{:#x}", custody.columns),
+                from_slot = custody.from_slot,
+                "custody changed since coverage was written"
+            );
+            return None;
+        }
+        persisted.grow(custody.from_slot, custody.columns);
     }
     Some(Coverage {
         custody: persisted,

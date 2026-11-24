@@ -169,7 +169,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let enr_fork_id = chain_config.spec.enr_fork_id(wall_epoch, fork_digest);
     let persisted_custody = PersistedCustody::new(Path::new(&chain_config.data_dir));
     let custody_group_count =
-        persisted_custody.load()?.unwrap_or(0).max(config.custody_group_count());
+        persisted_custody.load()?.map_or(0, |raised| raised.custody_group_count);
+    let custody_group_count = custody_group_count.max(config.custody_group_count());
     let mut local_enr = config.enr(&keypair, enr_fork_id, custody_group_count)?;
 
     silver_log::info!(enr = local_enr.to_base64(), "local ENR on startup");
