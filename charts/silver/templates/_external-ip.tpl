@@ -47,10 +47,14 @@
         exit 1
       fi
 
-      printf '%s' "$ip" > /network/external-ip
+      printf 'external_ip_v4 = "%s"\n' "$ip" > /runtime/config.toml
+      cat /config/config.toml >> /runtime/config.toml
   resources:
     {{- toYaml .Values.externalIP.resources | nindent 4 }}
   volumeMounts:
-    - name: external-ip
-      mountPath: /network
+    - name: config
+      mountPath: /config
+      readOnly: true
+    - name: runtime
+      mountPath: /runtime
 {{- end }}

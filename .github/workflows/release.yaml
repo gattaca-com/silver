@@ -183,10 +183,10 @@ jobs:
             run="docker run --rm --network none --platform linux/$platform"
             $run "$image" --version
             $run "$image" --help
-            $run --entrypoint /usr/bin/test "$image" -x /usr/local/bin/silver_surfer
             container=$(docker create --platform "linux/$platform" "$image")
             for bin in silver silver_surfer; do
               docker cp "$container:/usr/local/bin/$bin" "packaged-$bin"
+              test -x "packaged-$bin"
               cmp "dist/$bin-linux-$arch" "packaged-$bin"
             done
             docker rm "$container" > /dev/null

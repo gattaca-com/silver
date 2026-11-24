@@ -183,6 +183,8 @@ docker pull ghcr.io/gattaca-com/silver:latest
 Images contain the same Linux amd64 `silver` and `silver_surfer` binaries attached to the corresponding release.
 Each release links to its image tag and digest. Set `LOG_STDOUT=1` and `RUST_LOG` to configure container logs.
 
+The image runs as UID 65532. Bind-mounted data directories must be writable by that UID, or by the user selected with `--user`.
+
 Open Surfer inside a running Silver container:
 
 ```bash

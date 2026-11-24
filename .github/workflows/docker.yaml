@@ -43,12 +43,12 @@ jobs:
         run: |
           docker run --rm --network none silver:source --version
           docker run --rm --network none silver:source --help
-          docker run --rm --network none --entrypoint /usr/bin/test silver:source -x /usr/local/bin/silver_surfer
           mkdir dist
           container=$(docker create silver:source)
           trap 'docker rm "$container" > /dev/null' EXIT
           for bin in silver silver_surfer; do
             docker cp "$container:/usr/local/bin/$bin" "dist/$bin-linux-$ARCH"
+            test -x "dist/$bin-linux-$ARCH"
           done
 
       - name: Package release image
@@ -68,10 +68,10 @@ jobs:
         run: |
           docker run --rm --network none silver:release --version
           docker run --rm --network none silver:release --help
-          docker run --rm --network none --entrypoint /usr/bin/test silver:release -x /usr/local/bin/silver_surfer
           container=$(docker create silver:release)
           trap 'docker rm "$container" > /dev/null' EXIT
           for bin in silver silver_surfer; do
             docker cp "$container:/usr/local/bin/$bin" "packaged-$bin"
+            test -x "packaged-$bin"
             cmp "dist/$bin-linux-$ARCH" "packaged-$bin"
           done

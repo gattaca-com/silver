@@ -36,6 +36,8 @@ class ChartTests(unittest.TestCase):
         workload = statefulset(documents)
         pod = workload["spec"]["template"]["spec"]
         container = pod["containers"][0]
+        self.assertEqual(container["command"], ["/usr/local/bin/silver"])
+        self.assertIn("--config=/runtime/config.toml", container["args"])
         app_version = yaml.safe_load((CHART / "Chart.yaml").read_text())["appVersion"]
         self.assertEqual(container["image"], f"ghcr.io/gattaca-com/silver:{app_version}")
         self.assertEqual(pod["nodeSelector"]["kubernetes.io/arch"], "amd64")
@@ -60,6 +62,8 @@ class ChartTests(unittest.TestCase):
         pod = statefulset(documents)["spec"]["template"]["spec"]
         container = pod["containers"][0]
         self.assertNotIn("initContainers", pod)
+        self.assertEqual(container["command"], ["/usr/local/bin/silver"])
+        self.assertIn("--config=/config/config.toml", container["args"])
         self.assertEqual(container["image"], "ghcr.io/gattaca-com/silver:v9.8.7")
         self.assertIn("--jwt-secret=/jwt-secret/jwt", container["args"])
         self.assertIn("--network=hoodi", container["args"])

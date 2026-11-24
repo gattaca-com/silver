@@ -71,9 +71,9 @@ Host ports are enabled by default. Schedule at most one pod per node with the sa
 The advertised external IPv4 address must route both UDP ports to the pod.
 Hosts behind NAT need matching port forwarding.
 
-The init container discovers the external IPv4 address through `externalIP.serviceURL`.
+The init container discovers the external IPv4 address through `externalIP.serviceURL` and writes `/runtime/config.toml`.
 Set `externalIP.value` to use a known address without an HTTP lookup.
-Set `externalIP.enabled=false` to manage advertisement yourself through `config`.
+Set `externalIP.enabled=false` to manage advertisement yourself through `config`, which Silver reads directly from `/config/config.toml`.
 
 Readiness fails while Silver or its execution client is syncing.
 Startup and liveness use the version endpoint, so syncing alone does not restart the node.
