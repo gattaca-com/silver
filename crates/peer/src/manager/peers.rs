@@ -11,7 +11,8 @@ use flux_profiler::timed;
 use rand::seq::SliceRandom;
 use silver_common::{
     ATTESTATION_SUBNETS, GossipDomain, GossipTopic, IpBytes, P2pSend, PeerControl, PeerId,
-    RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit, ssz_view::MetadataView,
+    RpcRequestOutbound, StreamProtocol, column_util::columns_of, rpc_rate_limit::RpcRateLimit,
+    ssz_view::MetadataView,
 };
 
 use super::{
@@ -548,6 +549,27 @@ impl PeerManager {
         self.metadata[..8].copy_from_slice(&seq.to_le_bytes());
         self.metadata[16] = syncnets;
         emit(PeerControl::UpdateEnrSyncnets { syncnets });
+    }
+
+    pub fn grow_custody(
+        &mut self,
+        custody_group_count: u64,
+        columns: u128,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        assert!(self.custody_columns & !columns == 0, "custody only grows");
+        if custody_group_count <= MetadataView::custody_group_count(&self.metadata) {
+            return;
+        }
+        let seq = MetadataView::seq_number(&self.metadata) + 1;
+        self.metadata[..8].copy_from_slice(&seq.to_le_bytes());
+        self.metadata[17..25].copy_from_slice(&custody_group_count.to_le_bytes());
+        emit(PeerControl::UpdateEnrCgc { custody_group_count });
+
+        let added = columns & !self.custody_columns;
+        self.custody_columns = columns;
+        self.activate_topics(columns_of(added).map(GossipTopic::DataColumnSidecar), emit);
+        self.schedule_ping();
     }
 
     pub fn topic_rejoin_wait(&self) -> Duration {
@@ -1461,6 +1483,41 @@ mod tests {
         mgr.update_duty_subnets(0, [], left, now, &mut |c| cap.0.push(c));
         assert_eq!(syncnet_updates(&cap), [0b0001]);
         assert_eq!(MetadataView::seq_number(mgr.metadata()), 9);
+    }
+
+    #[test]
+    fn grown_custody_is_advertised_and_subscribed_once() {
+        let mut metadata = [0u8; METADATA_SIZE];
+        metadata[..8].copy_from_slice(&7u64.to_le_bytes());
+        metadata[17..25].copy_from_slice(&8u64.to_le_bytes());
+        let mut mgr = PeerManager::new(
+            peer_id(99),
+            vec![],
+            vec![GossipTopic::DataColumnSidecar(1)],
+            ScoreParams::default(),
+            SyncingConfig::default(),
+            [0u8; 4],
+            metadata,
+            0b10,
+        );
+        let mut cap = Captured::default();
+
+        mgr.grow_custody(16, 0b1010, &mut |c| cap.0.push(c));
+        assert!(
+            cap.0
+                .iter()
+                .any(|c| matches!(c, PeerControl::UpdateEnrCgc { custody_group_count: 16 }))
+        );
+        assert_eq!(MetadataView::custody_group_count(mgr.metadata()), 16);
+        assert_eq!(MetadataView::seq_number(mgr.metadata()), 8);
+        assert_eq!(mgr.custody_columns, 0b1010);
+        assert!(mgr.has_topic(GossipTopic::DataColumnSidecar(3)));
+        assert!(mgr.sweep_work.ping);
+
+        cap.0.clear();
+        mgr.grow_custody(16, 0b1010, &mut |c| cap.0.push(c));
+        assert!(cap.0.is_empty());
+        assert_eq!(MetadataView::seq_number(mgr.metadata()), 8);
     }
 
     /// Capability updates and unsubscribe affect only their own digest.

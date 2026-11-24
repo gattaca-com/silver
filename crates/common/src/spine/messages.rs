@@ -782,6 +782,9 @@ pub enum PeerEvent {
         address: SocketAddr,
         seq: u64,
     },
+    LocalEnr {
+        enr: Enr,
+    },
     /// A fully-validated inbound gossip message arrived (post-dedup). Carries
     /// the sending peer, topic, msg id (for promise/score accounting) and,
     /// above the IDONTWANT size threshold, a pre-encoded IDONTWANT protobuf
@@ -1157,6 +1160,9 @@ pub enum PeerControl {
     },
     UpdateEnrSyncnets {
         syncnets: u8,
+    },
+    UpdateEnrCgc {
+        custody_group_count: u64,
     },
     P2pGossipSubscribe {
         p2p: PeerId,

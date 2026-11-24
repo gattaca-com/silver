@@ -11,6 +11,7 @@ pub enum DiscoveryEvent {
     SendMessage { to: SocketAddr, data: ArrayVec<u8, MAX_PACKET_SIZE> },
     NodeFound(Enr),
     ExternalAddrChanged(SocketAddr, u64),
+    LocalEnrChanged(Enr),
 }
 
 // todo @nina - export these
@@ -44,6 +45,8 @@ pub trait Discovery {
     fn update_enr_fork_id(&mut self, _eth2: [u8; 16]) {}
 
     fn update_enr_syncnets(&mut self, _syncnets: u8) {}
+
+    fn update_enr_cgc(&mut self, _custody_group_count: u64) {}
 
     fn teardown(&self);
 }

@@ -365,7 +365,16 @@ impl Controller {
         Ok(self)
     }
 
-    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+    pub fn grow_custody(
+        &mut self,
+        from_slot: u64,
+        custody_group_count: u64,
+        columns: u128,
+        producers: &mut SilverSpineProducers,
+    ) {
+        self.peer_manager.grow_custody(custody_group_count, columns, &mut |event| {
+            handle_peer_control(&mut self.gossip_handler, &mut self.rpc_producer, event, producers)
+        });
         self.sync_engine.grow_custody(columns);
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.grow_custody(from_slot, columns);

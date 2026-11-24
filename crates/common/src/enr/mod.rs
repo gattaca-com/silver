@@ -174,6 +174,10 @@ impl Enr {
         self.apply(key, |enr| enr.syncnets = Some(syncnets))
     }
 
+    pub fn set_cgc(&mut self, cgc: u64, key: &SecretKey) -> Result<u64, Error> {
+        self.apply(key, |enr| enr.cgc = Some(cgc))
+    }
+
     /// Always returns `Some("v4")` — this implementation only supports the v4
     /// identity scheme.
     #[inline]

@@ -212,8 +212,8 @@ pub struct PeerManager {
     earliest_available_slot: u64,
 
     /// Our data-column custody set (bitmask of column indices), derived from
-    /// node_id + CGC at startup. Used to fetch columns by range alongside
-    /// syncing `BlocksByRange`.
+    /// node_id + CGC. Used to fetch columns by range alongside syncing
+    /// `BlocksByRange`.
     pub(crate) custody_columns: u128,
 
     /// Slot of the highest block BS has imported (`last_applied`), from the
@@ -483,6 +483,7 @@ impl PeerManager {
             PeerEvent::DiscNodeFound { enr, reload: _ } => {
                 self.on_disc_node_found(enr, now, emit);
             }
+            PeerEvent::LocalEnr { .. } => {}
             PeerEvent::DiscExternalAddress { address: _, seq } => {
                 // update metadata seq number so that it matches ENR
                 let seq = seq.max(MetadataView::seq_number(&self.metadata));

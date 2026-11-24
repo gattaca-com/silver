@@ -393,6 +393,7 @@ impl DiscV5 {
         let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
         self.local_enr.encode(&mut raw);
         self.local_enr_raw = raw;
+        self.event_queue.push(DiscoveryEvent::LocalEnrChanged(self.local_enr));
     }
 
     fn on_nodes(
@@ -1176,6 +1177,18 @@ impl Discovery for DiscV5 {
         silver_log::info!(syncnets = format_args!("{syncnets:#06b}"), "updated local ENR syncnets");
     }
 
+    fn update_enr_cgc(&mut self, custody_group_count: u64) {
+        if self.local_enr.cgc() >= Some(custody_group_count) {
+            return;
+        }
+        if let Err(e) = self.local_enr.set_cgc(custody_group_count, &self.local_key) {
+            silver_log::error!(?e, "failed to update local ENR custody group count");
+            return;
+        }
+        self.reencode_local_enr();
+        silver_log::info!(custody_group_count, "updated local ENR custody group count");
+    }
+
     fn ban_node(&mut self, id: NodeId) {
         self.banned_nodes.insert(id);
         self.kbuckets.remove(&Key::from(id));
@@ -1841,6 +1854,33 @@ mod tests {
         let seq_after = d.local_enr.seq();
         d.update_enr_syncnets(0b0101);
         assert_eq!(d.local_enr.seq(), seq_after);
+    }
+
+    #[test]
+    fn update_enr_cgc_only_raises_and_publishes_the_record() {
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        let enr = Enr::builder().udp4(20000u16).cgc(8).build(&sk).unwrap();
+        let mut d = DiscV5::new(DiscoveryConfig::default(), sk, enr, [0; 4]);
+
+        let seq_before = d.local_enr.seq();
+        d.update_enr_cgc(32);
+        assert_eq!(d.local_enr.cgc(), Some(32));
+        assert_eq!(d.local_enr.seq(), seq_before + 1);
+        assert!(d.local_enr.verify());
+        let published: Vec<_> = collect_events(&mut d)
+            .into_iter()
+            .filter_map(|event| match event {
+                DiscoveryEvent::LocalEnrChanged(enr) => Some(enr),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(published, [d.local_enr]);
+
+        for lower_or_same in [8, 32] {
+            d.update_enr_cgc(lower_or_same);
+        }
+        assert_eq!(d.local_enr.seq(), seq_before + 1);
+        assert!(collect_events(&mut d).is_empty());
     }
 
     #[test]
