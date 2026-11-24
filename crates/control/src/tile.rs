@@ -365,7 +365,7 @@ impl Controller {
         Ok(self)
     }
 
-    pub fn grow_custody(
+    fn grow_custody(
         &mut self,
         from_slot: u64,
         custody_group_count: u64,
@@ -630,6 +630,9 @@ impl Tile<SilverSpine> for Controller {
                 // rejected chain); the engine owns target invalidation.
                 BeaconStateEvent::BlockRejected { block_root, source } => {
                     self.peer_manager.record_block_rejected(block_root, source)
+                }
+                BeaconStateEvent::CustodyChange { custody_group_count, columns, from_slot } => {
+                    self.grow_custody(from_slot, custody_group_count, columns, producers)
                 }
                 _ => {}
             }

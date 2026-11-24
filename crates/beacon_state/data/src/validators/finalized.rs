@@ -352,6 +352,10 @@ impl FinalizedValidators {
         self.val_pubkey.len()
     }
 
+    pub fn effective_balance(&self, i: usize) -> Option<u64> {
+        self.effective_balance.get(i).copied()
+    }
+
     #[inline]
     pub fn capacity(&self) -> usize {
         self.val_pubkey.capacity()

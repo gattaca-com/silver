@@ -140,7 +140,7 @@ impl StorageTile {
         }
     }
 
-    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+    fn grow_custody(&mut self, from_slot: u64, columns: u128) {
         self.store.grow_custody(from_slot, columns);
     }
 
@@ -298,6 +298,9 @@ impl StorageTile {
         match event {
             BeaconStateEvent::Status { .. } => {
                 latest_status_event = Some(event);
+            }
+            BeaconStateEvent::CustodyChange { columns, from_slot, .. } => {
+                self.grow_custody(from_slot, columns)
             }
             BeaconStateEvent::PersistBlock { ssz, source, slot, block_root: announced_root } => {
                 let t_read = self.persist_reader.acquire(ssz);

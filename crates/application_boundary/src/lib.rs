@@ -255,6 +255,9 @@ impl ApplicationBoundaryTile {
             {
                 metrics.discover_sources(wall_slot / SLOTS_PER_EPOCH);
             }
+            if let BeaconStateEvent::CustodyChange { columns, .. } = event {
+                engine.grow_custody(columns);
+            }
             beacon.handle_beacon_state_event(event)
         });
         adapter.consume(|request: SidecarBidRequest, producers| {

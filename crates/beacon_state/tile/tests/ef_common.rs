@@ -7,12 +7,12 @@ use std::{
     sync::Arc,
 };
 
-use silver_beacon_state::{BeaconStateTile, ssz_hash::hash_tree_root_state, stf};
+use silver_beacon_state::{BeaconStateTile, ValidatorCustody, ssz_hash::hash_tree_root_state, stf};
 use silver_beacon_state_data::{
     B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochView,
     LongtailGroup, SpecConfig, StateId, StateWriterView,
 };
-use silver_common::TCacheId;
+use silver_common::{NodeId, TCacheId};
 
 #[path = "support/loaded_state.rs"]
 mod loaded_state;
@@ -500,6 +500,7 @@ pub fn ef_tile_with_spec(
         CheckpointState::Trusted(state),
         None,
         EngineConfig::default().get_payload_timeout(),
+        ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
     );
     tile.open_tcaches().unwrap();
     tile

@@ -127,7 +127,7 @@ impl DataColumnsTile {
         Ok(self)
     }
 
-    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+    fn grow_custody(&mut self, from_slot: u64, columns: u128) {
         self.tracker.grow_custody(from_slot, columns);
         if let Some(cells) = &mut self.cells {
             cells.grow_custody(from_slot, columns);
@@ -803,6 +803,9 @@ impl DataColumnsTile {
             BeaconStateEvent::ProposedPayload(proposal) => {
                 self.publish_payload_columns(proposal, producers)
             }
+            BeaconStateEvent::CustodyChange { columns, from_slot, .. } => {
+                self.grow_custody(from_slot, columns)
+            }
             BeaconStateEvent::Status { ssz, .. } => {
                 let root = *StatusView::head_root(&ssz);
                 let slot = StatusView::head_slot(&ssz);
@@ -1460,6 +1463,33 @@ mod tests {
         assert_eq!(kind, DataKind::Columns);
         assert_eq!(columns, CUSTODY_COLUMNS, "nothing held yet: the whole custody set");
         assert_eq!(origin, Origin::Live);
+    }
+
+    #[test]
+    fn custody_change_widens_chases_from_its_slot() {
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        let added = 1u128 << 9;
+        rig.tile.handle_beacon_state_event(
+            BeaconStateEvent::CustodyChange {
+                custody_group_count: 3,
+                columns: CUSTODY_COLUMNS | added,
+                from_slot: 42,
+            },
+            &mut rig.conn.producers,
+        );
+        for (root, slot, owed) in
+            [([6u8; 32], 41, CUSTODY_COLUMNS), ([7u8; 32], 42, CUSTODY_COLUMNS | added)]
+        {
+            rig.tile.handle_beacon_state_event(
+                block_received(BlockStage::AwaitData, root, slot),
+                &mut rig.conn.producers,
+            );
+            let out = rig.drain();
+            let [SyncNeed::Missing { columns, .. }] = out.missing[..] else {
+                panic!("expected one missing-columns need, got {}", out.missing.len());
+            };
+            assert_eq!(columns, owed, "slot {slot}");
+        }
     }
 
     /// A staged block vouches for its children's sidecars only while the

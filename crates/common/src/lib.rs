@@ -64,8 +64,9 @@ mod wheel;
 mod wither;
 
 pub use enr::{
-    EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
-    SUBNETS_PER_NODE, attnet_subnets,
+    BALANCE_PER_ADDITIONAL_CUSTODY_GROUP, EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr,
+    NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT, SUBNETS_PER_NODE,
+    VALIDATOR_CUSTODY_REQUIREMENT, attnet_subnets,
 };
 pub use flux::timing::{IngestionTime, Nanos};
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};

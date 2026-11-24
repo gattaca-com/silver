@@ -23,4 +23,4 @@ pub use error::{Error, PrecheckError, Result};
 #[cfg(feature = "ef_tests")]
 pub use fork_choice::{ExecutionStatus, ForkChoice, ForkChoiceNode};
 pub use silver_common::{merkle, ticker::SlotTicker};
-pub use tile::{BeaconStateTile, Feedback};
+pub use tile::{BeaconStateTile, Feedback, ValidatorCustody};

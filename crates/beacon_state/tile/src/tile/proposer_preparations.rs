@@ -37,6 +37,10 @@ impl ProposerPreparations {
         self.by_index.get(&validator_index).map(|preparation| preparation.fee_recipient)
     }
 
+    pub(super) fn validator_indices(&self) -> impl Iterator<Item = u64> + '_ {
+        self.by_index.keys().copied()
+    }
+
     pub(super) fn prune(&mut self, epoch: Epoch) {
         let floor = epoch.saturating_sub(RETAINED_EPOCHS);
         self.by_index.retain(|_, preparation| preparation.received_epoch >= floor);

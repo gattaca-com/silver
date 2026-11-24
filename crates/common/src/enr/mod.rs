@@ -15,8 +15,8 @@ pub use builder::Error;
 use bytes::{Buf, BytesMut};
 use flux::type_hash_derive::TypeHash;
 pub use node_id::{
-    EPOCHS_PER_SUBNET_SUBSCRIPTION, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
-    SUBNETS_PER_NODE, attnet_subnets,
+    BALANCE_PER_ADDITIONAL_CUSTODY_GROUP, EPOCHS_PER_SUBNET_SUBSCRIPTION, NUMBER_OF_CUSTODY_GROUPS,
+    NodeId, SAMPLES_PER_SLOT, SUBNETS_PER_NODE, VALIDATOR_CUSTODY_REQUIREMENT, attnet_subnets,
 };
 use secp256k1::{PublicKey, SECP256K1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};

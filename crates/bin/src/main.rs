@@ -17,7 +17,7 @@ use flux::{
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use silver_application_boundary::ApplicationBoundaryTile;
-use silver_beacon_state::{BeaconStateTile, SlotTicker};
+use silver_beacon_state::{BeaconStateTile, SlotTicker, ValidatorCustody};
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
@@ -241,9 +241,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // cgc is floored at SAMPLES_PER_SLOT when the ENR is built (see Config::enr).
-    let das_custody_groups = local_enr
-        .node_id()
-        .custody_groups(local_enr.cgc().unwrap_or(silver_common::SAMPLES_PER_SLOT as u64) as u8);
+    let custody_group_count = local_enr.cgc().unwrap_or(silver_common::SAMPLES_PER_SLOT as u64);
+    let das_custody_groups = local_enr.node_id().custody_groups(custody_group_count as u8);
     for i in 0..128 {
         if das_custody_groups & (1 << i) != 0 {
             gossip_topics.push(GossipTopic::DataColumnSidecar(i));
@@ -345,6 +344,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         checkpoint,
         config.suggested_fee_recipient(),
         config.engine_config().get_payload_timeout(),
+        ValidatorCustody::new(local_enr.node_id(), custody_group_count),
     );
     let state_reader = beacon_state_tile.reader();
 

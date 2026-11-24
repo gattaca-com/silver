@@ -1358,6 +1358,11 @@ pub struct PtcObservation {
 #[repr(C)]
 pub enum BeaconStateEvent {
     ReplayComplete,
+    CustodyChange {
+        custody_group_count: u64,
+        columns: u128,
+        from_slot: u64,
+    },
     ProposedPayload(ProposedPayload),
     LocalGossipVerdict {
         hash: MessageId,
@@ -1763,6 +1768,7 @@ impl BeaconStateEvent {
             }
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
+            Self::CustodyChange { .. } |
             Self::ProposedPayload(_) |
             Self::LocalGossipVerdict { .. } |
             Self::BlockReceived { .. } |

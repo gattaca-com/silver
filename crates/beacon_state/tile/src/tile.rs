@@ -81,6 +81,9 @@ mod seen_proposer_preferences;
 mod seen_validators;
 mod shuffling_cache;
 mod sync_contribution_pool;
+mod validator_custody;
+
+pub use validator_custody::ValidatorCustody;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
@@ -210,6 +213,7 @@ pub struct BeaconStateTile {
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
     proposer_preparations: ProposerPreparations,
+    validator_custody: ValidatorCustody,
     default_fee_recipient: Option<ExecutionAddress>,
     payload_attributes: PayloadAttributes,
     block_production: BlockProduction,
@@ -293,6 +297,7 @@ impl BeaconStateTile {
         checkpoint: CheckpointState,
         default_fee_recipient: Option<ExecutionAddress>,
         payload_timeout: Duration,
+        validator_custody: ValidatorCustody,
     ) -> Self {
         let (state, expected_root) = match checkpoint {
             CheckpointState::Trusted(state) => (state, None),
@@ -318,6 +323,7 @@ impl BeaconStateTile {
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
             proposer_preparations: ProposerPreparations::default(),
+            validator_custody,
             default_fee_recipient,
             payload_attributes: PayloadAttributes::default(),
             block_production: BlockProduction::new(payload_timeout),
@@ -839,6 +845,18 @@ impl BeaconStateTile {
         self.shuffling_cache.precompute(&view, epoch + 1);
     }
 
+    fn raise_validator_custody(&mut self, from_slot: Slot, producers: &mut Producers) {
+        let view = self.state.read_view(self.last_applied);
+        let finalized = view.validators.finalized();
+        let balances = self
+            .proposer_preparations
+            .validator_indices()
+            .map(|index| finalized.effective_balance(index as usize).unwrap_or(0));
+        if let Some(event) = self.validator_custody.raise(balances, from_slot) {
+            producers.produce(event);
+        }
+    }
+
     fn on_fc_lookahead(&mut self, _slot: Slot) {
         // Pre-emptive get_head for next slot.
         // TODO: self.get_head() and cache result
@@ -872,6 +890,7 @@ impl BeaconStateTile {
         self.seen_proposer_preferences.on_slot(slot);
         self.envelope_arrivals.on_slot(slot);
         if slot.is_multiple_of(SLOTS_PER_EPOCH) {
+            self.raise_validator_custody(slot + SLOTS_PER_EPOCH, producers);
             self.proposer_preparations.prune(slot / SLOTS_PER_EPOCH);
         }
         advanced
