@@ -10,6 +10,7 @@ pub struct ValidatorCustody {
 
 impl ValidatorCustody {
     pub fn new(node_id: NodeId, custody_group_count: u64) -> Self {
+        debug_assert!(custody_group_count >= VALIDATOR_CUSTODY_REQUIREMENT);
         Self { node_id, custody_group_count }
     }
 
@@ -20,9 +21,6 @@ impl ValidatorCustody {
     ) -> Option<BeaconStateEvent> {
         let (attached, total_balance) =
             attached_balances.fold((0usize, 0u64), |(n, sum), balance| (n + 1, sum + balance));
-        if attached == 0 {
-            return None;
-        }
         let required = (total_balance / BALANCE_PER_ADDITIONAL_CUSTODY_GROUP)
             .clamp(VALIDATOR_CUSTODY_REQUIREMENT, NUMBER_OF_CUSTODY_GROUPS as u64);
         if required <= self.custody_group_count {

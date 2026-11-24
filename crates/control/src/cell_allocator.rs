@@ -8,6 +8,7 @@ use silver_common::{
         AssemblyRequest, AssemblySet, CellKey, CellStoreConfig, ColumnRef, CommitmentContext,
         PendingCell, RetentionEvent, StoreError,
     },
+    column_util::column_position,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -91,17 +92,13 @@ impl CellAllocator {
         &self.config
     }
 
-    pub(super) fn custody(&self) -> u128 {
-        self.custody.current()
-    }
-
     pub fn grow_custody(&mut self, from_slot: u64, columns: u128) -> bool {
         assert!(columns & !self.config.layout() == 0, "custody outside the layout");
         self.custody.grow(from_slot, columns)
     }
 
     pub(super) fn handles_column(&self, column: usize) -> bool {
-        column < u128::BITS as usize && self.custody() & (1u128 << column) != 0
+        column_position(self.custody.current(), column).is_some()
     }
 
     pub(super) fn max_blobs_at(&self, slot: u64) -> usize {
@@ -298,7 +295,7 @@ impl CellAllocator {
         if key.row >= set.request.context.blob_count || set.request.context.slot < self.min_slot {
             return None;
         }
-        let position = set.request.position(key.column)?;
+        let position = column_position(set.request.columns, key.column)?;
         let reservation = set.reservations.view(&self.producer).ok()?.nth(position)?;
         Some(ColumnRef {
             block_root: key.block_root,

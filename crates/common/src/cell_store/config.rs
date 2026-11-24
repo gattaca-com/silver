@@ -5,6 +5,7 @@ use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use super::StoreError;
 use crate::{
     Custody, SubLayout,
+    column_util::column_position,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
         partial_column::PARTIAL_HEADER_FIXED,
@@ -163,7 +164,6 @@ impl CellStoreConfig {
 
     #[inline]
     pub fn column_position(&self, column: usize) -> Option<usize> {
-        let bit = 1u128.checked_shl(u32::try_from(column).ok()?)?;
-        (self.layout & bit != 0).then(|| (self.layout & (bit - 1)).count_ones() as usize)
+        column_position(self.layout, column)
     }
 }

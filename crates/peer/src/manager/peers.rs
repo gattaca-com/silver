@@ -558,9 +558,6 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         assert!(self.custody_columns & !columns == 0, "custody only grows");
-        if custody_group_count <= MetadataView::custody_group_count(&self.metadata) {
-            return;
-        }
         let seq = MetadataView::seq_number(&self.metadata) + 1;
         self.metadata[..8].copy_from_slice(&seq.to_le_bytes());
         self.metadata[17..25].copy_from_slice(&custody_group_count.to_le_bytes());
@@ -1486,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn grown_custody_is_advertised_and_subscribed_once() {
+    fn grown_custody_is_advertised_and_subscribed() {
         let mut metadata = [0u8; METADATA_SIZE];
         metadata[..8].copy_from_slice(&7u64.to_le_bytes());
         metadata[17..25].copy_from_slice(&8u64.to_le_bytes());
@@ -1513,11 +1510,6 @@ mod tests {
         assert_eq!(mgr.custody_columns, 0b1010);
         assert!(mgr.has_topic(GossipTopic::DataColumnSidecar(3)));
         assert!(mgr.sweep_work.ping);
-
-        cap.0.clear();
-        mgr.grow_custody(16, 0b1010, &mut |c| cap.0.push(c));
-        assert!(cap.0.is_empty());
-        assert_eq!(MetadataView::seq_number(mgr.metadata()), 8);
     }
 
     /// Capability updates and unsubscribe affect only their own digest.

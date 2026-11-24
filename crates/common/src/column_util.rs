@@ -333,6 +333,11 @@ pub fn kzg_commitment_to_versioned_hash(commitment: &[u8]) -> [u8; 32] {
     h
 }
 
+pub fn column_position(columns: u128, column: usize) -> Option<usize> {
+    let bit = 1u128.checked_shl(u32::try_from(column).ok()?)?;
+    (columns & bit != 0).then(|| (columns & (bit - 1)).count_ones() as usize)
+}
+
 /// Set bit positions of a column bitmask, ascending.
 pub fn columns_of(bitmask: u128) -> impl Iterator<Item = u64> {
     let mut rest = bitmask;

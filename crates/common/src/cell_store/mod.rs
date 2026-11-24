@@ -237,13 +237,6 @@ pub struct AssemblyRequest {
     pub columns: u128,
 }
 
-impl AssemblyRequest {
-    pub fn position(&self, column: usize) -> Option<usize> {
-        let bit = 1u128.checked_shl(u32::try_from(column).ok()?)?;
-        (self.columns & bit != 0).then(|| (self.columns & (bit - 1)).count_ones() as usize)
-    }
-}
-
 #[derive(Clone, Copy, Debug, TypeHash)]
 pub struct AssemblySet {
     pub request: AssemblyRequest,

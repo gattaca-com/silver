@@ -9,7 +9,7 @@ use silver_common::{
         AssemblyRequest, AssemblySet, CellKey, CellRef, CellStoreConfig, ColumnAvailability,
         ColumnRef, CommitmentContext, ContextData, MAX_CONTEXT_BYTES, StoreError,
     },
-    column_util::columns_of,
+    column_util::{column_position, columns_of},
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
@@ -577,8 +577,7 @@ impl CellStore {
     }
 
     fn custodies(&self, block: usize, column: usize) -> bool {
-        let custody = self.custody.at(self.blocks[block].context.slot);
-        column < u128::BITS as usize && custody & (1u128 << column) != 0
+        column_position(self.custody.at(self.blocks[block].context.slot), column).is_some()
     }
 
     pub fn grow_custody(&mut self, from_slot: u64, columns: u128) -> bool {

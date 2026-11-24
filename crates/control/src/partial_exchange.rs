@@ -84,6 +84,7 @@ impl PartialExchange {
 
     pub fn grow_custody(&mut self, config: &CellStoreConfig, columns: u128) {
         (self.capacity, self.peer_capacity) = Self::capacities(config, columns);
+        self.headers.grow_capacity(self.capacity);
         self.columns = columns;
         if let Some(acquisition) = &mut self.acquisition {
             acquisition.grow_custody(columns);

@@ -1178,9 +1178,6 @@ impl Discovery for DiscV5 {
     }
 
     fn update_enr_cgc(&mut self, custody_group_count: u64) {
-        if self.local_enr.cgc() >= Some(custody_group_count) {
-            return;
-        }
         if let Err(e) = self.local_enr.set_cgc(custody_group_count, &self.local_key) {
             silver_log::error!(?e, "failed to update local ENR custody group count");
             return;
@@ -1857,7 +1854,7 @@ mod tests {
     }
 
     #[test]
-    fn update_enr_cgc_only_raises_and_publishes_the_record() {
+    fn update_enr_cgc_publishes_the_record() {
         let sk = SecretKey::new(&mut rand::thread_rng());
         let enr = Enr::builder().udp4(20000u16).cgc(8).build(&sk).unwrap();
         let mut d = DiscV5::new(DiscoveryConfig::default(), sk, enr, [0; 4]);
@@ -1875,12 +1872,6 @@ mod tests {
             })
             .collect();
         assert_eq!(published, [d.local_enr]);
-
-        for lower_or_same in [8, 32] {
-            d.update_enr_cgc(lower_or_same);
-        }
-        assert_eq!(d.local_enr.seq(), seq_before + 1);
-        assert!(collect_events(&mut d).is_empty());
     }
 
     #[test]
