@@ -1312,6 +1312,8 @@ fn an_unverified_payload_is_chased_by_root() {
 
 const RANGE: u64 = 64;
 const ALL: u32 = u32::MAX;
+/// The root storage wants next; it lies below `RANGE`.
+const WANTED: [u8; 32] = [9; 32];
 
 fn prefill(have_block: u32, columns_covered: u32, envelopes: u32) -> SyncNeed {
     SyncNeed::BackfillPrefill(Prefill {
@@ -1321,6 +1323,7 @@ fn prefill(have_block: u32, columns_covered: u32, envelopes: u32) -> SyncNeed {
         columns_covered,
         envelopes,
         columns_missing: 0,
+        wanted_parent: WANTED,
     })
 }
 
@@ -1412,6 +1415,7 @@ fn the_column_request_carries_the_prefills_wanted_mask() {
             columns_covered: 0,
             envelopes: ALL,
             columns_missing: 0b101,
+            wanted_parent: WANTED,
         }),
         now,
     );
@@ -1449,6 +1453,65 @@ fn silence_from_a_peer_holding_the_span_proves_it_empty() {
     assert!(drive(&mut e, now).is_none(), "the span is empty, not missing");
 }
 
+/// A silent range may simply hold no block, leaving the one the chain wants
+/// further down. Only a by-root request reaches it, and once storage wants
+/// another root it is no longer chased.
+#[test]
+fn silence_chases_the_wanted_parent_by_root() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    e.on_sync_need(prefill(0, ALL, ALL), now);
+    let (rid, ..) = drive(&mut e, now).expect("blocks owed");
+    silent(&mut e, rid, 100, now);
+
+    let issued = actions(&mut e, now, true);
+    assert_eq!(roots(&issued, DataKind::Block), vec![WANTED], "the wanted parent, by root");
+    let origin = issued.iter().find_map(|a| match a {
+        SyncAction::Request { request, .. } if matches!(request.scope, Scope::Root(_)) => {
+            Some(request.origin)
+        }
+        _ => None,
+    });
+    assert_eq!(origin, Some(Origin::Backfill), "answered into storage's backfill");
+
+    // It landed below the range: storage moves on and wants its parent.
+    e.on_sync_need(
+        SyncNeed::BackfillPrefill(Prefill {
+            start: RANGE - BACKFILL_BATCH,
+            have_block: 0,
+            known_empty: 0,
+            columns_covered: ALL,
+            envelopes: ALL,
+            columns_missing: 0,
+            wanted_parent: [8; 32],
+        }),
+        now,
+    );
+    let later = now + Duration::from_secs(5);
+    assert!(
+        !roots(&actions(&mut e, later, true), DataKind::Block).contains(&WANTED),
+        "no longer chased"
+    );
+}
+
+/// Storage cannot use a peer's silence: with no block in the range it keeps
+/// describing the same one. A peer may also answer silently over blocks it
+/// holds. Either way the engine asks again instead of waiting forever.
+#[test]
+fn silence_storage_never_moves_past_is_asked_again() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    e.on_sync_need(prefill(0, ALL, ALL), now);
+    let (first, ..) = drive(&mut e, now).expect("blocks owed");
+    silent(&mut e, first, 100, now);
+    assert!(drive(&mut e, now).is_none(), "silence counts as empty at first");
+
+    let later = now + BACKFILL_SETTLE_TIMEOUT + Duration::from_secs(1);
+    let (rid, start, count) = drive(&mut e, later).expect("asked again once storage stood still");
+    assert_ne!(rid, first, "a fresh request");
+    assert_eq!((start, count), (RANGE, BACKFILL_BATCH), "for the whole range");
+}
+
 /// A backfill range only exists while `Following`, so its terminator has to
 /// reach the backfill walk whether or not the peer delivered. Routing the
 /// failure anywhere else leaves the walk holding a range that already
@@ -1484,6 +1547,7 @@ fn new_prefill_range_replaces_the_old_one() {
             columns_covered: ALL,
             envelopes: ALL,
             columns_missing: 0,
+            wanted_parent: WANTED,
         }),
         now,
     );

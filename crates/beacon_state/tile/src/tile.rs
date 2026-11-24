@@ -560,7 +560,7 @@ impl BeaconStateTile {
             current_epoch <= checkpoint_epoch + ws_period,
             "checkpoint epoch {checkpoint_epoch} is outside the weak-subjectivity period \
              ({ws_period} epochs); wall epoch {current_epoch} — refusing stale anchor \
-             (override with --disable-weak-subjectivity)",
+             (override with `disable_weak_subjectivity_check = true` in the config)",
         );
     }
 

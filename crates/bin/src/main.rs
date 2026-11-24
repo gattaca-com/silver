@@ -74,6 +74,9 @@ const _: () = assert!(
     "two held proposals must fit without wrapping"
 );
 
+/// Its kernel io workers share it.
+const STORAGE_CORE: usize = 4;
+
 /// The commit stays first: telemetry reads the first field as the commit.
 const BUILD_INFO: &str = concat!(
     env!("SILVER_BUILD_COMMIT"),
@@ -359,7 +362,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         spec.clone(),
         chain_config.data_dir.clone(),
         booting_from_local_checkpoint,
-    );
+        &[STORAGE_CORE],
+    )?;
 
     let state_reader = beacon_state_tile.reader();
     let data_columns_tile = DataColumnsTile::new(
@@ -409,7 +413,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             attached(control_tile, scoped_spine, 1),
             attached(network_tile, scoped_spine, 2),
             attached(beacon_state_tile, scoped_spine, 3),
-            attached(storage_tile, scoped_spine, 4),
+            attached(storage_tile, scoped_spine, STORAGE_CORE),
             attached(application_boundary_tile, scoped_spine, 5),
             attached(data_columns_tile, scoped_spine, 6),
         ];

@@ -1,5 +1,5 @@
 mod chain;
-mod codec;
+pub(super) mod codec;
 mod rebuild;
 
 use std::{collections::BTreeMap, io::Error};
@@ -62,6 +62,13 @@ impl Missing {
     }
 }
 
+/// Payloads down before their block was noted: promotions land in any order.
+#[derive(Clone, Copy, Debug, Default)]
+struct Landed {
+    columns: u128,
+    envelope: bool,
+}
+
 pub(super) fn window_start(end: u64) -> u64 {
     end.saturating_sub(PREFILL_SLOTS - 1)
 }
@@ -76,6 +83,8 @@ pub(super) struct Coverage {
     custody: Custody,
     chain: Chain,
     missing: BTreeMap<u64, Missing>,
+    // Not persisted: it only bridges a block landing after its payloads.
+    landed_early: BTreeMap<u64, Landed>,
     /// Groups below this were only indexed, never read: a held block there
     /// may need columns or an envelope nobody has recorded yet.
     examined_below: u64,
@@ -89,6 +98,7 @@ impl Coverage {
             custody: Custody::new(custody),
             chain: Chain::default(),
             missing: BTreeMap::new(),
+            landed_early: BTreeMap::new(),
             examined_below: 0,
             version: 0,
             persisted: 0,
@@ -117,17 +127,20 @@ impl Coverage {
         self.version += 1;
     }
 
-    pub(super) fn persist_if_changed(
-        &mut self,
-        store_dir: &str,
-        scratch: &mut Vec<u8>,
-    ) -> Result<(), Error> {
-        if self.persisted == self.version {
-            return Ok(());
-        }
-        codec::persist(self, store_dir, scratch)?;
-        self.persisted = self.version;
-        Ok(())
+    pub(super) fn changed(&self) -> bool {
+        self.persisted != self.version
+    }
+
+    /// Returns the version the bytes describe, for [`Self::persisted`] once
+    /// they are down.
+    pub(super) fn encode_for_persist(&self, out: &mut Vec<u8>) -> u64 {
+        out.clear();
+        codec::encode(self, out);
+        self.version
+    }
+
+    pub(super) fn persisted(&mut self, version: u64) {
+        self.persisted = self.persisted.max(version);
     }
 
     /// The root the next backfilled block must have to link below what we
@@ -150,8 +163,14 @@ impl Coverage {
         if !self.chain.note(&block, blocks) {
             return;
         }
-        let columns = if block.needs.columns { self.custody.at(block.facts.slot) } else { 0 };
-        self.set_missing(block.facts.slot, Missing { columns, envelope: block.needs.envelope });
+        let landed = self.landed_early.remove(&block.facts.slot).unwrap_or_default();
+        let columns = if block.needs.columns {
+            self.custody.at(block.facts.slot) & !landed.columns
+        } else {
+            0
+        };
+        let envelope = block.needs.envelope && !landed.envelope;
+        self.set_missing(block.facts.slot, Missing { columns, envelope });
         self.touch();
     }
 
@@ -166,7 +185,12 @@ impl Coverage {
     }
 
     pub(super) fn note_columns(&mut self, slot: u64, present: u128) {
-        let Some(entry) = self.missing.get_mut(&slot) else { return };
+        let Some(entry) = self.missing.get_mut(&slot) else {
+            if !self.chain.contains(slot) {
+                self.landed_early.entry(slot).or_default().columns |= present;
+            }
+            return;
+        };
         if entry.columns & present == 0 {
             return;
         }
@@ -178,7 +202,12 @@ impl Coverage {
     }
 
     pub(super) fn note_envelope(&mut self, slot: u64) {
-        let Some(entry) = self.missing.get_mut(&slot) else { return };
+        let Some(entry) = self.missing.get_mut(&slot) else {
+            if !self.chain.contains(slot) {
+                self.landed_early.entry(slot).or_default().envelope = true;
+            }
+            return;
+        };
         if !entry.envelope {
             return;
         }
@@ -187,6 +216,10 @@ impl Coverage {
             self.missing.remove(&slot);
         }
         self.touch();
+    }
+
+    pub(super) fn covers(&self, slot: u64) -> bool {
+        self.chain.contains(slot)
     }
 
     pub(super) fn columns_missing(&self, slot: u64) -> u128 {
@@ -210,6 +243,7 @@ impl Coverage {
     }
 
     pub(super) fn drop_below(&mut self, payload: Payload, earliest_slot: u64) {
+        self.landed_early = self.landed_early.split_off(&earliest_slot);
         let before = self.missing.len();
         let mut changed = false;
         match payload {
@@ -269,6 +303,7 @@ impl Coverage {
         start: u64,
         floors: Floors,
         finalized_slot: u64,
+        wanted_parent: B256,
     ) -> (Prefill, bool) {
         let complete = self.chain.bits(start);
         let held = blocks.held_bits(start);
@@ -296,8 +331,15 @@ impl Coverage {
             }
         }
 
-        let prefill =
-            Prefill { start, have_block, known_empty, columns_covered, envelopes, columns_missing };
+        let prefill = Prefill {
+            start,
+            have_block,
+            known_empty,
+            columns_covered,
+            envelopes,
+            columns_missing,
+            wanted_parent,
+        };
         let anything_missing = !known_empty & (!have_block | !columns_covered | !envelopes) != 0;
         (prefill, anything_missing)
     }
@@ -364,7 +406,7 @@ mod tests {
         finalized: u64,
     ) -> Option<(Prefill, bool)> {
         let end = coverage.next_window_end(floors, finalized)?;
-        Some(coverage.describe(blocks, window_start(end), floors, finalized))
+        Some(coverage.describe(blocks, window_start(end), floors, finalized, [0; 32]))
     }
 
     /// Absence from disk is not evidence either way.
@@ -374,7 +416,7 @@ mod tests {
         let mut coverage = Coverage::new(CUSTODY);
         land(&mut coverage, &mut blocks, &[996, 992], [0xAA; 32], 1000, NOTHING);
 
-        let (described, _) = coverage.describe(&blocks, 969, floors(), 1000);
+        let (described, _) = coverage.describe(&blocks, 969, floors(), 1000, [0; 32]);
         for held in [992, 996] {
             assert!(bit(&described, described.have_block, held), "slot {held} is held");
         }
@@ -412,7 +454,7 @@ mod tests {
             };
             coverage.note_block(Block::new(facts, NOTHING, 100, root(100)), &blocks);
         }
-        let (described, _) = coverage.describe(&blocks, 69, floors(), 100);
+        let (described, _) = coverage.describe(&blocks, 69, floors(), 100, [0; 32]);
         assert!(!bit(&described, described.known_empty, 100), "100 is not proven empty");
         assert!(!bit(&described, described.have_block, 100));
         for empty in [93, 94, 95] {
@@ -488,7 +530,7 @@ mod tests {
             let mut coverage = Coverage::new(CUSTODY);
             land(&mut coverage, &mut blocks, &[992], [0; 32], 992, needs);
 
-            let (described, _) = coverage.describe(&blocks, 992, floors(), 992);
+            let (described, _) = coverage.describe(&blocks, 992, floors(), 992, [0; 32]);
             assert_eq!(bit(&described, described.columns_covered, 992), covered);
             assert_eq!(described.columns_missing, if covered { 0 } else { CUSTODY });
             assert_eq!(coverage.is_complete(992), covered);
@@ -541,7 +583,7 @@ mod tests {
         land(&mut coverage, &mut blocks, &[992], [0; 32], 1000, needs);
         let floors = Floors { blocks: 1, columns: 4_000, envelopes: 4_000 };
 
-        let (described, needs) = coverage.describe(&blocks, 992, floors, 1000);
+        let (described, needs) = coverage.describe(&blocks, 992, floors, 1000, [0; 32]);
         assert!(bit(&described, described.columns_covered, 992), "below the column floor");
         assert_eq!(described.envelopes, u32::MAX, "below the fork: no envelope ever existed");
         assert_eq!(described.columns_missing, 0);
@@ -589,7 +631,9 @@ mod tests {
         let mut coverage = Coverage::new(CUSTODY);
         land(&mut coverage, &mut blocks, &[996, 992], [0; 32], 1000, NOTHING);
         coverage.grow_custody(994, 0b1111);
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
+        let mut bytes = Vec::new();
+        coverage.encode_for_persist(&mut bytes);
+        std::fs::write(codec::files(&store).0, &bytes).unwrap();
 
         assert!(
             Coverage::load(&store, CustodyChange::from_genesis(CUSTODY)).unwrap().is_none(),
@@ -622,7 +666,9 @@ mod tests {
         let mut blocks = BlockIndex::default();
         let mut coverage = Coverage::new(CUSTODY);
         land(&mut coverage, &mut blocks, &[996, 992], [0; 32], 1000, NOTHING);
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
+        let mut bytes = Vec::new();
+        coverage.encode_for_persist(&mut bytes);
+        std::fs::write(codec::files(&store).0, &bytes).unwrap();
 
         let raised = |from_slot| CustodyChange { from_slot, columns: 0b1111 };
         let reloaded = Coverage::load(&store, raised(1024)).unwrap().expect("extended");
@@ -648,7 +694,9 @@ mod tests {
         let needs = Needs { columns: true, envelope: true };
         land(&mut coverage, &mut blocks, &[996, 992], [0xAA; 32], 1000, needs);
         coverage.note_columns(996, 0b1);
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
+        let mut bytes = Vec::new();
+        coverage.encode_for_persist(&mut bytes);
+        std::fs::write(codec::files(&store).0, &bytes).unwrap();
 
         assert!(
             Coverage::load(&store, CustodyChange::from_genesis(CUSTODY << 1)).unwrap().is_none()
@@ -660,8 +708,8 @@ mod tests {
         assert_eq!(reloaded.columns_missing(996), 0b110);
         assert!(reloaded.envelope_missing(996));
         assert_eq!(
-            reloaded.describe(&blocks, 969, floors(), 1000),
-            coverage.describe(&blocks, 969, floors(), 1000)
+            reloaded.describe(&blocks, 969, floors(), 1000, [0; 32]),
+            coverage.describe(&blocks, 969, floors(), 1000, [0; 32])
         );
 
         let file = dir.join("coverage.bin");
@@ -676,24 +724,29 @@ mod tests {
     }
 
     #[test]
-    fn the_file_is_written_once_per_change() {
-        let dir = std::env::temp_dir().join(format!("silver_coverage_{}", rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = dir.to_string_lossy().into_owned();
-        let file = dir.join("coverage.bin");
+    fn payloads_landing_before_their_block_still_count() {
+        let mut blocks = BlockIndex::default();
+        let mut coverage = Coverage::new(CUSTODY);
+        coverage.note_columns(992, 0b101);
+        coverage.note_envelope(992);
+        let needs = Needs { columns: true, envelope: true };
+        land(&mut coverage, &mut blocks, &[992], [0; 32], 1000, needs);
 
+        assert_eq!(coverage.columns_missing(992), 0b010, "only the column never landed");
+        assert!(!coverage.envelope_missing(992));
+    }
+
+    #[test]
+    fn each_change_is_persisted_once() {
         let mut blocks = BlockIndex::default();
         let mut coverage = Coverage::new(CUSTODY);
         land(&mut coverage, &mut blocks, &[992], [0; 32], 1000, NOTHING);
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
-        assert!(file.exists());
-        std::fs::remove_file(&file).unwrap();
-
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
-        assert!(!file.exists(), "nothing changed since");
+        assert!(coverage.changed());
+        let version = coverage.encode_for_persist(&mut Vec::new());
+        assert!(coverage.changed(), "not down yet");
+        coverage.persisted(version);
+        assert!(!coverage.changed(), "nothing changed since");
         coverage.set_missing(992, Missing { columns: 0b1, envelope: false });
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
-        assert!(file.exists(), "a change is written");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(coverage.changed(), "a change is due");
     }
 }

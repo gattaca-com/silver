@@ -16,6 +16,8 @@ use tempfile::TempDir;
 
 use super::{column_path, envelope_path, slot_dir};
 
+const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
+
 fn index_records(dir: &std::path::Path) -> Vec<super::block_index::Record> {
     let mut records = Vec::new();
     super::block_index::load_dir(dir, &mut |r| records.push(r)).unwrap();
@@ -43,7 +45,7 @@ use crate::tile::IoEvent;
 fn concurrent_read_write() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("storage.txt").to_str().unwrap().to_owned();
-    let mut file = super::io::open_file_write(&path, false).unwrap();
+    let mut file = super::io::open_file_write(&path).unwrap();
 
     let mut handles = vec![];
     for i in 0..10 {
@@ -136,7 +138,7 @@ fn fork_tree_persist_serve_promote() {
 
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
 
     let path_a = store.unfinalized_dir(super::Payload::Block).join(super::io::unfinalized_name(
         slot,
@@ -188,13 +190,7 @@ fn fork_tree_persist_serve_promote() {
         stream_id: sid,
         request: RpcRequest::BlocksByRange(range),
     });
-    let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => responses.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let responses = serve_peers(&mut store, |_| fork_digest, &mut producer);
     assert_eq!(responses.len(), 2); // canonical block A + Complete
     assert_block(&responses[0], &bytes_a);
     assert!(matches!(
@@ -210,13 +206,7 @@ fn fork_tree_persist_serve_promote() {
         stream_id: sid,
         request: RpcRequest::BlockByRoot(byroot_ssz),
     });
-    let mut byroot = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => byroot.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let byroot = serve_peers(&mut store, |_| fork_digest, &mut producer);
     assert_eq!(byroot.len(), 2);
     assert_block(&byroot[0], &bytes_b);
 
@@ -227,12 +217,14 @@ fn fork_tree_persist_serve_promote() {
     store.queue_block_request(10, BlockLookup::Slot(slot));
     store.queue_block_request(11, BlockLookup::Slot(slot + 1));
     let mut api = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::ApiResponse(response) => api.push(response),
-            other => panic!("api requests answer the api alone, got {other:?}"),
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::ApiResponse(response) => api.push(response),
+        other => panic!("api requests answer the api alone, got {other:?}"),
+    });
+    api.sort_by_key(|response| match response {
+        BeaconApiResponse::Block { request_id, .. } => *request_id,
+        other => panic!("only block responses, got {other:?}"),
+    });
     let [
         BeaconApiResponse::Block { request_id: 7, block: Some(served) },
         BeaconApiResponse::Block { request_id: 8, block: None },
@@ -268,7 +260,7 @@ fn fork_tree_persist_serve_promote() {
     assert!(!store.unfinalized.contains(&root_a));
     assert!(!store.unfinalized.contains(&root_b));
 
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
     assert_eq!(
         index_records(&store.finalized_slot_dir(super::Payload::Block, slot)),
         vec![super::block_index::Record { block_root: root_a, slot }],
@@ -287,13 +279,7 @@ fn fork_tree_persist_serve_promote() {
         stream_id: sid,
         request: RpcRequest::BlocksByRange(range),
     });
-    let mut after = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => after.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let after = serve_peers(&mut store, |_| fork_digest, &mut producer);
     assert_eq!(after.len(), 2);
     assert_block(&after[0], &bytes_a);
 
@@ -383,7 +369,7 @@ fn envelope_persist_promote_prune() {
 
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
 
     let unf_a = store
         .unfinalized_dir(super::Payload::Envelope)
@@ -426,7 +412,7 @@ fn envelope_persist_promote_prune() {
     // Finalize at slot 42 on A: promote A's envelope, prune orphan B's.
     store.update_head(slot, root_a, PayloadResolution::Full, slot, root_a);
     assert!(store.unfinalized_envelopes.is_empty());
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
 
     let flat_a = store
         .finalized_slot_dir(super::Payload::Envelope, slot)
@@ -482,8 +468,7 @@ fn range_query_terminates_on_cycle() {
 
     // Drain the staged write so the acquired read is released while its
     // consumer is still alive (`read` is parked in the write queue).
-    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
-    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    drain(&mut store).unwrap();
 
     // A range spanning the self-loop slot must return rather than spin.
     let mut range = [0u8; 24];
@@ -531,14 +516,7 @@ fn envelope_range_request_served_empty() {
 
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
-    let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| {
-            if let IoEvent::P2pSend(s) = s {
-                responses.push(s);
-            }
-        })
-        .unwrap();
+    let responses = serve_peers(&mut store, |_| fork_digest, &mut producer);
 
     assert_eq!(responses.len(), 1, "empty envelope response is just Complete");
     assert!(matches!(
@@ -584,17 +562,15 @@ fn envelope_range_request_serves_past_a_hole() {
 
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
     let mut responses = vec![];
-    store
-        .file_io(|_| [1, 2, 3, 4], &mut producer, &mut |s| {
-            if let IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                response,
-                ..
-            }))) = s
-            {
-                responses.push(response);
-            }
-        })
-        .unwrap();
+    serve(&mut store, |_| [1, 2, 3, 4], &mut producer, &mut |s| {
+        if let IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+            response,
+            ..
+        }))) = s
+        {
+            responses.push(response);
+        }
+    });
 
     assert_eq!(responses.len(), 3, "two envelopes then Complete: {responses:?}");
     assert!(matches!(responses[0], RpcResponse::ExecutionPayloadEnvelope { .. }));
@@ -651,7 +627,7 @@ fn column_fork_persist_serve_promote() {
 
     let fork_digest = [9, 9, 9, 9];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 7)).exists());
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_b, 3)).exists());
@@ -689,13 +665,7 @@ fn column_fork_persist_serve_promote() {
         stream_id: sid,
         request: RpcRequest::DataColumnsByRange { ssz: range, len: 36 },
     });
-    let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => responses.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let responses = serve_peers(&mut store, |_| fork_digest, &mut producer);
     assert_eq!(responses.len(), 3); // canonical A columns 3 + 7, then Complete
     assert_col(&responses[0], &a3);
     assert_col(&responses[1], &a7);
@@ -720,13 +690,7 @@ fn column_fork_persist_serve_promote() {
         stream_id: sid,
         request: RpcRequest::DataColumnsByRoot(byroot_ssz),
     });
-    let mut br = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => br.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let br = serve_peers(&mut store, |_| fork_digest, &mut producer);
     assert_eq!(br.len(), 3); // A column 7, B column 3, Complete
     assert_col(&br[0], &a7);
     assert_col(&br[1], &b3);
@@ -746,13 +710,7 @@ fn column_fork_persist_serve_promote() {
         stream_id: sid,
         request: RpcRequest::DataColumnsByRoot(bare_ssz),
     });
-    let mut rejected = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => rejected.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let rejected = serve_peers(&mut store, |_| fork_digest, &mut producer);
     assert_eq!(rejected.len(), 1, "malformed by-root request answers a bare Complete");
     assert!(matches!(
         &rejected[0],
@@ -766,7 +724,7 @@ fn column_fork_persist_serve_promote() {
     store.update_head(slot, root_a, PayloadResolution::Full, slot, root_a);
     assert!(store.unfinalized_columns.is_empty());
 
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
     assert!(flat_dir.join(format!("{slot}_3.ssz")).exists());
     assert!(flat_dir.join(format!("{slot}_7.ssz")).exists());
     assert!(!ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
@@ -777,13 +735,7 @@ fn column_fork_persist_serve_promote() {
         stream_id: sid,
         request: RpcRequest::DataColumnsByRange { ssz: range, len: 36 },
     });
-    let mut after = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => after.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let after = serve_peers(&mut store, |_| fork_digest, &mut producer);
     assert_eq!(after.len(), 3);
     assert_col(&after[0], &a3);
     assert_col(&after[1], &a7);
@@ -883,7 +835,12 @@ fn failed_write_is_neither_held_nor_reported() {
     );
 
     assert!(result.is_err(), "the write fails");
-    assert!(store.write_queue.is_empty(), "and is dropped rather than retried");
+    let retried = store
+        .write_queue
+        .queue
+        .iter()
+        .any(|write| matches!(write, super::PendingWrite::BackfillBlock { .. }));
+    assert!(!retried, "and is dropped rather than retried");
     assert!(!store.finalized.coverage().is_complete(slot), "so the coverage does not hold it");
     assert!(
         !reported.iter().any(|n| matches!(n, SyncNeed::Persisted { .. })),
@@ -932,20 +889,7 @@ fn following(store: &mut super::Store, finalized_slot: u64, finalized_root: [u8;
 }
 
 fn prefills(store: &mut super::Store) -> Vec<Prefill> {
-    use silver_common::TCache;
-    let mut out = Vec::new();
-    store
-        .file_io(
-            |_| [0u8; 4],
-            &mut TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
-            &mut |io| {
-                if let IoEvent::Need(SyncNeed::BackfillPrefill(p)) = io {
-                    out.push(p)
-                }
-            },
-        )
-        .unwrap();
-    out
+    drain_publishing(store).1
 }
 
 fn bit(prefill: &Prefill, field: u32, slot: u64) -> bool {
@@ -1018,13 +962,10 @@ fn failed_finalized_promote_leaves_its_slot_unknown() {
     );
     store.add_block(root_top, staged_top.consumer.acquire(staged_top.reads[0]), 400, root_middle);
     store.update_head(400, root_top, PayloadResolution::Full, 400, root_top);
-    assert!(drain(&mut store).is_err(), "the finalized block's promote fails");
+    let (outcome, mut published) = drain_publishing(&mut store);
+    assert!(outcome.is_err(), "the finalized block's promote fails");
     assert_eq!(store.finalized.slot_of(&root_top), Some(400), "yet the root stays indexed");
     std::fs::remove_file(&dir).unwrap();
-    let mut published = Vec::new();
-    while !store.write_queue.is_empty() {
-        published.extend(prefills(&mut store));
-    }
     published.extend(prefills(&mut store));
 
     assert!(!store.finalized.holds(400));
@@ -1043,6 +984,32 @@ fn failed_finalized_promote_leaves_its_slot_unknown() {
     assert_eq!(prefill.start + 31, 199, "one chain, 200 to 400, wanting below it");
     assert_eq!(store.finalized.coverage().wanted_parent(400), Some([0x31; 32]));
     let _ = std::fs::remove_dir_all(&store_path);
+}
+
+#[test]
+fn wanted_parent_below_the_window_is_written() {
+    let parent = bare_block(300, [0x31; 32]);
+    let root_parent = block_root_fulu(&parent);
+    let top = bare_block(400, root_parent);
+    let root_top = block_root_fulu(&top);
+    // Before the store: its in-flight writes point into the staged reads.
+    let mut staged_parent = stage("wanted_parent", &parent, 1);
+    let mut staged_top = stage("wanted_top", &top, 1);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+
+    store.sync_update(SyncUpdate::Following);
+    store.add_block(root_top, staged_top.consumer.acquire(staged_top.reads[0]), 400, root_parent);
+    store.update_head(400, root_top, PayloadResolution::Full, 400, root_top);
+    let prefill = first_prefill(&mut store);
+    assert_eq!(prefill.start + 31, 399, "the range right below the chain");
+    assert_eq!(prefill.wanted_parent, root_parent, "and the root it wants, far below");
+
+    store.backfill_block(staged_parent.consumer.acquire(staged_parent.reads[0]));
+    let prefill = first_prefill(&mut store);
+    assert!(store.finalized.holds(300), "taken by root though outside the range");
+    assert_eq!(prefill.start + 31, 299, "the chain now reaches 300");
+    assert_eq!(prefill.wanted_parent, [0x31; 32]);
 }
 
 /// Bytes staged twice, for a block that is handed to the store twice.
@@ -1067,12 +1034,71 @@ fn stage(name: &'static str, block: &[u8], copies: usize) -> Staged {
 }
 
 fn drain(store: &mut super::Store) -> Result<(), std::io::Error> {
+    drain_publishing(store).0
+}
+
+/// `file_io` until every queued write is down: the first failure, and the
+/// prefills published meanwhile.
+fn drain_publishing(store: &mut super::Store) -> (Result<(), std::io::Error>, Vec<Prefill>) {
     use silver_common::TCache;
-    store.file_io(
-        |_| [0u8; 4],
-        &mut TCache::producer(TCacheId::NetworkIngress, 1 << 16),
-        &mut |_| {},
-    )
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let (mut outcome, mut published) = (Ok(()), Vec::new());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        outcome = outcome.and(
+            store
+                .file_io(|_| [0u8; 4], &mut producer, &mut |io| {
+                    if let IoEvent::Need(SyncNeed::BackfillPrefill(prefill)) = io {
+                        published.push(prefill)
+                    }
+                })
+                .map(drop),
+        );
+        if settled(store) {
+            return (outcome, published);
+        }
+        assert!(Instant::now() < deadline, "writes did not settle");
+    }
+}
+
+fn settled(store: &super::Store) -> bool {
+    store.write_queue.is_empty() &&
+        store.writer.in_flight() == 0 &&
+        store.query_queue.is_empty() &&
+        store.reader.in_flight() == 0
+}
+
+/// `serve`, collecting what goes out to peers.
+fn serve_peers(
+    store: &mut super::Store,
+    fork_digest_at: impl Fn(u64) -> [u8; 4],
+    producer: &mut silver_common::TProducer,
+) -> Vec<silver_common::P2pSend> {
+    let mut sent = Vec::new();
+    serve(store, fork_digest_at, producer, &mut |io| {
+        if let IoEvent::P2pSend(send) = io {
+            sent.push(send);
+        }
+    });
+    sent
+}
+
+/// `file_io` until every queued query is answered and write is down: both
+/// complete over several turns.
+fn serve(
+    store: &mut super::Store,
+    fork_digest_at: impl Fn(u64) -> [u8; 4],
+    producer: &mut silver_common::TProducer,
+    emit: &mut impl FnMut(IoEvent),
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        store.file_io(&fork_digest_at, producer, emit).unwrap();
+        if settled(store) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "queries were not answered");
+    }
 }
 
 /// Two finalities queue before the first promotion drains. The span
@@ -1151,6 +1177,38 @@ fn retention_keeps_the_group_holding_the_floor_and_nothing_below() {
     assert_eq!(super::first_retained_slot(7 * group + 104), 7 * group);
 }
 
+/// Groups below the floor go with every file in them; the group holding the
+/// floor stays.
+#[test]
+fn truncation_removes_whole_groups_below_the_floor() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    let group = super::SLOTS_PER_DIR;
+    for slot in [0, 1, group - 1, group, 2 * group] {
+        for column in 0..3 {
+            place_column(&store_path, slot, column);
+        }
+    }
+
+    store.write_queue.push_back(super::PendingWrite::TruncateHistory {
+        payload: super::Payload::Column,
+        finalized_slot: COLUMN_SLOTS_RETAINED + group + 5,
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    drain(&mut store).unwrap();
+    while !store.remover.is_idle() {
+        assert!(Instant::now() < deadline, "truncation did not finish");
+        drain(&mut store).unwrap();
+    }
+
+    let group_dir = |slot| super::slot_dir(&store_path, super::Payload::Column, slot);
+    assert!(!group_dir(0).exists());
+    for slot in [group, 2 * group] {
+        assert!(column_path(&store_path, slot, 2).exists(), "slot {slot} is retained");
+    }
+}
+
 /// Written once the queue has drained, not once per turn while it drains.
 #[test]
 fn coverage_is_persisted_once_the_writes_settle() {
@@ -1172,13 +1230,85 @@ fn coverage_is_persisted_once_the_writes_settle() {
         });
     }
 
-    drain(&mut store).unwrap();
+    let mut producer = silver_common::TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !settled(&store) {
+        assert!(store.write_queue.is_empty() || !file.exists(), "not while the queue drains");
+        store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+        assert!(Instant::now() < deadline, "writes did not settle");
+    }
     assert!(store.finalized.holds(40), "the block landed");
-    assert!(!store.write_queue.is_empty() && !file.exists(), "but the queue is still draining");
-    drain(&mut store).unwrap();
-    assert!(store.write_queue.is_empty() && file.exists(), "drained, and written once");
+    assert!(file.exists(), "drained, and written");
 
     let _ = std::fs::remove_dir_all(&store_path);
+}
+
+/// The staged file replaces the live one only once it is fully written.
+#[test]
+fn failed_coverage_write_keeps_the_live_file() {
+    let block = bare_block(40, [0x31; 32]);
+    let root = block_root_fulu(&block);
+    // Before the store: its in-flight writes point into the staged reads.
+    let mut staged = stage("coverage_failed", &block, 1);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    let (live, staged_path) = super::coverage::codec::files(&store_path);
+    std::fs::write(&live, b"good").unwrap();
+    // Opens, then fails every write with `ENOSPC`.
+    std::os::unix::fs::symlink("/dev/full", &staged_path).unwrap();
+    following(&mut store, 40, root);
+    store.backfill_block(staged.consumer.acquire(staged.reads[0]));
+
+    let mut producer = silver_common::TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).is_ok() {
+        assert!(Instant::now() < deadline, "the staged write did not fail");
+    }
+    assert!(!live.is_symlink(), "the failed staged file was not renamed in");
+    assert_eq!(std::fs::read(&live).unwrap(), b"good", "the live file is untouched");
+    for _ in 0..100 {
+        store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    }
+    assert!(store.write_queue.is_empty(), "a failed write is not retried at once");
+
+    std::fs::remove_file(&staged_path).unwrap();
+    store.coverage_retry_at = Some(Instant::now());
+    drain(&mut store).unwrap();
+    assert_ne!(std::fs::read(&live).unwrap(), b"good", "a later write replaces it");
+}
+
+/// A create truncates its file, so it waits for a read open on that file.
+#[test]
+fn write_waits_for_a_read_of_its_file() {
+    let (slot, column) = (40, 3);
+    // Before the store: its in-flight writes point into the staged reads.
+    let mut staged = stage("read_race", &bare_block(slot, [0; 32]), 1);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    let path = column_path(&store_path, slot, column);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"old").unwrap();
+
+    let source = super::RequestSource::Api { request_id: 0, root: [0; 32], canonical: true };
+    let query = super::PendingQuery::new(source, std::collections::VecDeque::new());
+    store.reader.start(path.clone(), (query, super::QueryUnit::Column { slot, column }));
+    store.write_queue.push_back(super::PendingWrite::Column {
+        slot,
+        column,
+        custody_set_complete: false,
+        ssz: staged.consumer.acquire(staged.reads[0]),
+    });
+
+    // Writes start before reads finish within a turn.
+    let mut producer = silver_common::TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert_eq!(store.write_queue.len(), 1, "the write waits for the read");
+    assert_eq!(store.writer.in_flight(), 0);
+
+    drain(&mut store).unwrap();
+    assert_ne!(std::fs::read(&path).unwrap(), b"old", "and lands once it is done");
 }
 
 /// The index gives the blocks, one header read per gap says whether it is
@@ -1234,7 +1364,18 @@ fn store_without_coverage_is_rebuilt_from_its_files() {
     );
     following(&mut store, 966, root_966);
 
-    let mut published = prefills(&mut store);
+    let mut published = Vec::new();
+    store
+        .file_io(
+            |_| [0u8; 4],
+            &mut silver_common::TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
+            &mut |io| {
+                if let IoEvent::Need(SyncNeed::BackfillPrefill(prefill)) = io {
+                    published.push(prefill)
+                }
+            },
+        )
+        .unwrap();
     assert!(published.is_empty(), "the first step reads a group, not the wire");
     assert_eq!(store.finalized.coverage().examined_below(), 896, "and marks it read");
     for _ in 0..16 {
@@ -1304,7 +1445,7 @@ fn range_queries_interleave_fairly() {
 
     let fork_digest = [0u8; 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap(); // flush block writes
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {}); // flush block writes
 
     // Two BlocksByRange [10,12) on distinct streams, queued before draining.
     let mut range = [0u8; 24];
@@ -1326,15 +1467,8 @@ fn range_queries_interleave_fairly() {
         request: RpcRequest::BlocksByRange(range),
     });
 
-    let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => responses.push(s),
-            _ => {}
-        })
-        .unwrap();
+    let responses = serve_peers(&mut store, |_| fork_digest, &mut producer);
 
-    // Expect A10, B10, A11, B11, A-Complete, B-Complete — strict round-robin.
     let ids: Vec<_> = responses
         .iter()
         .map(|s| {
@@ -1348,12 +1482,20 @@ fn range_queries_interleave_fairly() {
     let (a, b) = (stream_a.stream_id(), stream_b.stream_id());
     assert_ne!(a, b);
     assert_eq!(responses.len(), 6);
-    assert_eq!(ids, vec![a, b, a, b, a, b], "responses must interleave across streams");
-    for resp in &responses[4..] {
-        let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound { response, .. })) = resp else {
-            panic!("expected RPC response");
-        };
-        assert!(matches!(response, RpcResponse::Complete));
+    assert!(ids[..2].contains(&a) && ids[..2].contains(&b), "both streams start first: {ids:?}");
+    for stream in [a, b] {
+        let of_stream: Vec<_> = responses
+            .iter()
+            .filter_map(|s| match s {
+                P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                    stream_id,
+                    response,
+                })) if stream_id.stream_id() == stream => Some(response),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(of_stream.len(), 3);
+        assert!(matches!(of_stream[2], RpcResponse::Complete), "each stream ends with Complete");
     }
 }
 
@@ -1543,11 +1685,345 @@ fn backfilled_blob_block_under_the_column_floor_owes_no_columns() {
     let mut staged = stage("below_column_floor", &block, 1);
 
     // Finality far enough above that the block is past column retention.
-    store.head.finalized_slot = slot + super::COLUMN_SLOTS_RETAINED + 32;
+    store.head.finalized_slot = slot + COLUMN_SLOTS_RETAINED + 32;
     store.head.finalized_root = root;
     store.backfill_block(staged.consumer.acquire(staged.reads[0]));
     drain(&mut store).unwrap();
 
     assert_eq!(store.finalized.slot_of(&root), Some(slot), "the block landed");
     assert_eq!(store.finalized.coverage().columns_missing(slot), 0);
+}
+
+/// A write on a file with one in flight waits in place, behind it on that
+/// file and ahead of nothing else.
+#[test]
+fn write_on_a_busy_file_waits_and_the_rest_pass_it() {
+    use silver_common::TCache;
+
+    // Declared first so it outlives the reads `store` holds, panics included.
+    let mut staged = stage("busy_file", &[0xA7; 100], 2);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+    let (slot, parent_root, pruned, kept) = (42, [0xCC; 32], [0xAA; 32], [0xBB; 32]);
+    store.add_block(pruned, staged.consumer.acquire(staged.reads[0]), slot, parent_root);
+    store.write_queue.push_back(super::PendingWrite::Prune {
+        slot,
+        key: super::PayloadKey::Block { parent_root, block_root: pruned },
+    });
+    store.add_block(kept, staged.consumer.acquire(staged.reads[1]), slot, parent_root);
+
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert_eq!(store.writer.in_flight(), 2, "both blocks' writes started");
+    assert!(
+        matches!(store.write_queue.queue.front(), Some(super::PendingWrite::Prune { .. })),
+        "the prune waits for its file"
+    );
+
+    drain(&mut store).unwrap();
+    let path = |root| {
+        store.unfinalized_dir(super::Payload::Block).join(super::io::unfinalized_name(
+            slot,
+            &parent_root,
+            &root,
+        ))
+    };
+    assert!(!path(pruned).exists(), "pruned after its write");
+    assert!(path(kept).exists());
+}
+
+/// A file still being written is not read: the query waits for the write.
+#[test]
+fn file_being_written_is_served_once_down() {
+    use silver_common::{BeaconApiResponse, BlockLookup, TCache, TCacheProducer};
+
+    let (root, bytes) = ([0xAA; 32], [0xA7u8; 100]);
+    // Declared first so it outlives the reads `store` holds, panics included.
+    let mut staged = stage("served_once_down", &bytes, 1);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+    store.add_block(root, staged.consumer.acquire(staged.reads[0]), 42, [0xCC; 32]);
+    store.queue_block_request(7, BlockLookup::Root(root));
+
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    let mut api = vec![];
+    let mut collect = |io| {
+        if let IoEvent::ApiResponse(response) = io {
+            api.push(response);
+        }
+    };
+    store.file_io(|_| [0u8; 4], &mut producer, &mut collect).unwrap();
+    assert_eq!(store.writer.in_flight(), 1, "the write is in flight");
+    assert_eq!(store.reader.in_flight(), 0, "the read waits for it");
+
+    serve(&mut store, |_| [0u8; 4], &mut producer, &mut collect);
+    let [BeaconApiResponse::Block { request_id: 7, block: Some(served) }] = api[..] else {
+        panic!("expected the block, got {api:?}");
+    };
+    let mut consumer =
+        TCacheReader::single(producer.cache_ref(), "served_once_down_read", TReadMode::Sliding)
+            .unwrap();
+    assert_eq!(consumer.acquire(served.ssz.unwrap()).buffer().unwrap().0, &bytes);
+}
+
+/// A truncation waits for the writes queued before it, and nothing queued
+/// after it passes.
+#[test]
+fn truncation_waits_for_earlier_writes() {
+    use silver_common::TCache;
+
+    // Declared first so it outlives the reads `store` holds, panics included.
+    let mut staged = stage("truncation_waits", &[0x5a; 64], 2);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    following(&mut store, 1 << 20, [1; 32]);
+    let group = super::SLOTS_PER_DIR;
+    place_column(&store_path, 0, 0);
+
+    store.add_data_column([2; 32], 1, staged.consumer.acquire(staged.reads[0]), 1, false);
+    store.write_queue.push_back(super::PendingWrite::TruncateHistory {
+        payload: super::Payload::Column,
+        finalized_slot: COLUMN_SLOTS_RETAINED + group,
+    });
+    store.add_data_column([2; 32], 2, staged.consumer.acquire(staged.reads[1]), group, false);
+
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert_eq!(store.writer.in_flight(), 1, "only the earlier write started");
+    assert!(
+        matches!(
+            store.write_queue.queue.front(),
+            Some(super::PendingWrite::TruncateHistory { .. })
+        ),
+        "the truncation waits"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    drain(&mut store).unwrap();
+    while !store.remover.is_idle() {
+        assert!(Instant::now() < deadline, "truncation did not finish");
+        drain(&mut store).unwrap();
+    }
+    assert!(!slot_dir(&store_path, super::Payload::Column, 0).exists(), "the group went whole");
+    assert!(column_path(&store_path, group, 2).exists());
+}
+
+fn blocks_by_range(start: u64, count: u64) -> silver_common::RpcRequest {
+    let mut range = [0u8; 24];
+    range[0..8].copy_from_slice(&start.to_le_bytes());
+    range[8..16].copy_from_slice(&count.to_le_bytes());
+    range[16..24].copy_from_slice(&1u64.to_le_bytes());
+    silver_common::RpcRequest::BlocksByRange(range)
+}
+
+fn columns_by_range(start: u64, count: u64, columns: &[u64]) -> silver_common::RpcRequest {
+    let mut ssz = [0u8; silver_common::ssz_view::DC_BY_RANGE_REQ_MAX];
+    ssz[0..8].copy_from_slice(&start.to_le_bytes());
+    ssz[8..16].copy_from_slice(&count.to_le_bytes());
+    ssz[16..20].copy_from_slice(&20u32.to_le_bytes());
+    for (i, column) in columns.iter().enumerate() {
+        ssz[20 + i * 8..28 + i * 8].copy_from_slice(&column.to_le_bytes());
+    }
+    silver_common::RpcRequest::DataColumnsByRange { ssz, len: 20 + columns.len() * 8 }
+}
+
+fn request(
+    store: &mut super::Store,
+    consumer: &mut TCacheReader,
+    peer: usize,
+    protocol: silver_common::StreamProtocol,
+    request: silver_common::RpcRequest,
+) {
+    let stream_id = silver_common::P2pStreamId::new(peer, 1, protocol, false);
+    store.rpc_request(consumer, silver_common::RpcRequestInbound { stream_id, request });
+}
+
+/// Per kind, the responses sent: blocks, columns, completes, errors.
+fn tally(sent: &[silver_common::P2pSend]) -> [usize; 4] {
+    use silver_common::{P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound};
+    let mut kinds = [0; 4];
+    for send in sent {
+        let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound { response, .. })) = send else {
+            continue;
+        };
+        match response {
+            RpcResponse::BeaconBlock { .. } => kinds[0] += 1,
+            RpcResponse::DataColumnSidecar { .. } => kinds[1] += 1,
+            RpcResponse::Complete => kinds[2] += 1,
+            RpcResponse::Error { .. } => kinds[3] += 1,
+            _ => {}
+        }
+    }
+    kinds
+}
+
+/// Requests for a block that just finalized wait for its promotion instead
+/// of reading a finalized path the rename has not reached, queued or not.
+#[test]
+fn just_finalized_data_is_served_once_promoted() {
+    use silver_common::{StreamProtocol, TCache, TCacheProducer};
+
+    let (slot, parent) = (42, [0x31; 32]);
+    let block = blob_block(slot, parent);
+    let root = block_root_fulu(&block);
+    // Declared first so they outlive the reads `store` holds, panics included.
+    let mut staged = stage("just_finalized", &block, 1);
+    let mut columns = stage("just_finalized_columns", &[0x5a; 64], 128);
+    let mut requests = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let mut consumer =
+        TCacheReader::single(requests.cache_ref(), "just_finalized_req", TReadMode::Sliding)
+            .unwrap();
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu_custodying(dir.path().to_str().unwrap().to_owned(), u128::MAX);
+
+    store.sync_update(SyncUpdate::Following);
+    store.add_block(root, staged.consumer.acquire(staged.reads[0]), slot, parent);
+    for column in 0..128 {
+        let read = columns.consumer.acquire(columns.reads[column]);
+        store.add_data_column(root, column as u64, read, slot, false);
+    }
+    drain(&mut store).unwrap();
+    store.update_head(slot, root, PayloadResolution::Full, slot, root);
+
+    let mut by_root = requests.reserve(32, true).unwrap();
+    by_root.write_all(&root).unwrap();
+    by_root.flush().unwrap();
+    let by_root = silver_common::RpcRequest::BlockByRoot(by_root.read());
+    let range = blocks_by_range(slot, 1);
+    request(&mut store, &mut consumer, 1, StreamProtocol::BeaconBlocksByRange, range);
+    request(&mut store, &mut consumer, 2, StreamProtocol::BeaconBlocksByRoot, by_root);
+    // Column 127 is promoted last, so it is still queued after the first turn.
+    let range = columns_by_range(slot, 1, &[0, 127]);
+    request(&mut store, &mut consumer, 3, StreamProtocol::DataColumnSidecarsByRange, range);
+
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert!(!store.write_queue.is_empty(), "promotions still queued");
+    assert_eq!(store.reader.in_flight(), 0, "reads wait for the promotion");
+
+    let sent = serve_peers(&mut store, |_| [0u8; 4], &mut producer);
+    assert_eq!(tally(&sent), [2, 2, 3, 0], "both blocks, both columns, no error: {sent:?}");
+}
+
+/// Promotions land in any order: columns down before their block still
+/// count once the block lands.
+#[test]
+fn promoted_columns_count_whatever_lands_first() {
+    let (slot, parent) = (42, [0x31; 32]);
+    let block = blob_block(slot, parent);
+    let root = block_root_fulu(&block);
+    // Declared first so they outlive the reads `store` holds, panics included.
+    let mut staged = stage("columns_any_order", &block, 1);
+    let mut columns = stage("columns_any_order_columns", &[0x5a; 64], 128);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu_custodying(dir.path().to_str().unwrap().to_owned(), u128::MAX);
+
+    store.sync_update(SyncUpdate::Following);
+    store.add_block(root, staged.consumer.acquire(staged.reads[0]), slot, parent);
+    for column in 0..128 {
+        let read = columns.consumer.acquire(columns.reads[column]);
+        store.add_data_column(root, column as u64, read, slot, false);
+    }
+    drain(&mut store).unwrap();
+    store.update_head(slot, root, PayloadResolution::Full, slot, root);
+    drain(&mut store).unwrap();
+
+    assert!(store.finalized.holds(slot));
+    assert_eq!(store.finalized.coverage().columns_missing(slot), 0, "every column landed");
+}
+
+/// Skipped slots, finalized or not, leave a range short instead of failing it.
+#[test]
+fn range_over_skipped_slots_completes() {
+    use silver_common::{StreamProtocol, TCache, TCacheProducer};
+
+    let block_40 = bare_block(40, [0x31; 32]);
+    let root_40 = block_root_fulu(&block_40);
+    let block_42 = bare_block(42, root_40);
+    let root_42 = block_root_fulu(&block_42);
+    let block_44 = bare_block(44, root_42);
+    let root_44 = block_root_fulu(&block_44);
+    // Declared first so they outlive the reads `store` holds, panics included.
+    let mut staged = [
+        stage("skipped_40", &block_40, 1),
+        stage("skipped_42", &block_42, 1),
+        stage("skipped_44", &block_44, 1),
+    ];
+    let requests = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let mut consumer =
+        TCacheReader::single(requests.cache_ref(), "skipped_req", TReadMode::Sliding).unwrap();
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+
+    store.sync_update(SyncUpdate::Following);
+    let blocks = [(40, root_40, [0x31; 32]), (42, root_42, root_40), (44, root_44, root_42)];
+    for ((slot, root, parent), staged) in blocks.into_iter().zip(&mut staged) {
+        store.add_block(root, staged.consumer.acquire(staged.reads[0]), slot, parent);
+    }
+    store.update_head(44, root_44, PayloadResolution::Full, 42, root_42);
+    drain(&mut store).unwrap();
+    assert!(store.finalized.skipped(41), "41 lies inside the linked history");
+
+    request(
+        &mut store,
+        &mut consumer,
+        1,
+        StreamProtocol::BeaconBlocksByRange,
+        blocks_by_range(40, 6),
+    );
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    let sent = serve_peers(&mut store, |_| [0u8; 4], &mut producer);
+    assert_eq!(tally(&sent), [3, 0, 1, 0], "40, 42 and 44, then Complete: {sent:?}");
+}
+
+/// History from peers that arrives after its group fell below retention is
+/// dropped, not written into a group being removed.
+#[test]
+fn backfill_below_retention_is_dropped() {
+    // Declared first so it outlives the reads `store` holds, panics included.
+    let mut staged = stage("below_retention", &[0x5a; 64], 1);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    following(&mut store, 1 << 20, [1; 32]);
+    let group = super::SLOTS_PER_DIR;
+    place_column(&store_path, 0, 0);
+    place_column(&store_path, group, 0);
+
+    store.write_queue.push_back(super::PendingWrite::TruncateHistory {
+        payload: super::Payload::Column,
+        finalized_slot: COLUMN_SLOTS_RETAINED + group,
+    });
+    store.add_data_column([2; 32], 1, staged.consumer.acquire(staged.reads[0]), 1, false);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    drain(&mut store).unwrap();
+    while !store.remover.is_idle() {
+        assert!(Instant::now() < deadline, "truncation did not finish");
+        drain(&mut store).unwrap();
+    }
+    assert!(!slot_dir(&store_path, super::Payload::Column, 0).exists(), "the group stays gone");
+    assert!(column_path(&store_path, group, 0).exists());
+}
+
+/// The wait hands queued ops to the kernel and wakes on their completion,
+/// well before its timeout.
+#[test]
+fn disk_wait_wakes_on_completion() {
+    use silver_common::TCache;
+
+    // Declared first so it outlives the reads `store` holds, panics included.
+    let mut staged = stage("disk_wait", &[0xA7; 100], 1);
+    let dir = TempDir::new().unwrap();
+    let mut store = load_fulu(dir.path().to_str().unwrap().to_owned());
+    store.add_block([0xAA; 32], staged.consumer.acquire(staged.reads[0]), 42, [0xCC; 32]);
+
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    assert_eq!(store.writer.in_flight(), 1, "queued, not yet submitted");
+    let started = Instant::now();
+    store.wait(None, Duration::from_millis(900));
+    assert!(started.elapsed() < Duration::from_millis(500), "woke on the completion");
+    drain(&mut store).unwrap();
 }

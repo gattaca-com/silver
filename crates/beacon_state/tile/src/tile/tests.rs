@@ -1493,7 +1493,9 @@ fn api_block_reaches_storage_through_control_and_beacon_state() {
         Arc::new(spec),
         directory.path().to_str().unwrap().to_owned(),
         false,
-    );
+        &[],
+    )
+    .unwrap();
     storage.open_tcaches().unwrap();
     let (mut spine, mut adapter) = spine_adapter(&tile);
     let mut storage_adapter = SpineAdapter::connect_tile(&storage, &mut *spine.spine);
@@ -1512,13 +1514,20 @@ fn api_block_reaches_storage_through_control_and_beacon_state() {
         slot,
         block_root: [0; 32],
     });
-    storage.loop_body(&mut storage_adapter);
-    let files: Vec<_> = fs::read_dir(directory.path().join("unfinalized"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
+    // The write lands over a few storage turns.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let files = loop {
+        storage.loop_body(&mut storage_adapter);
+        let files: Vec<_> = fs::read_dir(directory.path().join("unfinalized"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        if files.len() == 1 && fs::read(&files[0]).unwrap() == block_ssz {
+            break files;
+        }
+        assert!(std::time::Instant::now() < deadline, "the block was not written: {files:?}");
+    };
     assert_eq!(files.len(), 1);
-    assert_eq!(fs::read(&files[0]).unwrap(), block_ssz);
 }
 
 struct Sink;

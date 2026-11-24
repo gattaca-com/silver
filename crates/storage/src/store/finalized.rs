@@ -5,7 +5,7 @@ use silver_common::{Custody, CustodyChange, DataKind, Prefill, SyncNeed, merkle:
 
 use super::{
     Payload,
-    block_index::BlockIndex,
+    block_index::{BlockIndex, Record},
     coverage::{Block, Coverage, Floors},
     first_retained_slot,
 };
@@ -13,7 +13,6 @@ use super::{
 pub(super) struct Finalized {
     blocks: BlockIndex,
     coverage: Coverage,
-    scratch: Vec<u8>,
 }
 
 impl Finalized {
@@ -32,15 +31,19 @@ impl Finalized {
                 coverage
             }
         };
-        Ok(Self { blocks, coverage, scratch: Vec::new() })
+        Ok(Self { blocks, coverage })
     }
 
-    pub(super) fn persist(&mut self, store_dir: &str) -> Result<(), Error> {
-        self.coverage.persist_if_changed(store_dir, &mut self.scratch)
+    pub(super) fn coverage_persisted(&mut self, version: u64) {
+        self.coverage.persisted(version);
     }
 
     pub(super) fn coverage(&self) -> &Coverage {
         &self.coverage
+    }
+
+    pub(super) fn skipped(&self, slot: u64) -> bool {
+        !self.blocks.holds(slot) && self.coverage.covers(slot)
     }
 
     pub(super) fn custody(&self) -> &Custody {
@@ -81,11 +84,12 @@ impl Finalized {
         self.blocks.index(root, slot);
     }
 
-    /// The block's file is down in `dir`.
-    pub(super) fn landed(&mut self, dir: &Path, block: Block) -> Result<(), Error> {
-        self.blocks.landed(dir, block.facts.block_root, block.facts.slot)?;
+    /// The block's file is down; returns its index record.
+    pub(super) fn landed(&mut self, block: Block) -> Record {
+        let record = Record { block_root: block.facts.block_root, slot: block.facts.slot };
+        self.blocks.hold(record.block_root, record.slot);
         self.relinked(block);
-        Ok(())
+        record
     }
 
     /// A held block served again, so the chain can link through it.
@@ -108,13 +112,19 @@ impl Finalized {
         }
     }
 
+    /// The finalized block itself until history links down to it.
+    pub(super) fn wanted_root(&self, finalized_slot: u64, finalized_root: B256) -> B256 {
+        self.coverage.wanted_parent(finalized_slot).unwrap_or(finalized_root)
+    }
+
     pub(super) fn describe(
         &self,
         start: u64,
         floors: Floors,
         finalized_slot: u64,
+        wanted_parent: B256,
     ) -> (Prefill, bool) {
-        self.coverage.describe(&self.blocks, start, floors, finalized_slot)
+        self.coverage.describe(&self.blocks, start, floors, finalized_slot, wanted_parent)
     }
 
     pub(super) fn examine_next_group(
