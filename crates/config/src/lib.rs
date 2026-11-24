@@ -147,8 +147,8 @@ pub struct Config {
     discovery_port: Option<u16>,
     #[serde(default = "default_quic_port")]
     quic_port: Option<u16>,
-    // Floored at `SAMPLES_PER_SLOT` (8) in `enr()`: silver custodies the full
-    // sample set, so cgc < 8 is unsupported (see `enr`).
+    // Floored at `SAMPLES_PER_SLOT` (8): silver custodies the full sample
+    // set, so cgc < 8 is unsupported (see `custody_group_count`).
     #[serde(default = "default_u8::<8>")]
     data_column_custody_group_count: u8,
     #[serde(default = "default_u8::<2>")]
@@ -333,7 +333,16 @@ impl Config {
         self.pbs.as_ref()
     }
 
-    pub fn enr(&self, keypair: &Keypair, enr_fork_id: [u8; 16]) -> Result<Enr, Error> {
+    pub fn custody_group_count(&self) -> u64 {
+        self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64
+    }
+
+    pub fn enr(
+        &self,
+        keypair: &Keypair,
+        enr_fork_id: [u8; 16],
+        custody_group_count: u64,
+    ) -> Result<Enr, Error> {
         let mut builder = Enr::builder();
         // Remotes only replace a cached record on a strictly higher seq, and
         // the node key (= node_id) is stable across restarts — a constant
@@ -345,8 +354,7 @@ impl Config {
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         builder.seq(boot_seq);
         builder.eth2(enr_fork_id);
-        // Floor at SAMPLES_PER_SLOT: custody set must cover the sample set.
-        builder.cgc(self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64);
+        builder.cgc(custody_group_count);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);
@@ -636,7 +644,7 @@ mod tests {
         let key = Keypair::from_secret(&[1u8; 32]).unwrap();
         let toml = "external_ip_v4 = \"203.0.113.7\"\ndiscovery_port = 9000\nquic_port = 9001\n";
         let cfg = Config::from_toml(toml, Overrides::default()).unwrap();
-        let mut enr = cfg.enr(&key, [0; 16]).unwrap();
+        let mut enr = cfg.enr(&key, [0; 16], cfg.custody_group_count()).unwrap();
         enr.set_attnets([0xff; 8], key.secret_key()).unwrap();
         enr.set_syncnets(SyncCommitteeSubnets::All.long_lived(), key.secret_key()).unwrap();
         // Unpadded base64: 4 chars per 3 bytes.

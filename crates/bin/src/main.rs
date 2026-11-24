@@ -23,8 +23,9 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify,
-    SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES,
+    PersistedCustody, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader,
+    TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     column_util::data_column_sidecar_len,
     profiler::enable_profiler,
@@ -166,7 +167,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Tiles.
     let keypair = Keypair::load_or_create(Path::new(&chain_config.data_dir))?;
     let enr_fork_id = chain_config.spec.enr_fork_id(wall_epoch, fork_digest);
-    let mut local_enr = config.enr(&keypair, enr_fork_id)?;
+    let persisted_custody = PersistedCustody::new(Path::new(&chain_config.data_dir));
+    let custody_group_count =
+        persisted_custody.load()?.unwrap_or(0).max(config.custody_group_count());
+    let mut local_enr = config.enr(&keypair, enr_fork_id, custody_group_count)?;
 
     silver_log::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
@@ -240,8 +244,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         discv5.add_enr(enr, now);
     }
 
-    // cgc is floored at SAMPLES_PER_SLOT when the ENR is built (see Config::enr).
-    let custody_group_count = local_enr.cgc().unwrap_or(silver_common::SAMPLES_PER_SLOT as u64);
     let das_custody_groups = local_enr.node_id().custody_groups(custody_group_count as u8);
     for i in 0..128 {
         if das_custody_groups & (1 << i) != 0 {

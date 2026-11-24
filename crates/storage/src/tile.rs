@@ -1,13 +1,21 @@
-use std::{collections::VecDeque, fs::File, io::Read, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::VecDeque,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, DataKind, Origin,
-    P2pSend, PayloadResolution, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound,
-    SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy, TCacheError,
-    TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
+    P2pSend, PayloadResolution, PeerControl, PeerEvent, PersistedCustody, ReplayBlock, RequestId,
+    RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy,
+    TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -65,6 +73,7 @@ pub struct StorageTile {
     delivery_producer: TProducer,
     beacon_state: BeaconStateReader,
     store: Store,
+    persisted_custody: PersistedCustody,
     genesis_validators_root: Option<B256>,
 
     spec: Arc<SpecConfig>,
@@ -106,6 +115,7 @@ impl StorageTile {
         data_store_dir: String,
         replay_from_disk: bool,
     ) -> Self {
+        let persisted_custody = PersistedCustody::new(Path::new(&data_store_dir));
         let store = Store::load(data_store_dir, spec.clone(), custody_group_columns)
             .expect("failed to load storage store");
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
@@ -126,6 +136,7 @@ impl StorageTile {
             delivery_producer,
             beacon_state,
             store,
+            persisted_custody,
             genesis_validators_root: None,
             spec,
             checkpointed_epoch,
@@ -140,8 +151,11 @@ impl StorageTile {
         }
     }
 
-    fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+    fn grow_custody(&mut self, from_slot: u64, custody_group_count: u64, columns: u128) {
         self.store.grow_custody(from_slot, columns);
+        if let Err(e) = self.persisted_custody.store(custody_group_count) {
+            silver_log::error!(?e, custody_group_count, "custody group count not persisted");
+        }
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
@@ -299,8 +313,8 @@ impl StorageTile {
             BeaconStateEvent::Status { .. } => {
                 latest_status_event = Some(event);
             }
-            BeaconStateEvent::CustodyChange { columns, from_slot, .. } => {
-                self.grow_custody(from_slot, columns)
+            BeaconStateEvent::CustodyChange { custody_group_count, columns, from_slot } => {
+                self.grow_custody(from_slot, custody_group_count, columns)
             }
             BeaconStateEvent::PersistBlock { ssz, source, slot, block_root: announced_root } => {
                 let t_read = self.persist_reader.acquire(ssz);
@@ -665,6 +679,22 @@ mod tests {
         tile.loop_body(&mut adapter);
         tile.loop_body(&mut adapter);
         assert!(producer.reserve(1024, false).is_some());
+    }
+
+    #[test]
+    fn custody_change_is_persisted_for_the_next_boot() {
+        let store_dir = format!("/tmp/test_storage_custody_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_dir);
+        let mut tile = empty_tile(&store_dir);
+
+        let change = BeaconStateEvent::CustodyChange {
+            custody_group_count: 16,
+            columns: 0b11,
+            from_slot: 64,
+        };
+        tile.handle_beacon_state_event(change, &mut |_| {});
+        assert_eq!(PersistedCustody::new(Path::new(&store_dir)).load().unwrap(), Some(16));
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     /// Private scheduling state substitutes for a checkpoint writer here;

@@ -124,6 +124,11 @@ data_column_custody_group_count = 128  # default 8
 attestation_subnet_count = 64          # default 2
 ```
 
+`data_column_custody_group_count` is a lower bound.
+Validators attached through `prepare_beacon_proposer` raise custody to one group per 32 ETH of effective balance.
+The count never falls, and is kept across restarts in `custody_group_count` in the data directory.
+Data directory size grows with the count: 4096 ETH or more attached means custodying all 128 groups.
+
 Incoming gossip is limited per connection. Set the sustained rate in bytes per second:
 
 ```toml
