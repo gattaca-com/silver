@@ -6,9 +6,10 @@ use silver_ssz::ssz_view::{
     BEACON_BLOCK_HEADER_SIZE, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SignedBeaconBlockView,
 };
 
+use crate::PROOFS_CAPACITY;
+
 const SIGNED_HEADER_SIZE: usize = PROPOSER_SLASHING_SIZE / 2;
 const _: () = assert!(SIGNED_HEADER_SIZE == BEACON_BLOCK_HEADER_SIZE + 96);
-pub(crate) const PROOFS_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct ProposalKey {

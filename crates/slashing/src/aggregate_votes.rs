@@ -4,8 +4,8 @@ use silver_ssz::ssz_view::{
 
 use crate::{
     Offence,
+    attester_proof::{AttesterProof, IndexedVote, SignedVote},
     public_votes::{LatestSlots, is_double_vote},
-    signed_vote::{AttesterProof, IndexedVote, SignedVote},
 };
 
 // Honest committees attest one or two distinct data per slot.

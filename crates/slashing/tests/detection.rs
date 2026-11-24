@@ -65,7 +65,7 @@ fn attestation(slot: u64, source_epoch: u64, signers: &[usize], len: usize) -> V
 fn proofs_publish_within_a_slot_budget() {
     let mut detection = SlashingDetection::new(0, 0);
     let budget = 16;
-    let (unverifiable, unslashable) = (budget + 1, budget + 2);
+    let (unverifiable, unslashable) = (budget + 2, budget + 3);
     for validator_index in 0..=unslashable {
         let slot = if validator_index == unverifiable { 97 } else { 64 };
         let committee = [validator_index as u32];
@@ -76,17 +76,18 @@ fn proofs_publish_within_a_slot_budget() {
         let slashable = |index| index != unslashable;
         let proof = detection.next_attester_proof(wall_slot, slashable, |epoch| epoch != 3)?;
         let offender = proof.offenders().next();
-        detection.pop_attester_proof();
+        detection.pop_attester_proof(wall_slot);
         offender
     };
 
     let mut published: Vec<_> = std::iter::from_fn(|| publish(64)).collect();
     assert_eq!(published.len(), 16, "one slot's budget");
-    published.push(publish(65).expect("the next slot's budget"));
-    assert_eq!(publish(65), None);
+    published.extend(std::iter::from_fn(|| publish(65)));
+    assert_eq!(published.len(), 18, "the next slot's budget");
 
     published.sort();
-    assert_eq!(published, (0..=budget).collect::<Vec<_>>(), "skipped proofs spend no budget");
+    let expected: Vec<_> = (0..=budget + 1).collect();
+    assert_eq!(published, expected, "skipped proofs spend no budget");
 }
 
 #[test]
@@ -106,7 +107,7 @@ fn full_queue_leaves_a_double_vote_provable() {
         detection.next_attester_proof(64, |_| true, |_| true).unwrap().offenders().next(),
         Some(63)
     );
-    detection.pop_attester_proof();
+    detection.pop_attester_proof(64);
     record(&mut detection, 1, &[64]);
     assert_eq!(
         detection.next_attester_proof(64, |_| true, |_| true).unwrap().offenders().next(),
@@ -181,7 +182,7 @@ fn double_vote_is_proven_within_one_committee_record() {
         let proof = votes.next_attester_proof(64, |_| true, |_| true);
         let offenders = proof.map(|p| p.offenders().collect::<Vec<_>>());
         if offenders.is_some() {
-            votes.pop_attester_proof();
+            votes.pop_attester_proof(64);
         }
         offenders
     };

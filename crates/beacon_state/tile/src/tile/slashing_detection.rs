@@ -1,7 +1,8 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{Slot, StateReadView};
 use silver_common::{
-    BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, TCacheProducer, TProducer,
+    BeaconStateEvent, BlockSource, GossipTopic, LOCAL_GOSSIP_STREAM_ID, NewGossipMsg,
+    TCacheProducer, TProducer,
     ssz_view::{
         ProposerSlashingView, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
     },
@@ -36,15 +37,16 @@ impl BeaconStateTile {
         let parsed = self.parse_and_verify_block(data, pre_verified)?;
         let (slot, proposer_index) = (parsed.header.slot, parsed.header.proposer_index);
         let header = SignedHeader::of_block(data, &parsed.header.body_root);
-        let conflict = self.detection.proposals.observe(header, source == BlockSource::LocalGossip);
+        if !self.detection.proposals.observe(header, source == BlockSource::LocalGossip) {
+            return Ok(parsed);
+        }
         match source {
-            _ if !conflict => Ok(parsed),
             BlockSource::Rpc => Ok(parsed),
             BlockSource::LocalGossip => {
                 refuse_local(Offence::DoubleProposal, proposer_index, slot);
                 Err(PrecheckError::SlashableProposal { slot, proposer_index })
             }
-            _ => Err(PrecheckError::SecondProposal { slot, proposer_index }),
+            BlockSource::Gossip => Err(PrecheckError::SecondProposal { slot, proposer_index }),
         }
     }
 
@@ -56,7 +58,7 @@ impl BeaconStateTile {
         m: &NewGossipMsg,
         single: &[u8; SINGLE_ATT_SIZE],
     ) -> Option<Offence> {
-        if !m.is_api_verified() {
+        if m.stream_id != LOCAL_GOSSIP_STREAM_ID {
             return None;
         }
         let offence = self.detection.conflicts_with_public(single)?;
@@ -104,7 +106,7 @@ impl BeaconStateTile {
                     offenders,
                     "detected an attester offence"
                 );
-                self.detection.pop_attester_proof();
+                self.detection.pop_attester_proof(wall_slot);
             }
         }
     }

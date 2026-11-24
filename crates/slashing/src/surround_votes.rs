@@ -2,7 +2,7 @@ use silver_ssz::ssz_view::{SINGLE_ATT_SIZE, SingleAttestationView};
 
 use crate::{
     Offence,
-    signed_vote::{AttesterProof, IndexedVote, SIGNED_VOTE_SIZE, SignedVote},
+    attester_proof::{AttesterProof, IndexedVote, SIGNED_VOTE_SIZE, SignedVote},
 };
 
 const SEGMENT: usize = 1 << 16;

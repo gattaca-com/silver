@@ -2,8 +2,8 @@ use silver_beacon_state_data::{Epoch, Slot};
 use silver_ssz::ssz_view::SINGLE_ATT_SIZE;
 
 use crate::{
-    DoubleProposals, aggregate_votes::AggregateVotes, double_proposals::PROOFS_CAPACITY,
-    public_votes::PublicVotes, signed_vote::AttesterProof, surround_votes::SurroundVotes,
+    DoubleProposals, PROOFS_CAPACITY, aggregate_votes::AggregateVotes,
+    attester_proof::AttesterProof, public_votes::PublicVotes, surround_votes::SurroundVotes,
 };
 
 // Each publication costs two signature checks when gossip validation sees it.
@@ -23,14 +23,14 @@ struct SlotBudget {
 }
 
 impl SlotBudget {
-    fn available(&mut self, wall_slot: Slot) -> bool {
+    fn available(&self, wall_slot: Slot) -> bool {
+        self.slot != wall_slot || self.spent < PUBLICATIONS_PER_SLOT
+    }
+
+    fn spend(&mut self, wall_slot: Slot) {
         if self.slot != wall_slot {
             *self = Self { slot: wall_slot, spent: 0 };
         }
-        self.spent < PUBLICATIONS_PER_SLOT
-    }
-
-    fn spend(&mut self) {
         self.spent += 1;
     }
 }
@@ -94,7 +94,7 @@ impl SlashingDetection {
 
     /// False while only attester proofs wait and this slot's publications
     /// are spent.
-    pub fn has_proofs(&mut self, wall_slot: Slot) -> bool {
+    pub fn has_proofs(&self, wall_slot: Slot) -> bool {
         self.proposals.has_proofs() ||
             !self.proofs.is_empty() && self.publications.available(wall_slot)
     }
@@ -121,9 +121,9 @@ impl SlashingDetection {
     }
 
     /// Spends one of this slot's publications.
-    pub fn pop_attester_proof(&mut self) {
+    pub fn pop_attester_proof(&mut self, wall_slot: Slot) {
         self.proofs.pop();
-        self.publications.spend();
+        self.publications.spend(wall_slot);
     }
 
     fn has_room(&self) -> bool {
