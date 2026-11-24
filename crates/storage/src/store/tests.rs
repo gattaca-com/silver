@@ -9,8 +9,8 @@ use std::{
 };
 
 use silver_common::{
-    BeaconApiResponse, BlockLookup, PayloadResolution, Prefill, ServedBlock, SyncNeed, SyncUpdate,
-    TCacheId, TCacheReader, TReadMode,
+    BeaconApiResponse, BlockLookup, CustodyChange, PayloadResolution, Prefill, ServedBlock,
+    SyncNeed, SyncUpdate, TCacheId, TCacheReader, TReadMode,
 };
 use tempfile::TempDir;
 
@@ -27,11 +27,12 @@ fn load_fulu(store_dir: String) -> super::Store {
 }
 
 fn load_fulu_custodying(store_dir: String, custody: u128) -> super::Store {
-    super::Store::load(store_dir, super::test_spec(u64::MAX), custody).unwrap()
+    super::Store::load(store_dir, super::test_spec(u64::MAX), CustodyChange::from_genesis(custody))
+        .unwrap()
 }
 
 fn load_gloas(store_dir: String) -> super::Store {
-    super::Store::load(store_dir, super::test_spec(0), 0).unwrap()
+    super::Store::load(store_dir, super::test_spec(0), CustodyChange::from_genesis(0)).unwrap()
 }
 
 use silver_common::{block_root, block_root_fulu, test_util::SynthBlock};
@@ -1220,8 +1221,12 @@ fn store_without_coverage_is_rebuilt_from_its_files() {
         }
     }
 
-    let mut store =
-        super::Store::load(store_path.clone(), super::test_spec(u64::MAX), custody).unwrap();
+    let mut store = super::Store::load(
+        store_path.clone(),
+        super::test_spec(u64::MAX),
+        CustodyChange::from_genesis(custody),
+    )
+    .unwrap();
     assert_eq!(
         store.finalized.coverage().wanted_parent(966),
         Some([0x77; 32]),
@@ -1361,7 +1366,12 @@ fn vanished_unfinalized_files_stay_missing_at_promotion() {
 
     let store_path = format!("/tmp/test_store_vanished_{}", rand::random::<u32>());
     let _ = std::fs::remove_dir_all(&store_path);
-    let mut store = super::Store::load(store_path.clone(), super::test_spec(0), 0b11).unwrap();
+    let mut store = super::Store::load(
+        store_path.clone(),
+        super::test_spec(0),
+        CustodyChange::from_genesis(0b11),
+    )
+    .unwrap();
 
     let blob = gloas_chain_block(40, [0x31; 32], &[0u8; 48]);
     let root_blob = block_root(&blob, true);
@@ -1503,7 +1513,8 @@ fn rebuild_across_the_fork_misses_envelopes_only_above_it() {
     std::fs::create_dir_all(envelope.parent().unwrap()).unwrap();
     std::fs::write(envelope, envelope_for(root_d)).unwrap();
 
-    let mut store = super::Store::load(store_path.clone(), spec, 0).unwrap();
+    let mut store =
+        super::Store::load(store_path.clone(), spec, CustodyChange::from_genesis(0)).unwrap();
     following(&mut store, 33, root_d);
     assert_eq!(store.finalized.coverage().wanted_parent(33), Some([0x31; 32]), "one chain");
     let prefill = first_prefill(&mut store);

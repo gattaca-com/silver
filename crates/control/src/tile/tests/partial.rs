@@ -36,7 +36,7 @@ fn mode_off_allocates_assemblies_without_enabling_partial_exchange() {
     capture.controller.spec = spec;
     capture.controller = capture
         .controller
-        .with_data_columns_cache(config, columns, 0, now, PartialColumnsMode::Off)
+        .with_data_columns_cache(config, 1, columns, 0, now, PartialColumnsMode::Off)
         .unwrap();
     assert!(capture.controller.partial_exchange.is_none());
     capture.crank();
@@ -120,7 +120,7 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
     capture.controller.spec = spec;
     capture.controller = capture
         .controller
-        .with_data_columns_cache(config, columns, 0, now, PartialColumnsMode::SendOnly)
+        .with_data_columns_cache(config, 1, columns, 0, now, PartialColumnsMode::SendOnly)
         .unwrap();
     let domain = GossipDomain::new([0; 4], ForkName::Gloas);
     capture.controller.gossip_handler.set_domains(domain, None);
@@ -223,7 +223,7 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
         capture.controller.spec = spec;
         capture.controller = capture
             .controller
-            .with_data_columns_cache(config, columns, 0, now, PartialColumnsMode::SendOnly)
+            .with_data_columns_cache(config, 1, columns, 0, now, PartialColumnsMode::SendOnly)
             .unwrap();
         capture.controller.gossip_handler.set_domains(GossipDomain::new([0; 4], format), None);
         capture.observer.consume(|_: CellStoreEvent, _| {});
@@ -297,7 +297,7 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
     capture.controller.spec = spec.clone();
     capture.controller = capture
         .controller
-        .with_data_columns_cache(config, columns, 0, Instant::now(), PartialColumnsMode::Enabled)
+        .with_data_columns_cache(config, 1, columns, 0, Instant::now(), PartialColumnsMode::Enabled)
         .unwrap();
     let mut ticker = SlotTicker::new(0, &spec, Duration::from_secs(3));
     ticker.set_current_slot(8 * SLOTS_PER_EPOCH);

@@ -85,21 +85,34 @@ impl CellIngress {
 
     pub fn new(
         config: CellStoreConfig,
+        custody: u128,
         producer: TProducer,
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
-        let capacity = config.column_capacity();
-        let partial_budget = PartialBudget::new(&config);
+        let capacity = config.column_capacity(custody);
+        let partial_budget = PartialBudget::new(&config, custody);
         let provisional_claims = ProvisionalClaims::new(&config);
         Ok(Self {
-            allocator: CellAllocator::new(config, producer, slot, slot_start)?,
+            allocator: CellAllocator::new(config, custody, producer, slot, slot_start)?,
             available: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             capacity,
             min_slot: 0,
             partial_budget,
             provisional_claims,
         })
+    }
+
+    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        if !self.allocator.grow_custody(from_slot, columns) {
+            return;
+        }
+        self.capacity = self.allocator.config().column_capacity(columns);
+        self.partial_budget.resize(self.allocator.config(), columns);
+    }
+
+    pub fn config(&self) -> &CellStoreConfig {
+        self.allocator.config()
     }
 
     pub fn set_min_slot(&mut self, min_slot: u64) {

@@ -17,14 +17,15 @@ use flux::{
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use silver_application_boundary::ApplicationBoundaryTile;
-use silver_beacon_state::{BeaconStateTile, SlotTicker};
+use silver_beacon_state::{BeaconStateTile, SlotTicker, ValidatorCustody};
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify,
-    SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES,
+    PersistedCustody, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader,
+    TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     column_util::data_column_sidecar_len,
     profiler::enable_profiler,
@@ -166,7 +167,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Tiles.
     let keypair = Keypair::load_or_create(Path::new(&chain_config.data_dir))?;
     let enr_fork_id = chain_config.spec.enr_fork_id(wall_epoch, fork_digest);
-    let mut local_enr = config.enr(&keypair, enr_fork_id)?;
+    let persisted_custody = PersistedCustody::new(Path::new(&chain_config.data_dir));
+    let custody_group_count =
+        persisted_custody.load()?.map_or(0, |raised| raised.custody_group_count);
+    let custody_group_count = custody_group_count.max(config.custody_group_count());
+    let mut local_enr = config.enr(&keypair, enr_fork_id, custody_group_count)?;
 
     silver_log::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
@@ -240,10 +245,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         discv5.add_enr(enr, now);
     }
 
-    // cgc is floored at SAMPLES_PER_SLOT when the ENR is built (see Config::enr).
-    let das_custody_groups = local_enr
-        .node_id()
-        .custody_groups(local_enr.cgc().unwrap_or(silver_common::SAMPLES_PER_SLOT as u64) as u8);
+    let das_custody_groups = local_enr.node_id().custody_groups(custody_group_count as u8);
     for i in 0..128 {
         if das_custody_groups & (1 << i) != 0 {
             gossip_topics.push(GossipTopic::DataColumnSidecar(i));
@@ -252,9 +254,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let partial_columns = config.partial_columns();
 
-    let cell_config =
-        CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION)
-            .map_err(|error| format!("cell store configuration: {error:?}"))?;
+    let cell_config = CellStoreConfig::new(spec.clone(), u128::MAX, GOSSIP_DELIVERY_RETENTION)
+        .map_err(|error| format!("cell store configuration: {error:?}"))?;
     let control_slot_producer =
         TCache::producer(TCacheId::ControlSlot, cell_config.cache_capacity());
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();
@@ -325,6 +326,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     control_tile = control_tile
         .with_data_columns_cache(
             cell_config.clone(),
+            das_custody_groups,
             control_slot_producer,
             cell_slot,
             cell_slot_start,
@@ -345,6 +347,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         checkpoint,
         config.suggested_fee_recipient(),
         config.engine_config().get_payload_timeout(),
+        ValidatorCustody::new(local_enr.node_id(), custody_group_count),
     );
     let state_reader = beacon_state_tile.reader();
 
@@ -367,7 +370,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         SlotTicker::new(genesis.unix_secs, &spec, chain_config.playload_lookahead()),
         proposed_columns_producer,
     )
-    .with_data_columns_cache(cell_config, cell_slot, cell_slot_start)
+    .with_data_columns_cache(cell_config, das_custody_groups, cell_slot, cell_slot_start)
     .map_err(|error| format!("cell store construction: {error:?}"))?;
 
     let beacon_api_binds =

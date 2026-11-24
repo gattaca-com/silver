@@ -111,7 +111,7 @@ impl History {
         self.walked = Some(walk);
 
         let floors = self.floors(head.finalized_slot);
-        let missing_from = floors.lowest_missing(finalized.custody());
+        let missing_from = floors.lowest_missing(finalized.custody().current());
         if let Some(claim) = self.claim(finalized, head.finalized_slot, missing_from) {
             emit(IoEvent::PeerEvent(PeerEvent::EarliestSlot(claim)));
         }
@@ -160,7 +160,7 @@ impl History {
         missing_from: u64,
     ) -> Option<u64> {
         let epoch = finalized_slot / SLOTS_PER_EPOCH;
-        let retained = match finalized.custody() {
+        let retained = match finalized.custody().current() {
             0 => Payload::Block.slots_retained(&self.spec, epoch),
             _ => COLUMN_SLOTS_RETAINED,
         };

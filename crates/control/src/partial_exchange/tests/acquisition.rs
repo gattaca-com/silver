@@ -10,7 +10,7 @@ use crate::partial_exchange::acquisition::Acquisition;
 
 impl Rig {
     pub(super) fn enable_requests(&mut self) {
-        self.exchange.acquisition = Some(Acquisition::new(&self.config, 0, self.now));
+        self.exchange.acquisition = Some(Acquisition::new(&self.config, self.custody, 0, self.now));
     }
 
     pub(super) fn demand(&mut self, columns: u128) {
@@ -322,6 +322,34 @@ fn no_peers_or_no_installed_assembly_recovers_and_rejected_context_does_not() {
     rig.exchange.reject(&ROOT);
     rig.now += Duration::from_secs(1);
     assert!(rig.acquire().is_empty());
+}
+
+#[test]
+fn full_layout_requests_and_recovers_only_the_custody_columns() {
+    let custody = 1 | (1 << 127);
+    let mut rig = Rig::with_layout(ForkName::Fulu, u128::MAX, custody);
+    rig.enable_requests();
+    rig.connect(1, false, true);
+    rig.demand(custody);
+    for column in [0, 127] {
+        rig.availability(column, 0);
+    }
+    assert!(rig.acquire().is_empty());
+    let requested: Vec<_> = rig.requests().iter().map(|request| request.1).collect();
+    assert_eq!(requested.len(), 2);
+    assert!(requested.contains(&0) && requested.contains(&127));
+    rig.now += Duration::from_millis(750);
+    assert!(
+        matches!(rig.acquire().as_slice(), [SyncNeed::Missing { columns, .. }] if *columns == custody)
+    );
+
+    let mut rig = Rig::with_layout(ForkName::Fulu, u128::MAX, custody);
+    rig.enable_requests();
+    rig.demand(u128::MAX);
+    rig.now += Duration::from_millis(750);
+    assert!(
+        matches!(rig.acquire().as_slice(), [SyncNeed::Missing { columns, .. }] if *columns == custody)
+    );
 }
 
 #[test]

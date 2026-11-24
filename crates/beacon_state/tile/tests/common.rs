@@ -10,14 +10,14 @@ use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
     ssz_hash::{hash_tree_root_body_fulu, hash_tree_root_state},
-    tile::BeaconStateTile,
+    tile::{BeaconStateTile, ValidatorCustody},
 };
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BeaconState, CheckpointState, SpecConfig, hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, EngineFcuReq, EngineNewPayloadResp,
-    EngineReq, EngineResp, GossipTopic, MessageId, NewGossipMsg, Origin, P2pStreamId,
+    EngineReq, EngineResp, GossipTopic, MessageId, NewGossipMsg, NodeId, Origin, P2pStreamId,
     PayloadValidationStatus, PeerEvent, RequestId, RpcInbound, RpcResponseInbound, SilverSpine,
     StreamProtocol, SyncNeed, SyncUpdate, TCache, TCacheId, TCacheProducer, TCacheTable, TProducer,
     block_root_gloas, hex32,
@@ -147,6 +147,7 @@ pub enum OutboundKind {
     ProposedPayload,
     PoolChange,
     PayloadAttributes,
+    CustodyChange,
     NewPayload,
     NewPayloadEnvelope,
     Fcu,
@@ -195,6 +196,7 @@ impl OutboundKind {
             BeaconStateEvent::ProposedPayload(_) => Self::ProposedPayload,
             BeaconStateEvent::PoolChange(_) => Self::PoolChange,
             BeaconStateEvent::PayloadAttributes(_) => Self::PayloadAttributes,
+            BeaconStateEvent::CustodyChange { .. } => Self::CustodyChange,
         }
     }
 
@@ -260,6 +262,7 @@ impl Harness {
                 CheckpointState::trusted(checkpoint_ssz, &spec, &[]),
                 None,
                 EngineConfig::default().get_payload_timeout(),
+                ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
             )
         });
         h.gloas = gloas;

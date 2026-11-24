@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, io::Error};
 
 use chain::Chain;
 pub(super) use rebuild::read_block;
-use silver_common::{PREFILL_SLOTS, Prefill, merkle::B256};
+use silver_common::{Custody, CustodyChange, PREFILL_SLOTS, Prefill, merkle::B256};
 
 use super::{
     Payload,
@@ -73,7 +73,7 @@ pub(super) fn window_start(end: u64) -> u64 {
 pub(super) struct Coverage {
     /// The missing column masks were cut against this custody, so a coverage
     /// persisted under another one is rebuilt rather than trusted.
-    custody: u128,
+    custody: Custody,
     chain: Chain,
     missing: BTreeMap<u64, Missing>,
     /// Groups below this were only indexed, never read: a held block there
@@ -86,7 +86,7 @@ pub(super) struct Coverage {
 impl Coverage {
     pub(super) fn new(custody: u128) -> Self {
         Self {
-            custody,
+            custody: Custody::new(custody),
             chain: Chain::default(),
             missing: BTreeMap::new(),
             examined_below: 0,
@@ -95,12 +95,18 @@ impl Coverage {
         }
     }
 
-    pub(super) fn load(store_dir: &str, custody: u128) -> Result<Option<Self>, Error> {
+    pub(super) fn load(store_dir: &str, custody: CustodyChange) -> Result<Option<Self>, Error> {
         codec::load(store_dir, custody)
     }
 
-    pub(super) fn custody(&self) -> u128 {
-        self.custody
+    pub(super) fn custody(&self) -> &Custody {
+        &self.custody
+    }
+
+    pub(super) fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        if self.custody.grow(from_slot, columns) {
+            self.touch();
+        }
     }
 
     pub(super) fn version(&self) -> u64 {
@@ -144,7 +150,7 @@ impl Coverage {
         if !self.chain.note(&block, blocks) {
             return;
         }
-        let columns = if block.needs.columns { self.custody } else { 0 };
+        let columns = if block.needs.columns { self.custody.at(block.facts.slot) } else { 0 };
         self.set_missing(block.facts.slot, Missing { columns, envelope: block.needs.envelope });
         self.touch();
     }
@@ -184,10 +190,11 @@ impl Coverage {
     }
 
     pub(super) fn columns_missing(&self, slot: u64) -> u128 {
+        let custody = self.custody.at(slot);
         if !self.chain.contains(slot) {
-            return self.custody;
+            return custody;
         }
-        self.missing.get(&slot).map_or(0, |missing| missing.columns & self.custody)
+        self.missing.get(&slot).map_or(0, |missing| missing.columns & custody)
     }
 
     pub(super) fn envelope_missing(&self, slot: u64) -> bool {
@@ -235,7 +242,12 @@ impl Coverage {
         let held_from = self.chain.top(finalized_slot).map_or(finalized_slot, |top| top.from);
         let owed_to = self.missing.last_key_value().map_or(0, |(&slot, _)| slot + 1);
         let unexamined = if self.unexamined_above(missing_from) { self.examined_below } else { 0 };
-        held_from.max(owed_to).max(unexamined).max(floor).min(finalized_slot)
+        held_from
+            .max(owed_to)
+            .max(unexamined)
+            .max(floor)
+            .max(self.custody.last_change_slot())
+            .min(finalized_slot)
     }
 
     /// The highest slot still missing something: the one under the chain,
@@ -274,7 +286,7 @@ impl Coverage {
             if have_block & bit == 0 {
                 continue;
             }
-            let absent = missing.columns & self.custody;
+            let absent = missing.columns & self.custody.at(slot);
             if absent != 0 && below(floors.columns, start) & bit == 0 {
                 columns_covered &= !bit;
                 columns_missing |= absent;
@@ -551,6 +563,78 @@ mod tests {
         assert_eq!(coverage.claim(2, 2, 1), 2, "but not below the floor");
     }
 
+    #[test]
+    fn grown_custody_is_owed_and_claimed_from_its_slot() {
+        let mut blocks = BlockIndex::default();
+        let mut coverage = Coverage::new(CUSTODY);
+        land(&mut coverage, &mut blocks, &[996, 992], [0; 32], 1000, NOTHING);
+        assert_eq!(coverage.claim(1000, 1, 1), 992);
+
+        coverage.grow_custody(994, 0b1111);
+        assert_eq!(coverage.claim(1000, 1, 1), 994, "nothing below the change has the new column");
+        coverage.set_missing(992, Missing { columns: 0b1111, envelope: false });
+        coverage.set_missing(996, Missing { columns: 0b1111, envelope: false });
+        assert_eq!(coverage.columns_missing(992), CUSTODY);
+        assert_eq!(coverage.columns_missing(996), 0b1111);
+        assert_eq!(coverage.columns_missing(1_001), 0b1111, "an unheld slot owes everything");
+    }
+
+    #[test]
+    fn grown_custody_survives_a_restart_and_the_old_format_is_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("silver_coverage_{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = dir.to_string_lossy().into_owned();
+
+        let mut blocks = BlockIndex::default();
+        let mut coverage = Coverage::new(CUSTODY);
+        land(&mut coverage, &mut blocks, &[996, 992], [0; 32], 1000, NOTHING);
+        coverage.grow_custody(994, 0b1111);
+        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
+
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY)).unwrap().is_none(),
+            "custody since grew"
+        );
+        let reloaded = Coverage::load(&store, CustodyChange::from_genesis(0b1111))
+            .unwrap()
+            .expect("persisted");
+        assert_eq!(reloaded.custody, coverage.custody);
+        assert_eq!(reloaded.claim(1000, 1, 1), 994);
+
+        let file = dir.join("coverage.bin");
+        let bytes = std::fs::read(&file).unwrap();
+        let mut old = CUSTODY.to_le_bytes().to_vec();
+        old.extend_from_slice(&bytes[8 + 4 + 2 * 24..]);
+        std::fs::write(&file, &old).unwrap();
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY)).unwrap().is_none(),
+            "older format: rebuilt"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custody_raised_after_the_last_persist_extends_the_coverage() {
+        let dir = std::env::temp_dir().join(format!("silver_coverage_{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = dir.to_string_lossy().into_owned();
+
+        let mut blocks = BlockIndex::default();
+        let mut coverage = Coverage::new(CUSTODY);
+        land(&mut coverage, &mut blocks, &[996, 992], [0; 32], 1000, NOTHING);
+        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
+
+        let raised = |from_slot| CustodyChange { from_slot, columns: 0b1111 };
+        let reloaded = Coverage::load(&store, raised(1024)).unwrap().expect("extended");
+        assert_eq!(reloaded.custody.changes(), [
+            CustodyChange::from_genesis(CUSTODY),
+            raised(1024)
+        ]);
+        assert_eq!(reloaded.columns_missing(996), 0);
+        assert!(Coverage::load(&store, raised(996)).unwrap().is_none(), "raised under held slots");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A coverage cut against another custody, or one that does not parse, is
     /// not trusted.
     #[test]
@@ -566,8 +650,12 @@ mod tests {
         coverage.note_columns(996, 0b1);
         coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
 
-        assert!(Coverage::load(&store, CUSTODY << 1).unwrap().is_none());
-        let reloaded = Coverage::load(&store, CUSTODY).unwrap().expect("persisted");
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY << 1)).unwrap().is_none()
+        );
+        let reloaded = Coverage::load(&store, CustodyChange::from_genesis(CUSTODY))
+            .unwrap()
+            .expect("persisted");
         assert_eq!(reloaded.chain, coverage.chain);
         assert_eq!(reloaded.columns_missing(996), 0b110);
         assert!(reloaded.envelope_missing(996));
@@ -580,7 +668,10 @@ mod tests {
         let mut bytes = std::fs::read(&file).unwrap();
         bytes.push(0);
         std::fs::write(&file, &bytes).unwrap();
-        assert!(Coverage::load(&store, CUSTODY).unwrap().is_none(), "trailing bytes: rebuilt");
+        assert!(
+            Coverage::load(&store, CustodyChange::from_genesis(CUSTODY)).unwrap().is_none(),
+            "trailing bytes: rebuilt"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

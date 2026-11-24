@@ -3,15 +3,18 @@
 use std::{sync::Arc, time::Duration};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_state::{ssz_hash::hash_tree_root_body_fulu, tile::BeaconStateTile};
+use silver_beacon_state::{
+    ssz_hash::hash_tree_root_body_fulu,
+    tile::{BeaconStateTile, ValidatorCustody},
+};
 use silver_beacon_state_data::{
     BeaconBlockHeader, BeaconStateReader, CheckpointState, SpecConfig, hash_tree_root_block_header,
 };
 use silver_common::{
-    BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
-    PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
-    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead,
-    TCacheTable, TProducer,
+    BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, NodeId, P2pSend, P2pStreamId,
+    PeerControl, PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
+    RpcResponse, RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheId, TCacheProducer,
+    TCacheRead, TCacheTable, TProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
@@ -155,6 +158,7 @@ impl PmBsHarness {
             CheckpointState::trusted(checkpoint, &SpecConfig::mainnet(), pubkeys),
             None,
             EngineConfig::default().get_payload_timeout(),
+            ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
         );
         bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);

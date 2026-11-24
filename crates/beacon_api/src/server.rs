@@ -1003,6 +1003,7 @@ impl BeaconApi {
             PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
                 self.ctx.peers.remove(peer_id, p2p_peer)
             }
+            PeerEvent::LocalEnr { enr } => self.ctx.identity.set_enr(&enr),
             PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
                 self.publish_relayed_block(ssz)
             }

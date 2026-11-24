@@ -8,12 +8,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_beacon_state::tile::{BeaconStateTile, Feedback};
+use silver_beacon_state::tile::{BeaconStateTile, Feedback, ValidatorCustody};
 use silver_beacon_state_data::{
     BeaconState, BeaconStateOwner, CheckpointChunk, CheckpointState, SpecConfig,
     decode_checkpoint_pubkeys, hash_tree_root_block_header,
 };
-use silver_common::{TCache, TCacheId, TCacheProducer, TCacheTable, ticker::SlotTicker};
+use silver_common::{NodeId, TCache, TCacheId, TCacheProducer, TCacheTable, ticker::SlotTicker};
 use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::BlockFixtures};
 
 /// Pull the full checkpoint (state SSZ + pubkeys sidecar) out of `bs` through
@@ -171,6 +171,7 @@ fn finalized_state_loads() {
         checkpoint,
         None,
         silver_config::EngineConfig::default().get_payload_timeout(),
+        ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
     );
     tile.open_tcaches().unwrap();
 
@@ -322,6 +323,7 @@ fn tile_apply_block_ef_fixture() {
         CheckpointState::trusted(&pre_ssz, &spec, &[]),
         None,
         silver_config::EngineConfig::default().get_payload_timeout(),
+        ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
     );
     tile.open_tcaches().unwrap();
 

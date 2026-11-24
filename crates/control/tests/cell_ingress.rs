@@ -100,8 +100,8 @@ impl Rig {
             adapter
         });
         Self {
-            control: CellIngress::new(config.clone(), producer, 0, now).unwrap(),
-            store: CellStore::new(config, 0, now).unwrap(),
+            control: CellIngress::new(config.clone(), 7, producer, 0, now).unwrap(),
+            store: CellStore::new(config, 7, 0, now).unwrap(),
             columns,
             network,
             adapters,

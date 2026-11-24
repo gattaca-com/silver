@@ -1,13 +1,21 @@
-use std::{collections::VecDeque, fs::File, io::Read, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::VecDeque,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, DataKind, Origin,
-    P2pSend, PayloadResolution, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound,
-    SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy, TCacheError,
-    TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, CustodyChange, DataColumnsEvent,
+    DataKind, Origin, P2pSend, PayloadResolution, PeerControl, PeerEvent, PersistedCustody,
+    RaisedCustody, ReplayBlock, RequestId, RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed,
+    SyncUpdate, SyncingStrategy, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    TProducer, TReadMode, TileId, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -65,6 +73,7 @@ pub struct StorageTile {
     delivery_producer: TProducer,
     beacon_state: BeaconStateReader,
     store: Store,
+    persisted_custody: PersistedCustody,
     genesis_validators_root: Option<B256>,
 
     spec: Arc<SpecConfig>,
@@ -106,7 +115,14 @@ impl StorageTile {
         data_store_dir: String,
         replay_from_disk: bool,
     ) -> Self {
-        let store = Store::load(data_store_dir, spec.clone(), custody_group_columns)
+        let persisted_custody = PersistedCustody::new(Path::new(&data_store_dir));
+        let custody_from_slot = persisted_custody
+            .load()
+            .expect("failed to load the persisted custody")
+            .map_or(0, |raised| raised.from_slot);
+        let custody =
+            CustodyChange { from_slot: custody_from_slot, columns: custody_group_columns };
+        let store = Store::load(data_store_dir, spec.clone(), custody)
             .expect("failed to load storage store");
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
         let replay_steps = if replay_from_disk {
@@ -126,6 +142,7 @@ impl StorageTile {
             delivery_producer,
             beacon_state,
             store,
+            persisted_custody,
             genesis_validators_root: None,
             spec,
             checkpointed_epoch,
@@ -137,6 +154,14 @@ impl StorageTile {
             peers_loaded: false,
             reader: TCacheReader::new(tcaches),
             persist_reader: TCacheReader::new(tcaches),
+        }
+    }
+
+    fn grow_custody(&mut self, from_slot: u64, custody_group_count: u64, columns: u128) {
+        self.store.grow_custody(from_slot, columns);
+        let raised = RaisedCustody { custody_group_count, from_slot };
+        if let Err(e) = self.persisted_custody.store(raised) {
+            silver_log::error!(?e, custody_group_count, "custody group count not persisted");
         }
     }
 
@@ -294,6 +319,9 @@ impl StorageTile {
         match event {
             BeaconStateEvent::Status { .. } => {
                 latest_status_event = Some(event);
+            }
+            BeaconStateEvent::CustodyChange { custody_group_count, columns, from_slot } => {
+                self.grow_custody(from_slot, custody_group_count, columns)
             }
             BeaconStateEvent::PersistBlock { ssz, source, slot, block_root: announced_root } => {
                 let t_read = self.persist_reader.acquire(ssz);
@@ -658,6 +686,23 @@ mod tests {
         tile.loop_body(&mut adapter);
         tile.loop_body(&mut adapter);
         assert!(producer.reserve(1024, false).is_some());
+    }
+
+    #[test]
+    fn custody_change_is_persisted_for_the_next_boot() {
+        let store_dir = format!("/tmp/test_storage_custody_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_dir);
+        let mut tile = empty_tile(&store_dir);
+
+        let change = BeaconStateEvent::CustodyChange {
+            custody_group_count: 16,
+            columns: 0b11,
+            from_slot: 64,
+        };
+        tile.handle_beacon_state_event(change, &mut |_| {});
+        let persisted = PersistedCustody::new(Path::new(&store_dir)).load().unwrap();
+        assert_eq!(persisted, Some(RaisedCustody { custody_group_count: 16, from_slot: 64 }));
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     /// Private scheduling state substitutes for a checkpoint writer here;

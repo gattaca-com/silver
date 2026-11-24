@@ -39,5 +39,11 @@ ARG BIN_ARCH=x86_64
 COPY --chmod=755 silver-linux-${BIN_ARCH} /usr/local/bin/silver
 COPY --chmod=755 silver_surfer-linux-${BIN_ARCH} /usr/local/bin/silver_surfer
 
+# The kurtosis launcher runs silver through `sh -c`, which distroless lacks.
+FROM gcr.io/distroless/cc-debian12:debug@sha256:bc3546a529388660b583cc85ca6559927652d54391dc8059419d7b4bf3921154 AS kurtosis
+ENV LOG_STDOUT=1
+ENTRYPOINT ["/usr/local/bin/silver"]
+COPY --from=builder /usr/local/bin/silver /usr/local/bin/silver_surfer /usr/local/bin/
+
 FROM runtime AS silver
 COPY --from=builder /usr/local/bin/silver /usr/local/bin/silver_surfer /usr/local/bin/

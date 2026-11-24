@@ -1325,7 +1325,7 @@ fn prefill(have_block: u32, columns_covered: u32, envelopes: u32) -> SyncNeed {
 }
 
 fn persisted(kind: DataKind, slot: u64, parent_slot: Option<u64>) -> SyncNeed {
-    SyncNeed::Persisted { kind, slot, columns: CUSTODY, parent_slot }
+    SyncNeed::Persisted { kind, slot, columns_covered: true, parent_slot }
 }
 
 fn column_mask(actions: &[SyncAction]) -> Option<u128> {
@@ -1936,4 +1936,17 @@ fn _envelope_arrival_covers_its_slot() {
     e.on_sync_need(SyncNeed::Arrived { root: [1; 32], slot: 1, kind: DataKind::Envelope }, now);
     drive_all(&mut e, now);
     assert_eq!(tail(&e), 1);
+}
+
+#[test]
+fn grown_custody_widens_live_column_requests() {
+    let now = Instant::now();
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 200);
+    local_status(&mut e, 0, 200);
+    advance(&mut e);
+    assert!(matches!(e.current_target(), Some(SyncUpdate::SyncingHead { .. })));
+
+    e.grow_custody(CUSTODY | 0b100);
+    assert_eq!(column_mask(&actions(&mut e, now, true)), Some(CUSTODY | 0b100));
 }

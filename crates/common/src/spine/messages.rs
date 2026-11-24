@@ -782,6 +782,9 @@ pub enum PeerEvent {
         address: SocketAddr,
         seq: u64,
     },
+    LocalEnr {
+        enr: Enr,
+    },
     /// A fully-validated inbound gossip message arrived (post-dedup). Carries
     /// the sending peer, topic, msg id (for promise/score accounting) and,
     /// above the IDONTWANT size threshold, a pre-encoded IDONTWANT protobuf
@@ -881,8 +884,8 @@ pub enum SyncNeed {
     Persisted {
         kind: DataKind,
         slot: u64,
-        /// Columns now on disk for `slot`.
-        columns: u128,
+        /// Every column owed for `slot` is on disk.
+        columns_covered: bool,
         /// A block's parent, proving the slots between the two empty. Missing
         /// when we do not hold the parent.
         parent_slot: Option<u64>,
@@ -1158,6 +1161,9 @@ pub enum PeerControl {
     UpdateEnrSyncnets {
         syncnets: u8,
     },
+    UpdateEnrCgc {
+        custody_group_count: u64,
+    },
     P2pGossipSubscribe {
         p2p: PeerId,
         p2p_connection: usize,
@@ -1352,6 +1358,11 @@ pub struct PtcObservation {
 #[repr(C)]
 pub enum BeaconStateEvent {
     ReplayComplete,
+    CustodyChange {
+        custody_group_count: u64,
+        columns: u128,
+        from_slot: u64,
+    },
     ProposedPayload(ProposedPayload),
     LocalGossipVerdict {
         hash: MessageId,
@@ -1757,6 +1768,7 @@ impl BeaconStateEvent {
             }
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
+            Self::CustodyChange { .. } |
             Self::ProposedPayload(_) |
             Self::LocalGossipVerdict { .. } |
             Self::BlockReceived { .. } |

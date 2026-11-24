@@ -24,6 +24,10 @@ pub const NUMBER_OF_CUSTODY_GROUPS: u8 = 128;
 /// the need for beyond-custody sampling.
 pub const SAMPLES_PER_SLOT: u8 = 8;
 
+pub const VALIDATOR_CUSTODY_REQUIREMENT: u64 = 8;
+
+pub const BALANCE_PER_ADDITIONAL_CUSTODY_GROUP: u64 = 32_000_000_000;
+
 /// Long-lived attestation subnets every node subscribes to (phase0 p2p).
 pub const SUBNETS_PER_NODE: usize = 2;
 

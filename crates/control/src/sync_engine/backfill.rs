@@ -65,13 +65,12 @@ impl Backfill {
         &mut self,
         kind: DataKind,
         slot: Slot,
-        columns: u128,
+        columns_covered: bool,
         parent_slot: Option<Slot>,
-        custody: u128,
     ) {
         match kind {
             DataKind::Block => self.window.block_received(slot, [0u8; 32], parent_slot, true),
-            DataKind::Columns if columns & custody == custody => self.window.columns_covered(slot),
+            DataKind::Columns if columns_covered => self.window.columns_covered(slot),
             DataKind::Columns => {}
             DataKind::Envelope => self.window.envelope_covered(slot),
         }

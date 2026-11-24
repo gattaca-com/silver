@@ -123,6 +123,9 @@ impl NetworkTile {
             PeerControl::UpdateEnrSyncnets { syncnets } => {
                 self.inner.discovery.update_enr_syncnets(syncnets)
             }
+            PeerControl::UpdateEnrCgc { custody_group_count } => {
+                self.inner.discovery.update_enr_cgc(custody_group_count)
+            }
             PeerControl::P2pDial { p2p, addr } => {
                 crate::NetworkCounters::DialAttempts.inc();
                 silver_log::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
@@ -259,6 +262,9 @@ impl NetworkTile {
                     DiscoveryEvent::ExternalAddrChanged(socket_addr, seq) => {
                         adapter
                             .produce(PeerEvent::DiscExternalAddress { address: socket_addr, seq });
+                    }
+                    DiscoveryEvent::LocalEnrChanged(enr) => {
+                        adapter.produce(PeerEvent::LocalEnr { enr });
                     }
                     _ => {} // no-ops
                 },

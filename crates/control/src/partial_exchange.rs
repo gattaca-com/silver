@@ -54,12 +54,12 @@ pub(crate) struct PartialExchange {
 impl PartialExchange {
     pub fn new(
         config: &CellStoreConfig,
+        custody: u128,
         slot: u64,
         now: Instant,
         mode: PartialColumnsMode,
     ) -> Self {
-        let peer_capacity = config.column_capacity().max(16);
-        let capacity = (peer_capacity * 32).min(8192);
+        let (capacity, peer_capacity) = Self::capacities(config, custody);
         Self {
             exchanges: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             peer_exchanges: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
@@ -70,10 +70,24 @@ impl PartialExchange {
             untrusted: 0,
             trusted_roots: Vec::with_capacity(config.live_blocks()),
             max_rows: config.max_blobs(),
-            columns: config.columns(),
+            columns: custody,
             slot,
             next_heartbeat: now,
-            acquisition: mode.requests().then(|| Acquisition::new(config, slot, now)),
+            acquisition: mode.requests().then(|| Acquisition::new(config, custody, slot, now)),
+        }
+    }
+
+    fn capacities(config: &CellStoreConfig, custody: u128) -> (usize, usize) {
+        let peer_capacity = config.column_capacity(custody).max(16);
+        ((peer_capacity * 32).min(8192), peer_capacity)
+    }
+
+    pub fn grow_custody(&mut self, config: &CellStoreConfig, columns: u128) {
+        (self.capacity, self.peer_capacity) = Self::capacities(config, columns);
+        self.headers.grow_capacity(self.capacity);
+        self.columns = columns;
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.grow_custody(columns);
         }
     }
 

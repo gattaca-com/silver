@@ -13,7 +13,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineFcuResp, EngineGetPayloadResp,
     EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
-    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, NodeId, P2pStreamId, PayloadResolution,
     PayloadValidationStatus, PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation,
     StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer,
     block_root_fulu,
@@ -149,6 +149,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         CheckpointState::Trusted(BeaconState::empty_test(0)),
         None,
         EngineConfig::default().get_payload_timeout(),
+        ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
     );
     tile.open_tcaches().unwrap();
     tile
@@ -192,6 +193,7 @@ fn make_tile_with_producers(
         CheckpointState::Trusted(state),
         None,
         EngineConfig::default().get_payload_timeout(),
+        ValidatorCustody::new(NodeId::new(&[0; 32]), 8),
     );
     tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, delivery_p)
@@ -7526,4 +7528,34 @@ fn gloas_head_on_a_pending_full_parent_payload_is_optimistic_until_that_verdict(
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
     assert_eq!(rig.crank().last_head(), b(false));
+}
+
+#[test]
+fn attached_validators_raise_custody_at_the_epoch_boundary() {
+    let (mut tile, _gossip, _rpc, mut spine, mut adapter) = tile_with_producers(30);
+    seed_tile(&mut tile, 16, 30);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    for index in 0..16 {
+        register_proposer(&mut tile, index, [0; 20]);
+    }
+
+    let custody_changes = |sink: &mut SpineAdapter<SilverSpine>| -> Vec<(u64, u32, Slot)> {
+        Published::drain(sink)
+            .0
+            .into_iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::CustodyChange { custody_group_count, columns, from_slot } => {
+                    Some((custody_group_count, columns.count_ones(), from_slot))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    tile.slot_tick(31, &mut adapter.producers);
+    assert!(custody_changes(&mut sink).is_empty(), "checked only at an epoch start");
+    tile.slot_tick(32, &mut adapter.producers);
+    assert_eq!(custody_changes(&mut sink), [(16, 16, 64)]);
+    tile.slot_tick(64, &mut adapter.producers);
+    assert!(custody_changes(&mut sink).is_empty(), "announced once");
 }

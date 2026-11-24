@@ -80,6 +80,13 @@ impl EngineApi {
         }
     }
 
+    pub fn grow_custody(&mut self, columns: u128) {
+        if let Some(custody) = &mut self.custody_columns {
+            assert!(*custody & !columns == 0, "custody only grows");
+            *custody = columns;
+        }
+    }
+
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
         self.reader.open(
             TCacheId::ControlProcessing,

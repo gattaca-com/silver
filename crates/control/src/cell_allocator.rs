@@ -2,12 +2,13 @@ use std::time::{Duration, Instant};
 
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
-    ForkName, GossipDomain, SLOTS_PER_EPOCH, SubLayout, SubReservationError, SubReservationList,
-    TCacheProducer, TCacheRead, TProducer,
+    Custody, ForkName, GossipDomain, SLOTS_PER_EPOCH, SubLayout, SubReservationError,
+    SubReservationList, TCacheProducer, TCacheRead, TProducer,
     cell_store::{
         AssemblyRequest, AssemblySet, CellKey, CellStoreConfig, ColumnRef, CommitmentContext,
         PendingCell, RetentionEvent, StoreError,
     },
+    column_util::column_position,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -18,6 +19,7 @@ use silver_common::{
 pub struct CellAllocator {
     producer: TProducer,
     config: CellStoreConfig,
+    custody: Custody,
     allocations: FxHashMap<[u8; 32], Allocation>,
     provisional_peers: FxHashSet<usize>,
     provisional_count: usize,
@@ -42,6 +44,7 @@ impl CellAllocator {
 
     pub fn new(
         config: CellStoreConfig,
+        custody: u128,
         producer: TProducer,
         slot: u64,
         slot_start: Instant,
@@ -49,6 +52,7 @@ impl CellAllocator {
         if producer.cache_ref().capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
+        let custody = config.custody(custody)?;
         // Cells are addressed and re-emitted for as long as their slot is
         // retained, so the retention boundary is this producer's floor.
         let mut producer = producer;
@@ -69,6 +73,7 @@ impl CellAllocator {
             min_slot: 0,
             producer,
             config,
+            custody,
         })
     }
 
@@ -83,8 +88,17 @@ impl CellAllocator {
         (self.slot, self.slot_end)
     }
 
+    pub(super) fn config(&self) -> &CellStoreConfig {
+        &self.config
+    }
+
+    pub fn grow_custody(&mut self, from_slot: u64, columns: u128) -> bool {
+        assert!(columns & !self.config.layout() == 0, "custody outside the layout");
+        self.custody.grow(from_slot, columns)
+    }
+
     pub(super) fn handles_column(&self, column: usize) -> bool {
-        self.config.column_position(column).is_some()
+        column_position(self.custody.current(), column).is_some()
     }
 
     pub(super) fn max_blobs_at(&self, slot: u64) -> usize {
@@ -108,7 +122,7 @@ impl CellAllocator {
         if context.slot > self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
-        if request.columns != self.config.columns() ||
+        if request.columns != self.custody.at(context.slot) ||
             request.domain.format() != context.format ||
             !matches!(context.format, ForkName::Fulu | ForkName::Gloas) ||
             self.config.spec().fork_at_slot(context.slot) != context.format ||
@@ -134,7 +148,8 @@ impl CellAllocator {
         if context.slot != self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
-        let request = AssemblyRequest { id: 0, context, domain, columns: self.config.columns() };
+        let request =
+            AssemblyRequest { id: 0, context, domain, columns: self.custody.at(context.slot) };
         self.check_request(request)?;
         if let Some(allocation) = self.allocations.get_mut(&context.block_root) {
             let matches = allocation.set.request.context == context &&
@@ -240,7 +255,8 @@ impl CellAllocator {
             } else {
                 (DATA_COLUMN_SIDECAR_GLOAS_MIN, 0)
             };
-            for reference in &mut references[..self.config.column_indices().len()] {
+            let columns = request.columns.count_ones() as usize;
+            for reference in &mut references[..columns] {
                 *reference = Some(self.producer.uninitialized_sub_reservation(
                     SubLayout {
                         parts: context.blob_count,
@@ -253,7 +269,7 @@ impl CellAllocator {
             }
             let reservations = SubReservationList::write(
                 &mut self.producer,
-                references[..self.config.column_indices().len()].iter().copied(),
+                references[..columns].iter().copied(),
             )?;
             Ok(AssemblySet { request, reservations, header, expires: self.slot_end })
         })();
@@ -279,7 +295,7 @@ impl CellAllocator {
         if key.row >= set.request.context.blob_count || set.request.context.slot < self.min_slot {
             return None;
         }
-        let position = self.config.column_position(key.column)?;
+        let position = column_position(set.request.columns, key.column)?;
         let reservation = set.reservations.view(&self.producer).ok()?.nth(position)?;
         Some(ColumnRef {
             block_root: key.block_root,

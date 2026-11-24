@@ -15,8 +15,8 @@ pub use builder::Error;
 use bytes::{Buf, BytesMut};
 use flux::type_hash_derive::TypeHash;
 pub use node_id::{
-    EPOCHS_PER_SUBNET_SUBSCRIPTION, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
-    SUBNETS_PER_NODE, attnet_subnets,
+    BALANCE_PER_ADDITIONAL_CUSTODY_GROUP, EPOCHS_PER_SUBNET_SUBSCRIPTION, NUMBER_OF_CUSTODY_GROUPS,
+    NodeId, SAMPLES_PER_SLOT, SUBNETS_PER_NODE, VALIDATOR_CUSTODY_REQUIREMENT, attnet_subnets,
 };
 use secp256k1::{PublicKey, SECP256K1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -172,6 +172,10 @@ impl Enr {
 
     pub fn set_syncnets(&mut self, syncnets: u8, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.syncnets = Some(syncnets))
+    }
+
+    pub fn set_cgc(&mut self, cgc: u64, key: &SecretKey) -> Result<u64, Error> {
+        self.apply(key, |enr| enr.cgc = Some(cgc))
     }
 
     /// Always returns `Some("v4")` — this implementation only supports the v4

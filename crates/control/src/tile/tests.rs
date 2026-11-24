@@ -146,7 +146,7 @@ impl GossipPublications {
                 let ingress = self
                     .controller
                     .cell_ingress
-                    .insert(CellIngress::new(config, producer, 9, Instant::now()).unwrap());
+                    .insert(CellIngress::new(config, 1 << 5, producer, 9, Instant::now()).unwrap());
                 (
                     write_bytes(ingress.producer_mut(), bytes),
                     SszCache::DataColumns,

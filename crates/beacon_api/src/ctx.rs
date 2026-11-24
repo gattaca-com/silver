@@ -23,12 +23,13 @@ use crate::{
         response::Response,
         router::Request,
     },
-    node::{identity::identity_body, peers::PeerTable},
+    node::{identity::Identity, peers::PeerTable},
     validator::shufflings::PostedShufflings,
 };
 
 pub(crate) struct ApiCtx {
     pub(crate) statics: StaticBodies,
+    pub(crate) identity: Identity,
     pub(crate) spec: SpecConfig,
     pub(crate) state: BeaconStateReader,
     pub(crate) node_status: NodeStatus,
@@ -64,7 +65,8 @@ impl ApiCtx {
             })
             .expect("beacon api needs the anchor state published");
         Self {
-            statics: StaticBodies::new(keypair, local_enr, identify, spec),
+            statics: StaticBodies::new(spec),
+            identity: Identity::new(keypair, local_enr, identify),
             spec: spec.clone(),
             state,
             node_status: NodeStatus::at_anchor(anchor_header.slot, anchor_root, anchor_epoch),
@@ -210,7 +212,6 @@ pub(crate) fn read_flags(node_status: NodeStatus, view: &StateReadView<'_>) -> R
 }
 
 pub(crate) struct StaticBodies {
-    pub(crate) identity: Vec<u8>,
     pub(crate) version: Vec<u8>,
     pub(crate) spec: Vec<u8>,
     pub(crate) fork_schedule: Vec<u8>,
@@ -218,14 +219,8 @@ pub(crate) struct StaticBodies {
 }
 
 impl StaticBodies {
-    pub(crate) fn new(
-        keypair: &Keypair,
-        local_enr: &Enr,
-        identify: &Identify,
-        spec: &SpecConfig,
-    ) -> Self {
+    pub(crate) fn new(spec: &SpecConfig) -> Self {
         Self {
-            identity: identity_body(keypair, local_enr, identify),
             version: version_body(),
             spec: spec_body(spec),
             fork_schedule: fork_schedule_body(spec),

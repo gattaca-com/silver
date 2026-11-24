@@ -28,6 +28,10 @@ impl HeaderTracker {
         }
     }
 
+    pub fn grow_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity;
+    }
+
     fn key(peer: usize, group: ColumnGroupKey) -> HeaderKey {
         HeaderKey { peer, domain: group.domain, root: group.block_root }
     }

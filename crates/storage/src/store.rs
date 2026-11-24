@@ -9,9 +9,9 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PayloadResolution, PeerEvent,
-    RpcOutbound, RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate,
-    TCacheRead, TCacheReader, TRead,
+    BeaconApiResponse, BlockLookup, CustodyChange, Enr, P2pSend, P2pStreamId, PayloadResolution,
+    PeerEvent, RpcOutbound, RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock,
+    SyncUpdate, TCacheRead, TCacheReader, TRead,
     merkle::B256,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
@@ -449,10 +449,14 @@ pub(super) struct Store {
 }
 
 impl Store {
+    pub(super) fn grow_custody(&mut self, from_slot: u64, columns: u128) {
+        self.finalized.grow_custody(from_slot, columns);
+    }
+
     pub(super) fn load(
         store_dir: String,
         spec: Arc<SpecConfig>,
-        custody: u128,
+        custody: CustodyChange,
     ) -> Result<Self, Error> {
         // Try to create dirs if they do not exist.
         if !std::fs::exists(&store_dir)? {
@@ -719,7 +723,7 @@ impl Store {
                     block,
                     columns_on_disk: self
                         .unfinalized_columns
-                        .has_full_custody(block_root, self.finalized.custody()),
+                        .has_full_custody(block_root, self.finalized.custody().at(slot)),
                     envelope,
                 });
             }

@@ -25,9 +25,11 @@ mod block_root;
 mod builder_bid;
 pub mod cell_store;
 pub mod column_util;
+mod custody;
 mod enr;
 mod error;
 mod payload_frame;
+mod persisted_custody;
 mod request;
 pub mod rpc_rate_limit;
 mod tape_scratch;
@@ -44,8 +46,10 @@ mod node_chain;
 mod spine;
 pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};
 pub use builder_bid::{BuilderBid, BuilderTerms};
+pub use custody::{Custody, CustodyChange};
 pub use node_chain::NodeChain;
 pub use payload_frame::PayloadFrame;
+pub use persisted_custody::{PersistedCustody, RaisedCustody};
 pub use silver_beacon_state_data::{
     EPOCHS_PER_SYNC_COMMITTEE_PERIOD, FAR_FUTURE_EPOCH, ForkName, SLOTS_PER_EPOCH,
 };
@@ -62,8 +66,9 @@ mod wheel;
 mod wither;
 
 pub use enr::{
-    EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
-    SUBNETS_PER_NODE, attnet_subnets,
+    BALANCE_PER_ADDITIONAL_CUSTODY_GROUP, EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr,
+    NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT, SUBNETS_PER_NODE,
+    VALIDATOR_CUSTODY_REQUIREMENT, attnet_subnets,
 };
 pub use flux::timing::{IngestionTime, Nanos};
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};
