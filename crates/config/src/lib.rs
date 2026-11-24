@@ -309,6 +309,14 @@ impl Config {
             )));
         }
         config.apply(overrides);
+        if config.surround_epochs.is_some_and(|epochs| epochs > 0) &&
+            !config.subscribes_all_attestation_subnets()
+        {
+            silver_log::warn!(
+                surround_epochs = config.surround_epochs,
+                "surround detection without all 64 attestation subnets is unreliable"
+            );
+        }
         Ok(config)
     }
 
@@ -550,8 +558,9 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use std::{ops::Range, path::Path};
+    use std::{fs, ops::Range, path::Path};
 
+    use silver_log::counts;
     use tempfile::TempDir;
 
     use super::*;
@@ -597,6 +606,37 @@ mod tests {
         assert_eq!(config(explicit).surround_epochs(), 3);
         let explicit = "surround_epochs = 0\nattestation_subnet_count = 64";
         assert_eq!(config(explicit).surround_epochs(), 0);
+    }
+
+    /// Counts the warning's callsite in a per-process log counters file, as
+    /// `silver_log`'s own test does.
+    #[test]
+    fn surround_detection_warns_only_without_all_attestation_subnets() {
+        let app = format!("silver-config-test-{}", std::process::id());
+        counts::enable(&app).unwrap();
+        let names = counts::LogName::read(&counts::names_path(&app)).unwrap();
+        let site = names
+            .iter()
+            .position(|n| n.file == file!() && n.template.starts_with("surround detection"))
+            .unwrap();
+        let warnings = || {
+            let counters = fs::read(counts::counters_path(&app)).unwrap();
+            u64::from_le_bytes(counters[site * 8..site * 8 + 8].try_into().unwrap())
+        };
+
+        for (toml, warns) in [
+            ("surround_epochs = 1\nattestation_subnet_count = 63", true),
+            ("surround_epochs = 1\nattestation_subnet_count = 64", false),
+            ("surround_epochs = 0\nattestation_subnet_count = 2", false),
+            ("attestation_subnet_count = 2", false),
+        ] {
+            let before = warnings();
+            Config::from_toml(toml, Overrides::default()).unwrap();
+            assert_eq!(warnings() - before, u64::from(warns), "{toml}");
+        }
+
+        let counters = counts::counters_path(&app);
+        fs::remove_dir_all(counters.ancestors().find(|dir| dir.ends_with(&app)).unwrap()).unwrap();
     }
 
     #[test]
