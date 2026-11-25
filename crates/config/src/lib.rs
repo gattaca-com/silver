@@ -602,8 +602,6 @@ mod tests {
         };
         assert_eq!(listed(0..64), 1);
         assert_eq!(listed(1..64), 0);
-        let explicit = "surround_epochs = 3\nattestation_subnet_count = 2";
-        assert_eq!(config(explicit).surround_epochs(), 3);
         let explicit = "surround_epochs = 0\nattestation_subnet_count = 64";
         assert_eq!(config(explicit).surround_epochs(), 0);
     }
@@ -634,6 +632,8 @@ mod tests {
             Config::from_toml(toml, Overrides::default()).unwrap();
             assert_eq!(warnings() - before, u64::from(warns), "{toml}");
         }
+        let explicit = "surround_epochs = 3\nattestation_subnet_count = 2";
+        assert_eq!(Config::from_toml(explicit, Overrides::default()).unwrap().surround_epochs(), 3);
 
         let counters = counts::counters_path(&app);
         fs::remove_dir_all(counters.ancestors().find(|dir| dir.ends_with(&app)).unwrap()).unwrap();
