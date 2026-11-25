@@ -11,8 +11,8 @@ pub struct ClientVersion {
 }
 
 impl ClientVersion {
-    pub fn silver(commit: &str) -> Self {
-        Self::parse("SV", commit).expect("SV is a client code")
+    pub const fn silver(commit: &str) -> Self {
+        Self { code: *b"SV", commit: commit_hex(commit) }
     }
 
     /// `None` for a code that is not two ASCII letters.
@@ -21,12 +21,7 @@ impl ClientVersion {
         if !code.iter().all(u8::is_ascii_alphabetic) {
             return None;
         }
-        let mut hex = [b'0'; 8];
-        let digits = commit.strip_prefix("0x").unwrap_or(commit).bytes();
-        for (slot, digit) in hex.iter_mut().zip(digits.take_while(u8::is_ascii_hexdigit)) {
-            *slot = digit.to_ascii_lowercase();
-        }
-        Some(Self { code, commit: hex })
+        Some(Self { code, commit: commit_hex(commit) })
     }
 
     pub fn code_str(&self) -> &str {
@@ -36,6 +31,18 @@ impl ClientVersion {
     pub fn commit_str(&self) -> &str {
         str::from_utf8(&self.commit).expect("ascii hex")
     }
+}
+
+const fn commit_hex(commit: &str) -> [u8; 8] {
+    let bytes = commit.as_bytes();
+    let start = if bytes.len() >= 2 && bytes[0] == b'0' && bytes[1] == b'x' { 2 } else { 0 };
+    let mut hex = [b'0'; 8];
+    let mut i = 0;
+    while i < hex.len() && start + i < bytes.len() && bytes[start + i].is_ascii_hexdigit() {
+        hex[i] = bytes[start + i].to_ascii_lowercase();
+        i += 1;
+    }
+    hex
 }
 
 #[cfg(test)]

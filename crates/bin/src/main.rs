@@ -83,6 +83,8 @@ const BUILD_INFO: &str = concat!(
     build_info::format!(" · v{} · {}", $.crate_info.version, $.timestamp)
 );
 
+const CLIENT_VERSION: ClientVersion = ClientVersion::silver(env!("SILVER_BUILD_COMMIT"));
+
 fn publish_build_info() -> io::Result<()> {
     let dir = shmem_dir_queues(APP_NAME);
     std::fs::create_dir_all(&dir)?;
@@ -396,7 +398,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.builder_bid_timeout(),
         tcaches,
         boundary_processing_producer,
-        ClientVersion::silver(env!("SILVER_BUILD_COMMIT")),
+        CLIENT_VERSION,
     );
 
     #[cfg(feature = "metrics")]
