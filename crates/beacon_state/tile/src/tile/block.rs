@@ -260,7 +260,7 @@ impl BeaconStateTile {
         self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
         producers.produce(BeaconStateEvent::PersistBlock { ssz, source, slot, block_root });
 
-        producers.produce(EngineReq::Fcu(self.fork_choice_update()));
+        self.send_fcu(producers);
 
         self.promote_unknown_root_votes(producers);
         self.drain_pending_envelope(block_root, slot, producers);
@@ -269,6 +269,21 @@ impl BeaconStateTile {
 
         self.replay_orphans(block_root, producers);
         self.precompute_for_next_block();
+    }
+
+    fn send_fcu(&mut self, producers: &mut Producers) {
+        let fcu = self.fork_choice_update();
+        self.sent_fcu = Some(forkchoice_hashes(&fcu));
+        producers.produce(EngineReq::Fcu(fcu));
+    }
+
+    pub(super) fn send_fcu_on_change(&mut self, producers: &mut Producers) {
+        let fcu = self.fork_choice_update();
+        let hashes = Some(forkchoice_hashes(&fcu));
+        if self.sent_fcu != hashes {
+            self.sent_fcu = hashes;
+            producers.produce(EngineReq::Fcu(fcu));
+        }
     }
 
     pub(super) fn fork_choice_update(&self) -> EngineFcuReq {
@@ -945,4 +960,8 @@ impl BeaconStateTile {
         }
         if full { Ok(PayloadStatus::Full) } else { Ok(PayloadStatus::Empty) }
     }
+}
+
+fn forkchoice_hashes(fcu: &EngineFcuReq) -> [B256; 3] {
+    [fcu.head_block_hash, fcu.safe_block_hash, fcu.finalized_block_hash]
 }

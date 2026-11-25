@@ -374,6 +374,30 @@ fn envelope_the_el_rejects_does_not_shut_out_the_real_one() {
     assert_eq!(rig.tile.fork_choice.node(idx).execution_status, ExecutionStatus::Valid);
 }
 
+/// Under Gloas the payload arrives after its block, so the block's import
+/// cannot tell the EL its payload is the head.
+#[test]
+fn head_change_updates_el_forkchoice_once() {
+    let (mut rig, signed, _) = ProductionRig::self_build_for_publication(0);
+    let root = *ExecutionPayloadEnvelopeView::beacon_block_root(
+        SignedExecutionPayloadEnvelopeView::message(&signed),
+    );
+
+    assert_eq!(rig.gossip_envelope(&signed), Feedback::Accept);
+    engine_requests(&mut rig.sink);
+    rig.new_payload_verdict(root, PayloadValidationStatus::Valid);
+    rig.tile.announce_head_change(&mut rig.adapter.producers);
+
+    let [EngineReq::Fcu(fcu)] = engine_requests(&mut rig.sink)[..] else {
+        panic!("expected one forkchoiceUpdated");
+    };
+    assert_eq!(fcu.block_root, root);
+
+    rig.tile.recompute_head(|_| {});
+    rig.tile.announce_head_change(&mut rig.adapter.producers);
+    assert!(engine_requests(&mut rig.sink).is_empty(), "unchanged head resent");
+}
+
 /// Storage, sync and the API learn of an envelope only once the EL has not
 /// rejected it, so a forged body is never persisted or served.
 #[test]
