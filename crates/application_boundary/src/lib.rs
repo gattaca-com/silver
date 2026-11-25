@@ -14,9 +14,10 @@ use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 #[cfg(feature = "metrics")]
 use silver_common::SLOTS_PER_EPOCH;
 use silver_common::{
-    BeaconApiResponse, BeaconStateEvent, BuilderBidsRequest, BuilderBidsResponse, DataColumnsEvent,
-    EngineResp, Enr, Identify, Keypair, PeerEvent, SidecarBidRequest, SidecarBidResponse,
-    SilverSpine, SyncUpdate, TCacheError, TCacheProducer, TCacheTable, TProducer,
+    BeaconApiResponse, BeaconStateEvent, BuilderBidsRequest, BuilderBidsResponse, ClientVersion,
+    DataColumnsEvent, EngineResp, Enr, Identify, Keypair, PeerEvent, SidecarBidRequest,
+    SidecarBidResponse, SilverSpine, SyncUpdate, TCacheError, TCacheProducer, TCacheTable,
+    TProducer,
 };
 use silver_config::{EngineConfig, PbsConfig};
 use silver_engine_api::EngineApi;
@@ -159,6 +160,7 @@ impl ApplicationBoundaryTile {
         builder_bid_timeout: Duration,
         tcaches: TCacheTable,
         processing: TProducer,
+        version: ClientVersion,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
@@ -199,6 +201,7 @@ impl ApplicationBoundaryTile {
             state,
             has_sidecar,
             tcaches,
+            version,
         );
         let engine = EngineApi::new(
             readiness.registry(),
@@ -206,6 +209,7 @@ impl ApplicationBoundaryTile {
             engine_config,
             tcaches,
             custody_columns,
+            version,
         );
         let builder_bids =
             BuilderBids::new(readiness.registry(), BUILDER_TOKENS, builder_bid_timeout);
@@ -293,5 +297,6 @@ impl ApplicationBoundaryTile {
         });
 
         beacon.set_el_sync_status(engine.sync_status());
+        beacon.set_el_version(engine.el_version());
     }
 }

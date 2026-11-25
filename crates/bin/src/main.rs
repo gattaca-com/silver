@@ -23,7 +23,7 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES,
+    APP_NAME, ClientVersion, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES,
     PersistedCustody, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader,
     TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
@@ -82,6 +82,8 @@ const BUILD_INFO: &str = concat!(
     env!("SILVER_BUILD_COMMIT"),
     build_info::format!(" · v{} · {}", $.crate_info.version, $.timestamp)
 );
+
+const CLIENT_VERSION: ClientVersion = ClientVersion::silver(env!("SILVER_BUILD_COMMIT"));
 
 fn publish_build_info() -> io::Result<()> {
     let dir = shmem_dir_queues(APP_NAME);
@@ -396,6 +398,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.builder_bid_timeout(),
         tcaches,
         boundary_processing_producer,
+        CLIENT_VERSION,
     );
 
     #[cfg(feature = "metrics")]

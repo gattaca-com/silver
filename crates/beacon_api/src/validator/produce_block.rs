@@ -36,7 +36,7 @@ pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     resp.defer(Outcome::AwaitingProducedBlock(ProduceBlockRequest {
         slot,
         randao_reveal,
-        graffiti,
+        graffiti: ctx.graffiti.stamp(graffiti),
         bid_policy,
         builder_config: None,
         include_payload: true,
@@ -76,7 +76,7 @@ pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     resp.defer(Outcome::AwaitingProducedBlock(ProduceBlockRequest {
         slot,
         randao_reveal,
-        graffiti,
+        graffiti: ctx.graffiti.stamp(graffiti),
         bid_policy,
         builder_config,
         include_payload,
@@ -359,11 +359,17 @@ mod tests {
         assert_eq!(status_code(&out), "400");
     }
 
+    fn zero_padded(text: &[u8]) -> [u8; 32] {
+        let mut padded = [0; 32];
+        padded[..text.len()].copy_from_slice(text);
+        padded
+    }
+
     #[test]
-    fn graffiti_defaults_to_zero() {
+    fn missing_graffiti_carries_only_the_client_version() {
         let (outcome, _) = get(&randao(), Some(SSZ_MEDIA_TYPE));
         let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
-        assert_eq!(request.graffiti, [0; 32]);
+        assert_eq!(request.graffiti, zero_padded(b"SV0000"));
     }
 
     #[test]
@@ -374,12 +380,10 @@ mod tests {
     }
 
     #[test]
-    fn short_graffiti_is_zero_padded() {
+    fn short_graffiti_is_zero_padded_after_the_client_version() {
         let (outcome, _) = get(&format!("{}&graffiti=0x6869", randao()), Some(SSZ_MEDIA_TYPE));
         let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
-        let mut expected = [0; 32];
-        expected[..2].copy_from_slice(b"hi");
-        assert_eq!(request.graffiti, expected);
+        assert_eq!(request.graffiti, zero_padded(b"hi SV0000"));
     }
 
     #[test]

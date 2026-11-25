@@ -8,7 +8,7 @@ use silver_beacon_state_data::{
 };
 #[cfg(test)]
 use silver_common::SyncUpdate;
-use silver_common::{Enr, Identify, Keypair};
+use silver_common::{ClientVersion, Enr, Identify, Keypair};
 
 use crate::{
     NodeStatus,
@@ -24,7 +24,7 @@ use crate::{
         router::Request,
     },
     node::{identity::Identity, peers::PeerTable},
-    validator::shufflings::PostedShufflings,
+    validator::{graffiti::Graffiti, shufflings::PostedShufflings},
 };
 
 pub(crate) struct ApiCtx {
@@ -42,6 +42,7 @@ pub(crate) struct ApiCtx {
     genesis_validators_root: B256,
     pub(crate) produced_body: ProducedBody,
     pub(crate) genesis_block: Option<GenesisBlock>,
+    pub(crate) graffiti: Graffiti,
 }
 
 impl ApiCtx {
@@ -52,6 +53,7 @@ impl ApiCtx {
         spec: &SpecConfig,
         state: BeaconStateReader,
         has_sidecar: bool,
+        version: ClientVersion,
     ) -> Self {
         let (anchor_header, anchor_root, anchor_epoch, genesis_validators_root) = state
             .read(|view: StateReadView<'_>| {
@@ -79,6 +81,7 @@ impl ApiCtx {
             genesis_validators_root,
             produced_body: ProducedBody::default(),
             genesis_block: GenesisBlock::at_anchor(anchor_root, anchor_header),
+            graffiti: Graffiti::new(version),
         }
     }
 
@@ -241,7 +244,8 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
     let enr = Enr::builder().build(keypair.secret_key()).unwrap();
     let mut identify = Identify::default();
     identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
-    let mut ctx = ApiCtx::new(&keypair, &enr, &identify, spec, state, false);
+    let mut ctx =
+        ApiCtx::new(&keypair, &enr, &identify, spec, state, false, ClientVersion::silver(""));
     ctx.node_status.target = Some(SyncUpdate::Following);
     ctx
 }
