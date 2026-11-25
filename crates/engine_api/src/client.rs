@@ -2,7 +2,7 @@ use std::{convert::Infallible, path::PathBuf, time::Duration};
 
 use mio::{Events, Registry};
 use rustc_hash::FxHashMap;
-use silver_common::merkle::B256;
+use silver_common::{ClientVersion, merkle::B256};
 use silver_httpcore::{
     BufferCapacity, ClientRequest, Endpoint, HttpPool, IDLE_TIMEOUT, MAX_RESPONSE, Method,
     TokenRange,
@@ -366,13 +366,16 @@ pub fn exchange_capabilities(c: &mut EngineClient) {
     c.pending_requests.insert(id, ReqKind::Capabilities);
 }
 
-pub fn get_client_version(c: &mut EngineClient) {
-    // Spec: params = [ClientVersionV1] with required fields
-    // code/name/version/commit.
+pub fn get_client_version(c: &mut EngineClient, ours: &ClientVersion) {
     let (id, body) = make_rpc_body(
         &mut c.id,
         "engine_getClientVersionV1",
-        simd_json::json!([{"code": "GE", "name": "silver", "version": "0.1.0", "commit": "00000000"}]),
+        simd_json::json!([{
+            "code": ours.code_str(),
+            "name": "Silver",
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": format!("0x{}", ours.commit_str()),
+        }]),
     );
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::ClientVersion);

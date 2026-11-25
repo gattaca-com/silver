@@ -2,9 +2,10 @@ use flux::spine::SpineAdapter;
 use flux_profiler::timed;
 use serde::Deserialize;
 use silver_common::{
-    ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp, EngineHealthEvent,
-    EngineNewPayloadResp, EnginePreparePayloadResp, EngineResp, PayloadValidationStatus,
-    SilverSpine, TCacheProducer, TCacheRead, TProducer, TapeScratch, merkle::B256,
+    ClientVersion, ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp,
+    EngineHealthEvent, EngineNewPayloadResp, EnginePreparePayloadResp, EngineResp,
+    PayloadValidationStatus, SilverSpine, TCacheProducer, TCacheRead, TProducer, TapeScratch,
+    merkle::B256,
 };
 use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
@@ -70,38 +71,37 @@ pub(crate) fn handle_capabilities_response(response: Result<&mut [u8], EngineErr
 }
 
 #[inline]
-pub(crate) fn handle_client_version_response(response: Result<&mut [u8], EngineError>) {
+pub(crate) fn handle_client_version_response(
+    response: Result<&mut [u8], EngineError>,
+) -> Option<ClientVersion> {
     let raw = match response {
         Err(e) => {
             silver_log::warn!("engine_getClientVersionV1 failed: {e}");
-            return;
+            return None;
         }
         Ok(b) => b,
     };
     let val = match simd_json::to_borrowed_value(raw) {
         Err(e) => {
             silver_log::warn!("engine_getClientVersionV1 failed: {e}");
-            return;
+            return None;
         }
         Ok(v) => v,
     };
     if let Some(err) = val.get("error") {
         silver_log::warn!("engine_getClientVersionV1 rpc error: {err}");
-        return;
+        return None;
     }
-    let result = match val.get("result") {
-        None => return,
-        Some(v) => v,
-    };
-    if let Some(client) = result.as_array().and_then(|a| a.first()) {
-        let name = client
-            .get("clientName")
-            .or_else(|| client.get("name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let version = client.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-        silver_log::info!("EL client {name} {version}");
-    }
+    let client = val.get("result")?.as_array()?.first()?;
+    let name = client
+        .get("clientName")
+        .or_else(|| client.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let version = client.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+    silver_log::info!("EL client {name} {version}");
+    let code = client.get("code").and_then(|v| v.as_str())?;
+    ClientVersion::parse(code, client.get("commit").and_then(|v| v.as_str()).unwrap_or(""))
 }
 
 pub(crate) struct Responses<'a> {

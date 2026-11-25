@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use flux::spine::SpineAdapter;
 use mio::{Events, Registry};
 use silver_common::{
-    ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TCacheError, TCacheId, TCacheReader,
-    TCacheTable, TProducer, TReadMode, TapeScratch, TileId,
+    ClientVersion, ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TCacheError, TCacheId,
+    TCacheReader, TCacheTable, TProducer, TReadMode, TapeScratch, TileId,
 };
 use silver_config::EngineConfig;
 use silver_httpcore::TokenRange;
@@ -35,6 +35,8 @@ pub struct EngineApi {
     healthcheck_pending: bool,
     healthcheck_deadline: Instant,
     sync_status: ELSyncStatus,
+    version: ClientVersion,
+    el_version: Option<ClientVersion>,
 }
 
 impl EngineApi {
@@ -50,6 +52,7 @@ impl EngineApi {
         config: EngineConfig,
         tcaches: TCacheTable,
         custody_columns: Option<u128>,
+        version: ClientVersion,
     ) -> Self {
         let client = if config.unsafe_no_el {
             silver_log::warn!(
@@ -77,6 +80,8 @@ impl EngineApi {
             sync_status: ELSyncStatus::Unknown,
             scratch: TapeScratch::new(FRAME_SLACK),
             custody_columns,
+            version,
+            el_version: None,
         }
     }
 
@@ -107,6 +112,10 @@ impl EngineApi {
     /// first healthcheck completes.
     pub fn sync_status(&self) -> ELSyncStatus {
         self.sync_status
+    }
+
+    pub fn el_version(&self) -> Option<ClientVersion> {
+        self.el_version
     }
 
     pub fn intake(
@@ -169,6 +178,8 @@ impl EngineApi {
                 healthcheck_pending,
                 healthcheck_deadline,
                 sync_status,
+                version,
+                el_version,
                 ..
             } = self;
             let Some(client) = client.as_mut() else { return };
@@ -177,13 +188,19 @@ impl EngineApi {
                 Instant::now() >= *healthcheck_deadline &&
                 client.has_capacity()
             {
-                run_healthcheck(client, first_run, healthcheck_pending, healthcheck_deadline);
+                run_healthcheck(
+                    client,
+                    version,
+                    first_run,
+                    healthcheck_pending,
+                    healthcheck_deadline,
+                );
             }
 
             let mut out = Responses::new(adapter, resp_producer, scratch);
             client.dispatch(events, |req_kind, response| match req_kind {
                 ReqKind::Capabilities => handle_capabilities_response(response),
-                ReqKind::ClientVersion => handle_client_version_response(response),
+                ReqKind::ClientVersion => *el_version = handle_client_version_response(response),
                 ReqKind::Syncing => out.syncing(response, sync_status, healthcheck_pending),
                 ReqKind::Fcu(block_root) => out.fcu(block_root, response),
                 ReqKind::PreparePayload(spine_id) => out.prepare_payload(spine_id, response),
@@ -199,13 +216,14 @@ impl EngineApi {
 
 fn run_healthcheck(
     client: &mut EngineClient,
+    version: &ClientVersion,
     first_run: &mut bool,
     healthcheck_pending: &mut bool,
     healthcheck_deadline: &mut Instant,
 ) {
     if *first_run {
         exchange_capabilities(client);
-        get_client_version(client);
+        get_client_version(client, version);
         *first_run = false;
     }
 

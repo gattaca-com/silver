@@ -8,9 +8,9 @@ use std::{
 use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
-    ELSyncStatus, EngineResp, Enr, ForkName, GossipTopic, HeadChange, Identify, Keypair,
-    LocalGossipFailure, LocalGossipResult, PayloadValidationStatus, PeerEvent,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, ClientVersion,
+    DataColumnsEvent, ELSyncStatus, EngineResp, Enr, ForkName, GossipTopic, HeadChange, Identify,
+    Keypair, LocalGossipFailure, LocalGossipResult, PayloadValidationStatus, PeerEvent,
     PreparedPayloadAttributes, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead,
     TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
     column_util::kzg_commitments_from_sidecar,
@@ -691,6 +691,7 @@ impl BeaconApi {
         state: BeaconStateReader,
         has_sidecar: bool,
         tcaches: TCacheTable,
+        version: ClientVersion,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
         let tokens_needed = binds.len().checked_add(max_connections);
@@ -733,7 +734,7 @@ impl BeaconApi {
             frame: Vec::new(),
             allowed_hosts: AllowedHosts::new(allowed_hosts),
             router: Router::new(ROUTES, SERVED_WHILE_SYNCING),
-            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, has_sidecar),
+            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, has_sidecar, version),
             next_request_id: 0,
             head_verdict: HeadVerdict::default(),
             reader: TCacheReader::new(tcaches),
@@ -992,6 +993,10 @@ impl BeaconApi {
 
     pub fn set_el_sync_status(&mut self, el: ELSyncStatus) {
         self.ctx.node_status.el = el;
+    }
+
+    pub fn set_el_version(&mut self, el: Option<ClientVersion>) {
+        self.ctx.graffiti.el = el;
     }
 
     pub fn handle_peer_event(&mut self, event: PeerEvent) {
@@ -1829,6 +1834,7 @@ mod tests {
                 submission::signing_state(0).reader(),
                 false,
                 tcaches,
+                ClientVersion::silver(""),
             );
             api.open_tcaches().unwrap();
             api.ctx.node_status.target = Some(SyncUpdate::Following);

@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
-use silver_common::{Enr, Identify, Keypair, TCache, TCacheId, TCacheProducer, TCacheTable};
+use silver_common::{
+    ClientVersion, Enr, Identify, Keypair, TCache, TCacheId, TCacheProducer, TCacheTable,
+};
 use silver_httpcore::{Bind, Readiness, TokenRange};
 
 fn main() {
@@ -38,6 +40,7 @@ fn main() {
         state,
         false,
         tcaches,
+        ClientVersion::silver(""),
     );
     api.open_tcaches().unwrap();
     let mut submissions = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);

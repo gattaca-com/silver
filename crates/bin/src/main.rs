@@ -23,7 +23,7 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES,
+    APP_NAME, ClientVersion, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES,
     PersistedCustody, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader,
     TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
@@ -396,6 +396,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.builder_bid_timeout(),
         tcaches,
         boundary_processing_producer,
+        ClientVersion::silver(env!("SILVER_BUILD_COMMIT")),
     );
 
     #[cfg(feature = "metrics")]

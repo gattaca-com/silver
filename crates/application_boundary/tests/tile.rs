@@ -18,7 +18,7 @@ use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::APP_NAME;
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource, BlockStage,
-    ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineGetPayloadReq,
+    ClientVersion, ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineGetPayloadReq,
     EnginePreparePayloadReq, EngineReq, EngineResp, Enr, GossipTopic, HeadChange, HeadRoots,
     Identify, IpBytes, Keypair, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
     PeerEvent, ServedBlock, SilverSpine, SszCache, StreamProtocol, SyncUpdate, TCache, TCacheId,
@@ -86,6 +86,7 @@ fn boundary_tile_with_spec(
         Duration::from_millis(600),
         tcaches,
         resp_p,
+        ClientVersion::silver(""),
     );
     (tile, gossip_p, rpc_p)
 }

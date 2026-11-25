@@ -24,6 +24,7 @@ pub use crate::{
 mod block_root;
 mod builder_bid;
 pub mod cell_store;
+mod client_version;
 pub mod column_util;
 mod custody;
 mod enr;
@@ -46,6 +47,7 @@ mod node_chain;
 mod spine;
 pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};
 pub use builder_bid::{BuilderBid, BuilderTerms};
+pub use client_version::ClientVersion;
 pub use custody::{Custody, CustodyChange};
 pub use node_chain::NodeChain;
 pub use payload_frame::PayloadFrame;
