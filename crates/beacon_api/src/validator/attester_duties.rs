@@ -6,7 +6,7 @@ use crate::{
     ctx::ApiCtx,
     http::{response::Response, router::Request},
     validator::{
-        duties::{epoch_param, requested_indices},
+        duties::{epoch_param, head_state_lags_boundary, requested_indices},
         shufflings::Shuffling,
     },
 };
@@ -21,6 +21,9 @@ pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
     let result = resp.try_json_body(|json| {
         ctx.read_state(|view| {
             json.restart();
+            if head_state_lags_boundary(&view, epoch) {
+                return Err((503, "the head state has not crossed the epoch boundary yet"));
+            }
             let state_epoch = view.slot.current_epoch();
             if epoch < state_epoch || epoch > state_epoch + 1 {
                 return Err((
@@ -111,7 +114,6 @@ mod tests {
     const ACTIVE: u64 = 8192;
     const STATE_EPOCH: u64 = 300;
     const STATE_SLOT: u64 = STATE_EPOCH * SLOTS_PER_EPOCH + 5;
-    const HEAD_SLOT: u64 = STATE_SLOT - 2;
 
     /// The posted order for `epoch`: the active set reversed, rotated by the
     /// epoch so the two epochs differ.
@@ -130,22 +132,27 @@ mod tests {
     }
 
     fn ctx_with_owner() -> (ApiCtx, BeaconStateOwner, StateId) {
+        ctx_at(STATE_SLOT)
+    }
+
+    fn ctx_at(state_slot: Slot) -> (ApiCtx, BeaconStateOwner, StateId) {
+        let state_epoch = state_slot / SLOTS_PER_EPOCH;
         let seeds: Vec<_> =
             (0..=ACTIVE).map(|i| ValSeed { pubkey: pubkey(i), ..ValSeed::default() }).collect();
-        let mut state = BeaconState::for_test(EpochStateFinalized::default(), &seeds, STATE_SLOT);
+        let mut state = BeaconState::for_test(EpochStateFinalized::default(), &seeds, state_slot);
         state.slot_states = SlotStateGroup::new(SlotStateFinalized::new(SlotState {
-            slot: STATE_SLOT,
-            latest_block_header: BeaconBlockHeader { slot: HEAD_SLOT, ..Default::default() },
+            slot: state_slot,
+            latest_block_header: BeaconBlockHeader { slot: state_slot - 2, ..Default::default() },
             ..Default::default()
         }));
-        state.block_roots = block_roots_ring(STATE_SLOT);
+        state.block_roots = block_roots_ring(state_slot);
 
         let mut owner = BeaconStateOwner::new(state);
         let anchor = owner.roll_fresh();
         owner.publish_state_id(anchor);
         let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
         ctx.node_status.target = Some(SyncUpdate::Following);
-        for epoch in [STATE_EPOCH, STATE_EPOCH + 1] {
+        for epoch in [state_epoch, state_epoch + 1] {
             let id = ctx.read_state(|view| ShufflingId::from_state(&view, epoch).unwrap());
             ctx.shufflings.record(id, &posted_bytes(epoch));
         }
@@ -224,6 +231,14 @@ mod tests {
             let response = post(&unposted, &epoch.to_string(), "[\"0\"]");
             assert_eq!(status_code(&response), "503", "{epoch}");
         }
+    }
+
+    #[test]
+    fn epoch_after_next_is_503_while_the_head_state_ends_its_epoch() {
+        let (ctx, ..) = ctx_at((STATE_EPOCH + 1) * SLOTS_PER_EPOCH - 1);
+        let after_next = (STATE_EPOCH + 2).to_string();
+        assert_eq!(status_code(&post(&ctx, &after_next, "[\"0\"]")), "503");
+        assert_eq!(status_code(&post(&ctx, &(STATE_EPOCH + 3).to_string(), "[\"0\"]")), "400");
     }
 
     #[test]
