@@ -8,7 +8,7 @@ use silver_beacon_state_data::{
 use crate::{
     ctx::ApiCtx,
     http::{response::Response, router::Request},
-    validator::duties::{epoch_param, requested_indices},
+    validator::duties::{epoch_param, head_state_lags_boundary, requested_indices},
 };
 
 /// Lighthouse and Prysm VCs poll the current and the next epoch, from the
@@ -23,6 +23,9 @@ pub(crate) fn post_ptc_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respon
     let result = resp.try_json_body(|json| {
         ctx.read_state(|view| {
             json.restart();
+            if head_state_lags_boundary(&view, epoch) {
+                return Err((503, "the head state has not crossed the epoch boundary yet"));
+            }
             let state_epoch = view.slot.current_epoch();
             if epoch < state_epoch || epoch > state_epoch + 1 {
                 return Err((400, "PTC duties cover the head state's epoch and the one after it"));

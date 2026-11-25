@@ -1,4 +1,4 @@
-use silver_beacon_state_data::Epoch;
+use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH, StateReadView};
 use silver_common::json_fields::parse_uint64;
 
 use crate::http::{ids::body_entries, response::Response, router::Request};
@@ -10,6 +10,13 @@ pub(crate) fn epoch_param(req: &Request<'_>, resp: &mut Response<'_>) -> Option<
         resp.error(400, "invalid epoch");
     }
     parsed
+}
+
+/// A validator client on the wall clock can ask for the next epoch's duties
+/// in the moment before the head state crosses into the current epoch.
+pub(crate) fn head_state_lags_boundary(view: &StateReadView<'_>, epoch: Epoch) -> bool {
+    epoch == view.slot.current_epoch() + 2 &&
+        (view.slot.slot_number() + 1).is_multiple_of(SLOTS_PER_EPOCH)
 }
 
 pub(crate) fn requested_indices(req: &Request<'_>, resp: &mut Response<'_>) -> Option<Vec<u64>> {
