@@ -22,10 +22,10 @@ silver_preset.workspace = true
 silver_storage.workspace = true
 silver_httpcore.workspace = true
 
-build-info.workspace = true
 clap.workspace = true
 flux.workspace = true
 hex.workspace = true
+humantime.workspace = true
 mimalloc.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true

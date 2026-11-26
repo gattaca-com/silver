@@ -649,15 +649,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "build-info"
-version = "0.0.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b5ce25737fd857aabda633d168767542bc228b61ee1f3c08fa579627a55397c"
-dependencies = [
- "build-info-proc",
-]
-
-[[package]]
 name = "build-info-build"
 version = "0.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -687,26 +678,6 @@ dependencies = [
  "derive_more",
  "semver",
  "serde",
-]
-
-[[package]]
-name = "build-info-proc"
-version = "0.0.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f20d89fe163427ff56342bcfad66992d140061e254d016be18ae4c642dee31fd"
-dependencies = [
- "build-info-common",
- "chrono",
- "ciborium",
- "manyhow",
- "num-bigint 0.5.1",
- "num-traits",
- "proc-macro2",
- "quote",
- "serde_json",
- "syn 3.0.5",
- "z85",
- "zstd",
 ]
 
 [[package]]
@@ -1362,7 +1333,7 @@ dependencies = [
  "asn1-rs",
  "displaydoc",
  "nom",
- "num-bigint 0.4.8",
+ "num-bigint",
  "num-traits",
  "rusticata-macros",
 ]
@@ -3313,29 +3284,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "manyhow"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e480c047342e73ccc05fb821f0953512868b9257c2559b22a7e3efafc4aad85d"
-dependencies = [
- "manyhow-macros",
- "proc-macro2",
- "quote",
- "syn 3.0.5",
-]
-
-[[package]]
-name = "manyhow-macros"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3330ca83c69fe1691d12126d522dda965e58735ac26052580f95f56e4169ec4"
-dependencies = [
- "proc-macro-utils",
- "proc-macro2",
- "quote",
-]
-
-[[package]]
 name = "match-lookup"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3608,16 +3556,6 @@ name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
-name = "num-bigint"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -3972,17 +3910,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
  "toml_edit 0.25.12+spec-1.1.0",
-]
-
-[[package]]
-name = "proc-macro-utils"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeaf08a13de400bc215877b5bdc088f241b12eb42f0a548d3390dc1c56bb7071"
-dependencies = [
- "proc-macro2",
- "quote",
- "smallvec",
 ]
 
 [[package]]
@@ -4867,11 +4794,11 @@ dependencies = [
 name = "silver"
 version = "0.1.0-alpha.23"
 dependencies = [
- "build-info",
  "build-info-build",
  "clap",
  "flux",
  "hex",
+ "humantime",
  "mimalloc",
  "quinn-proto",
  "rand 0.8.6",

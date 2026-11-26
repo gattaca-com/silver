@@ -18,7 +18,7 @@ export function escape(s) {
 
 export function instanceHeading(inst, now) {
   const stale = inst.stale(now) ? '<span class="badge stale">stale</span>' : '';
-  const build = inst.buildInfo ? `<span class="meta">${escape(inst.buildInfo.trim())}</span>` : '';
+  const build = inst.build ? `<span class="meta">${escape(inst.build)}</span>` : '';
   return `<h2>${escape(inst.label)}${stale}${build}</h2>`;
 }
 
@@ -49,7 +49,7 @@ export function instanceTabs(fleet, selectedKey, now, multi = null) {
   const tabs = instances
     .map((i) => {
       const cls = [insts.includes(i) ? 'active' : '', i.stale(now) ? 'stale' : ''].join(' ');
-      return `<button class="${cls}" data-instance="${i.key}">${escape(i.label)}</button>`;
+      return `<button class="${cls}" data-instance="${i.key}" title="${escape(`${i.build} deployed ${i.started}`)}">${escape(i.label)}</button>`;
     })
     .join('');
   return { inst, insts, html: `<div class="subtabs">${tabs}</div>` };

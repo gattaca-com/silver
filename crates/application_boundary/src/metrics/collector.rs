@@ -258,9 +258,9 @@ impl Collector {
                 let build = fs::read_to_string(path).ok()?;
                 let mut fields = build.trim().splitn(3, " · ");
                 let mut field = || escape(fields.next().unwrap_or(""));
-                let (commit, version, timestamp) = (field(), field(), field());
+                let (commit, version, started) = (field(), field(), field());
                 self.build_labels = Some(format!(
-                    "commit=\"{commit}\",version=\"{version}\",timestamp=\"{timestamp}\""
+                    "commit=\"{commit}\",version=\"{version}\",started=\"{started}\""
                 ));
             }
             SourceKind::Counters => {

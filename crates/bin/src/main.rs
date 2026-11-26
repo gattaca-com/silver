@@ -78,17 +78,15 @@ const _: () = assert!(
 const DISK_IO_CORE: usize = 0;
 
 /// The commit stays first: telemetry reads the first field as the commit.
-const BUILD_INFO: &str = concat!(
-    env!("SILVER_BUILD_COMMIT"),
-    build_info::format!(" · v{} · {}", $.crate_info.version, $.timestamp)
-);
+const BUILD_INFO: &str = concat!(env!("SILVER_BUILD_COMMIT"), " · ", env!("SILVER_RELEASE_TAG"));
 
 const CLIENT_VERSION: ClientVersion = ClientVersion::silver(env!("SILVER_BUILD_COMMIT"));
 
 fn publish_build_info() -> io::Result<()> {
     let dir = shmem_dir_queues(APP_NAME);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("build-info"), BUILD_INFO)
+    let started = humantime::format_rfc3339_seconds(SystemTime::now());
+    std::fs::write(dir.join("build-info"), format!("{BUILD_INFO} · {started}"))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

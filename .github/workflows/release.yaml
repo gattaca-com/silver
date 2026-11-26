@@ -76,6 +76,8 @@ jobs:
           toolchain: 1.91.0
 
       - name: Build
+        env:
+          SILVER_RELEASE_TAG: ${{ needs.unreleased-version.outputs.tag }}
         run: cargo build --profile release-prod --locked --features silver/metrics --bin silver --bin silver_surfer --bin silver_telemetry
 
       - name: Package
