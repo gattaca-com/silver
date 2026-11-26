@@ -178,6 +178,18 @@ The application boundary tile publishes snapshots every second.
 It looks for new metric sources once per epoch, so a source created by a tile appears within an epoch. Flux timer histograms count samples observed since the collector attached.
 For example, `histogram_quantile(0.99, sum by (le, source) (rate(silver_timer_duration_seconds_bucket{channel="processing"}[5m])))` gives processing p99 by source.
 
+| Metric | Type | Value |
+|---|---|---|
+| `beacon_head_slot` | Gauge | Canonical head slot from local Status. Can decrease after a reorg. |
+| `beacon_clock_time_slot`, `slotclock_present_slot` | Gauge | Wall-clock slot computed from genesis and the network's slot duration. |
+| `beacon_finalized_epoch` | Gauge | Finalized checkpoint epoch in the canonical head state. |
+| `beacon_current_justified_epoch` | Gauge | Current justified checkpoint epoch in the canonical head state. |
+| `beacon_peer_count`, `libp2p_peers` | Gauge | Number of distinct connected peers. |
+| `beacon_reorgs_total` | Counter | Number of chain reorganizations detected by fork choice. |
+| `beacon_current_active_validators` | Gauge | Number of validators active in the canonical head state's epoch, including slashed validators until their exit epoch. |
+
+Use `beacon_clock_time_slot - beacon_head_slot` for the head's distance from the clock in slots. Skipped slots also contribute to that distance.
+
 ## Docker and Kubernetes
 
 Release images are available as GitHub packages:

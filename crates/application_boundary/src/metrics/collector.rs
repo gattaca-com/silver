@@ -11,16 +11,21 @@ use flux::{
     tile::metrics::TileSample,
     timing::Nanos,
 };
+use silver_common::{
+    SLOTS_PER_EPOCH,
+    ssz_view::{STATUS_V2_SIZE, StatusView},
+};
 use silver_log::counts::LogName;
 use silver_observe::{
     CounterFile, CounterMap, SlotKind, SourceKind, consume_elapsed, consume_sample, sample_reader,
     slot_kind, slot_name,
 };
+use silver_stages::SlotClock;
 
 use super::exposition::{
-    BUILD_INFO, CURRENT_VALUE, EVENTS, Histogram, RAW_SLOT, Snapshot, TCACHE_CAPACITY, TCACHE_HEAD,
-    TCACHE_TAIL, TILE_BUSY, TILE_BUSY_MAX, TILE_ITERATIONS, TILE_OBSERVED, TILE_UTILISATION,
-    escape,
+    BEACON_HEAD_SLOT, BUILD_INFO, CLOCK_TIME_SLOT, CURRENT_VALUE, EVENTS, Family, Histogram,
+    PRESENT_SLOT, RAW_SLOT, Snapshot, TCACHE_CAPACITY, TCACHE_HEAD, TCACHE_TAIL, TILE_BUSY,
+    TILE_BUSY_MAX, TILE_ITERATIONS, TILE_OBSERVED, TILE_UTILISATION, beacon_families, escape,
 };
 
 const BATCH: usize = 32;
@@ -98,6 +103,9 @@ struct Counters {
     group: String,
     map: CounterMap,
     labels: Vec<String>,
+    /// Only registered peer and beacon state slots have standalone Prometheus
+    /// names.
+    beacon_families: Vec<&'static [Family]>,
 }
 
 impl Counters {
@@ -106,6 +114,7 @@ impl Counters {
     fn open(file: CounterFile, dir: &Path) -> Option<Self> {
         let map = CounterMap::open(&file).ok()?;
         let slots = 0..map.slot_count();
+        let mut families = Vec::new();
         let labels = match file.name.strip_prefix("tcache-") {
             Some(cache) => {
                 let names = fs::read(dir.join(format!("tcache-names-{cache}"))).unwrap_or_default();
@@ -137,12 +146,21 @@ impl Counters {
                             }
                             None => slot_name(&file.name, slot),
                         };
+                        if matches!(file.name.as_str(), "peer" | "beacon_state") {
+                            families.push(beacon_families(&file.name, &name));
+                        }
                         format!("source=\"{source}\",slot=\"{slot}\",name=\"{}\"", escape(&name))
                     })
                     .collect()
             }
         };
-        Some(Self { tcache: file.name.starts_with("tcache-"), group: file.name, map, labels })
+        Some(Self {
+            tcache: file.name.starts_with("tcache-"),
+            group: file.name,
+            map,
+            labels,
+            beacon_families: families,
+        })
     }
 
     fn encode(&self, slot: usize, text: &mut Snapshot) {
@@ -162,6 +180,11 @@ impl Counters {
             }
         };
         text.sample(family, &self.labels[slot], value);
+        if let Some(families) = self.beacon_families.get(slot) {
+            for beacon in *families {
+                text.sample(beacon, "", value);
+            }
+        }
     }
 }
 
@@ -173,6 +196,8 @@ struct Render {
 }
 
 pub(super) struct Collector {
+    clock: SlotClock,
+    head_slot: Option<u64>,
     dir: PathBuf,
     scanned_epoch: Option<u64>,
     entries: Option<ReadDir>,
@@ -192,9 +217,11 @@ pub(super) struct Collector {
 }
 
 impl Collector {
-    pub fn new(dir: PathBuf) -> Self {
+    pub fn new(dir: PathBuf, clock: SlotClock) -> Self {
         let now = Instant::now();
         Self {
+            clock,
+            head_slot: None,
             dir,
             scanned_epoch: None,
             entries: None,
@@ -215,7 +242,9 @@ impl Collector {
 
     /// Tiles create some sources lazily, so the directory is read again once
     /// per epoch and only new sources are opened.
-    pub fn discover(&mut self, epoch: u64) {
+    pub fn on_status(&mut self, ssz: &[u8; STATUS_V2_SIZE], wall_slot: u64) {
+        self.head_slot = Some(StatusView::head_slot(ssz));
+        let epoch = wall_slot / SLOTS_PER_EPOCH;
         if self.scanned_epoch != Some(epoch) && self.entries.is_none() {
             self.scanned_epoch = Some(epoch);
             self.entries = fs::read_dir(&self.dir).ok();
@@ -298,6 +327,12 @@ impl Collector {
             q.encode(text);
             render.queue += 1;
         } else {
+            let clock_slot = self.clock.slot_at(Nanos::now());
+            text.sample(&CLOCK_TIME_SLOT, "", clock_slot);
+            text.sample(&PRESENT_SLOT, "", clock_slot);
+            if let Some(slot) = self.head_slot {
+                text.sample(&BEACON_HEAD_SLOT, "", slot);
+            }
             if let Some(labels) = &self.build_labels {
                 text.sample(&BUILD_INFO, labels, 1);
             }

@@ -11,8 +11,6 @@ use flux::{
 };
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
-#[cfg(feature = "metrics")]
-use silver_common::SLOTS_PER_EPOCH;
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, BuilderBidsRequest, BuilderBidsResponse, ClientVersion,
     DataColumnsEvent, EngineResp, Enr, Identify, Keypair, PeerEvent, SidecarBidRequest,
@@ -23,6 +21,8 @@ use silver_config::{EngineConfig, PbsConfig};
 use silver_engine_api::EngineApi;
 use silver_httpcore::{Bind, Readiness, TokenRange};
 use silver_pbs::{BuilderBids, BuilderEvent, PbsClient, SidecarEvent};
+#[cfg(feature = "metrics")]
+use silver_stages::SlotClock;
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
@@ -48,6 +48,8 @@ pub struct ApplicationBoundaryTile {
     readiness: Readiness,
     #[cfg(feature = "metrics")]
     metrics: Option<metrics::MetricsEndpoint>,
+    #[cfg(feature = "metrics")]
+    clock: SlotClock,
     pub beacon: BeaconApi,
     engine: EngineApi,
     pbs: Option<PbsClient>,
@@ -173,6 +175,11 @@ impl ApplicationBoundaryTile {
         let sockets = sockets + metrics::SOCKETS;
 
         let readiness = Readiness::new(sockets);
+        #[cfg(feature = "metrics")]
+        let clock = SlotClock::new(
+            state.read(|view| view.imm.genesis_time).expect("the anchor state is published"),
+            spec.slot_duration_ms(),
+        );
         let has_sidecar = pbs.is_some();
         let pbs = pbs.map(|pbs| {
             PbsClient::new(
@@ -216,6 +223,8 @@ impl ApplicationBoundaryTile {
         Self {
             #[cfg(feature = "metrics")]
             metrics: None,
+            #[cfg(feature = "metrics")]
+            clock,
             readiness,
             beacon,
             engine,
@@ -228,8 +237,9 @@ impl ApplicationBoundaryTile {
 
     #[cfg(feature = "metrics")]
     pub fn listen_metrics(&mut self, bind: SocketAddr, sources: PathBuf) -> io::Result<SocketAddr> {
-        let endpoint = metrics::MetricsEndpoint::bind(bind, sources, self.readiness.registry())
-            .map_err(|e| io::Error::new(e.kind(), format!("metrics listener {bind}: {e}")))?;
+        let endpoint =
+            metrics::MetricsEndpoint::bind(bind, sources, self.clock, self.readiness.registry())
+                .map_err(|e| io::Error::new(e.kind(), format!("metrics listener {bind}: {e}")))?;
         let addr = endpoint.local_addr()?;
         self.metrics = Some(endpoint);
         Ok(addr)
@@ -254,10 +264,10 @@ impl ApplicationBoundaryTile {
 
         adapter.consume(|event: BeaconStateEvent, _| {
             #[cfg(feature = "metrics")]
-            if let (BeaconStateEvent::Status { wall_slot, .. }, Some(metrics)) =
+            if let (BeaconStateEvent::Status { ssz, wall_slot, .. }, Some(metrics)) =
                 (&event, metrics.as_mut())
             {
-                metrics.discover_sources(wall_slot / SLOTS_PER_EPOCH);
+                metrics.on_status(ssz, *wall_slot);
             }
             if let BeaconStateEvent::CustodyChange { columns, .. } = event {
                 engine.grow_custody(columns);

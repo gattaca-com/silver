@@ -516,12 +516,11 @@ pub fn process_participation_flag_updates(view: &mut StateWriterView) {
 /// their columns, and only the active-balance total refolds — its changes ride
 /// activation/exit epochs set in past epochs, which no boundary pass revisits.
 fn reseed_epoch_balances(view: &mut StateWriterView, next_epoch: Epoch) {
+    let (active_validators, balance) =
+        view.validators.reader().active_count_and_balance_at(next_epoch);
     let reseeded = EpochBalances {
-        total_active: view
-            .validators
-            .reader()
-            .total_active_at(next_epoch)
-            .max(EFFECTIVE_BALANCE_INCREMENT),
+        active_validators,
+        total_active: balance.max(EFFECTIVE_BALANCE_INCREMENT),
         previous_target: view.slot.epoch_balances().current_target,
         current_target: 0,
     };

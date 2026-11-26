@@ -396,13 +396,18 @@ impl<'a> ValidatorsView<'a> {
         &self.delta.appended
     }
 
-    /// Spec `get_total_active_balance` numerator: Σ effective balance over
-    /// validators active at `epoch`, unfloored. A dense fold over the base
-    /// slices alone (the whole-column iterators pay a per-element cursor
-    /// merge), then each edited index swaps its base contribution for the
-    /// merged one. Unedited appends are spec-default — never active.
-    #[timed]
+    /// Unfloored sum of effective balances of validators active at `epoch`.
     pub fn total_active_at(self, epoch: Epoch) -> u64 {
+        self.active_count_and_balance_at(epoch).1
+    }
+
+    /// Count and unfloored effective balance of validators active at `epoch`.
+    /// A dense fold over the base slices (the whole-column iterators pay a
+    /// per-element cursor merge), then each edited index swaps its base
+    /// contribution for the merged one. Unedited appends are spec-default —
+    /// never active.
+    #[timed]
+    pub fn active_count_and_balance_at(self, epoch: Epoch) -> (u64, u64) {
         fn take<V: Copy>(edits: &mut &[(u32, V)], j: usize) -> Option<V> {
             match edits.first() {
                 Some(&(k, v)) if k as usize == j => {
@@ -420,8 +425,10 @@ impl<'a> ValidatorsView<'a> {
         let effective = &self.base.effective_balance[..base_count];
 
         let mut sum = 0u64;
+        let mut count = 0u64;
         for j in 0..base_count {
             if active(activation[j], exit[j]) {
+                count += 1;
                 sum += effective[j];
             }
         }
@@ -441,6 +448,7 @@ impl<'a> ValidatorsView<'a> {
             let edit_effective = take(&mut effective_edits, j);
             let (base_activation, base_exit, base_effective) = if j < base_count {
                 if active(activation[j], exit[j]) {
+                    count -= 1;
                     sum -= effective[j];
                 }
                 (activation[j], exit[j], effective[j])
@@ -448,10 +456,11 @@ impl<'a> ValidatorsView<'a> {
                 (FAR_FUTURE_EPOCH, FAR_FUTURE_EPOCH, 0)
             };
             if active(edit_activation.unwrap_or(base_activation), edit_exit.unwrap_or(base_exit)) {
+                count += 1;
                 sum += edit_effective.unwrap_or(base_effective);
             }
         }
-        sum
+        (count, sum)
     }
 
     #[timed]

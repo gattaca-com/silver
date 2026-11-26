@@ -5,6 +5,9 @@ use crate::types::{EFFECTIVE_BALANCE_INCREMENT, Epoch, TIMELY_TARGET_FLAG};
 /// every write path, so a stale value is silently wrong rather than a miss.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EpochBalances {
+    /// Validators active in this epoch, including slashed validators until
+    /// exit.
+    pub active_validators: u64,
     /// Spec `get_total_active_balance`: slashed included, ≥ one increment.
     pub total_active: u64,
     /// Unslashed previous-epoch-active TIMELY_TARGET effective balance.
@@ -15,7 +18,12 @@ pub struct EpochBalances {
 
 impl Default for EpochBalances {
     fn default() -> Self {
-        Self { total_active: EFFECTIVE_BALANCE_INCREMENT, previous_target: 0, current_target: 0 }
+        Self {
+            active_validators: 0,
+            total_active: EFFECTIVE_BALANCE_INCREMENT,
+            previous_target: 0,
+            current_target: 0,
+        }
     }
 }
 
@@ -53,10 +61,12 @@ impl EpochBalances {
     pub fn sweep(current_epoch: Epoch, rows: impl Iterator<Item = EpochBalancesRow>) -> Self {
         let previous_epoch = current_epoch.saturating_sub(1);
         let mut total_active = 0u64;
+        let mut active_validators = 0;
         let mut previous_target = 0u64;
         let mut current_target = 0u64;
         for row in rows {
             if row.is_active_at(current_epoch) {
+                active_validators += 1;
                 total_active += row.effective_balance;
             }
             if row.counts_current_target(current_epoch) {
@@ -67,6 +77,7 @@ impl EpochBalances {
             }
         }
         Self {
+            active_validators,
             total_active: total_active.max(EFFECTIVE_BALANCE_INCREMENT),
             previous_target,
             current_target,
