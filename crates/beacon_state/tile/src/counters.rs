@@ -38,5 +38,9 @@ silver_common::declare_counters! {
         // buffer, expiry, an evicted shuffling or a failed check.
         UnknownRootVotesPromoted,
         UnknownRootVotesDropped,
+        HeadFinalizedEpoch: gauge,
+        HeadCurrentJustifiedEpoch: gauge,
+        HeadActiveValidators: gauge,
+        Reorgs,
     }
 }

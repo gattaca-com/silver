@@ -54,17 +54,35 @@ fn independent_readers_and_simultaneous_scrapes() {
         names_for("peer", counts.len()).0.iter().position(|n| n == "PeersConnected").unwrap();
     counts[index] = 12;
     fs::write(&peer, counts.iter().flat_map(|v| v.to_ne_bytes()).collect::<Vec<_>>()).unwrap();
+    let beacon_counts: Vec<_> = names_for("beacon_state", 0)
+        .0
+        .iter()
+        .flat_map(|name| {
+            let value: u64 = match name.as_str() {
+                "HeadFinalizedEpoch" => 453,
+                "HeadCurrentJustifiedEpoch" => 454,
+                "HeadActiveValidators" => 987_654,
+                "Reorgs" => 2,
+                _ => 0,
+            };
+            value.to_ne_bytes()
+        })
+        .collect();
+    fs::write(dir.join("counters-beacon_state"), beacon_counts).unwrap();
     let mut other = sample_reader(&dir.join("latency-roundtrip"), "dashboard-test").unwrap();
     consume_elapsed(&mut other, |_| {});
 
-    let mut sources = Collector::new(dir.clone());
+    let clock = SlotClock::new(1_600_000_000, 12_000);
+    let first_clock_slot = clock.slot_at(Nanos::now());
+    let mut sources = Collector::new(dir.clone(), clock);
     let now = Instant::now();
     let pump = |sources: &mut Collector, secs| {
         sources.pump(now + Duration::from_secs(secs), Instant::now() + Duration::from_secs(1));
     };
     pump(&mut sources, 0);
     let undiscovered = sources.snapshot.clone().unwrap();
-    assert_eq!(undiscovered.len, 0, "nothing is collected before discovery");
+    assert!(undiscovered.parts.concat().contains("beacon_clock_time_slot"));
+    assert!(!undiscovered.parts.concat().contains("beacon_head_slot"));
     let first_buffer = Arc::as_ptr(&undiscovered);
     drop(undiscovered);
     let mut status = [0; STATUS_V2_SIZE];
@@ -84,6 +102,7 @@ fn independent_readers_and_simultaneous_scrapes() {
     pump(&mut sources, 2);
     let previous = sources.snapshot.as_ref().unwrap().parts.concat();
     assert!(previous.lines().any(|line| line == "beacon_head_slot 4"));
+    assert!(previous.lines().any(|line| line == "beacon_peer_count 12"));
     assert!(previous.contains(&format!(
         "silver_current_value{{source=\"peer\",slot=\"{index}\",name=\"PeersConnected\"}} 12"
     )));
@@ -122,7 +141,8 @@ fn independent_readers_and_simultaneous_scrapes() {
 
     let mut readiness = Readiness::new(SOCKETS);
     let mut endpoint =
-        MetricsEndpoint::bind(([127, 0, 0, 1], 0).into(), dir, readiness.registry()).unwrap();
+        MetricsEndpoint::bind(([127, 0, 0, 1], 0).into(), dir, clock, readiness.registry())
+            .unwrap();
     endpoint.sources = sources;
     let addr = endpoint.listener.local_addr().unwrap();
     let clients = [scrape(addr), scrape(addr)];
@@ -132,6 +152,26 @@ fn independent_readers_and_simultaneous_scrapes() {
     }
     let [a, b] = clients.map(|c| c.join().unwrap());
     assert_eq!(a, b);
+    let slot: u64 = a
+        .lines()
+        .find_map(|line| line.strip_prefix("beacon_clock_time_slot "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((first_clock_slot..=clock.slot_at(Nanos::now())).contains(&slot));
+    for (name, kind, value) in [
+        ("beacon_clock_time_slot", "gauge", slot),
+        ("slotclock_present_slot", "gauge", slot),
+        ("beacon_finalized_epoch", "gauge", 453),
+        ("beacon_current_justified_epoch", "gauge", 454),
+        ("beacon_current_active_validators", "gauge", 987_654),
+        ("beacon_peer_count", "gauge", 5),
+        ("libp2p_peers", "gauge", 5),
+        ("beacon_reorgs_total", "counter", 2),
+    ] {
+        assert!(a.lines().any(|line| line == format!("# TYPE {name} {kind}")));
+        assert!(a.lines().any(|line| line == format!("{name} {value}")));
+    }
     assert!(a.lines().any(|line| line == "# TYPE beacon_head_slot gauge"));
     assert_eq!(
         a.lines().filter(|line| line.starts_with("beacon_head_slot")).collect::<Vec<_>>(),
@@ -150,10 +190,22 @@ fn independent_readers_and_simultaneous_scrapes() {
         assert!(a.contains(sample), "{sample} missing");
     }
     if let Some(tool) = std::env::var_os("PROMTOOL") {
-        let mut child =
-            Command::new(tool).args(["check", "metrics"]).stdin(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new(tool)
+            .args(["check", "metrics"])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         child.stdin.take().unwrap().write_all(a.as_bytes()).unwrap();
-        assert!(child.wait().unwrap().success());
+        let output = child.wait_with_output().unwrap();
+        if !output.status.success() {
+            // Keep the requested peer-count spelling alongside the lint-clean libp2p_peers.
+            assert_eq!(output.status.code(), Some(3));
+            assert_eq!(
+                String::from_utf8(output.stderr).unwrap().trim(),
+                r#"beacon_peer_count non-histogram and non-summary metrics should not have "_count" suffix"#
+            );
+        }
     }
 }
 
@@ -174,12 +226,13 @@ fn histogram_includes_boundaries_and_overflow() {
 }
 
 #[test]
-fn an_undiscovered_endpoint_serves_an_empty_body() {
+fn clock_slot_is_available_before_status_and_zero_before_genesis() {
     let base = ShmemDir::new().unwrap();
     let mut readiness = Readiness::new(SOCKETS);
     let mut endpoint = MetricsEndpoint::bind(
         ([127, 0, 0, 1], 0).into(),
         base.path().to_owned(),
+        SlotClock::new(4_000_000_000, 12_000),
         readiness.registry(),
     )
     .unwrap();
@@ -189,7 +242,9 @@ fn an_undiscovered_endpoint_serves_an_empty_body() {
         readiness.wait(Duration::from_millis(1));
         endpoint.pump(&readiness);
     }
-    assert_eq!(client.join().unwrap(), "");
+    let body = client.join().unwrap();
+    assert!(body.lines().any(|line| line == "beacon_clock_time_slot 0"));
+    assert!(!body.contains("beacon_head_slot"));
 }
 
 #[test]
@@ -199,6 +254,7 @@ fn stalled_client_is_removed_at_deadline() {
     let mut endpoint = MetricsEndpoint::bind(
         ([127, 0, 0, 1], 0).into(),
         base.path().to_owned(),
+        SlotClock::new(0, 12_000),
         readiness.registry(),
     )
     .unwrap();

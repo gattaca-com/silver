@@ -248,6 +248,27 @@ fn set_effective_balance_reproduces_independent_root() {
 }
 
 #[test]
+fn active_count_and_balance_follow_activation_and_exit_on_each_fork() {
+    let base = FinalizedValidators::with_validators(&[
+        ValSeed { pubkey: pk(1), activation_epoch: 1, effective_balance: 32, ..ValSeed::default() },
+        ValSeed { pubkey: pk(2), activation_epoch: 2, effective_balance: 64, ..ValSeed::default() },
+    ]);
+    let mut group = ValidatorsGroup::new(base, HashFormat::Fixed);
+    let mut writer = group.roll_fresh();
+    writer.set_slashed(0, true);
+    writer.set_exit_epoch(0, 3);
+    let index = writer.append(pk(3), PublicKey::default(), creds(3));
+    writer.set_activation_epoch(index, 3);
+    writer.set_effective_balance(index, 16);
+    let fork = writer.reader();
+    assert_eq!(fork.active_count_and_balance_at(1), (1, 32));
+    assert_eq!(fork.active_count_and_balance_at(2), (2, 96));
+    assert_eq!(fork.active_count_and_balance_at(3), (2, 80));
+    writer.commit();
+    assert_eq!(group.roll_fresh().reader().active_count_and_balance_at(3), (2, 96));
+}
+
+#[test]
 fn finalize_promotes_and_reanchors_winner() {
     // Finalizing the sole fork promotes its appended validator + edits into the
     // base and re-anchors it; a fresh fork over the result reads the promoted

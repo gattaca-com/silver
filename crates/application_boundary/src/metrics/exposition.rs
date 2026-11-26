@@ -11,7 +11,7 @@ const fn family(part: usize, name: &'static str, kind: &'static str, help: &'sta
     Family { part, name, kind, help }
 }
 
-const FAMILIES: usize = 14;
+const FAMILIES: usize = 22;
 
 pub(super) const EVENTS: Family =
     family(0, "silver_events_total", "counter", "Cumulative value of a Silver counter.");
@@ -65,6 +65,45 @@ pub(super) const TCACHE_TAIL: Family =
     family(12, "silver_tcache_tail_sequence", "gauge", "Current TCache consumer sequence.");
 pub(super) const BEACON_HEAD_SLOT: Family =
     family(13, "beacon_head_slot", "gauge", "Slot of the canonical beacon chain head.");
+pub(super) const CLOCK_TIME_SLOT: Family =
+    family(14, "beacon_clock_time_slot", "gauge", "Current wall-clock slot since genesis.");
+const FINALIZED_EPOCH: Family = family(
+    15,
+    "beacon_finalized_epoch",
+    "gauge",
+    "Finalized checkpoint epoch in the canonical head state.",
+);
+const CURRENT_JUSTIFIED_EPOCH: Family = family(
+    16,
+    "beacon_current_justified_epoch",
+    "gauge",
+    "Current justified checkpoint epoch in the canonical head state.",
+);
+const PEER_COUNT: Family =
+    family(17, "beacon_peer_count", "gauge", "Number of currently connected peers.");
+const REORGS: Family =
+    family(18, "beacon_reorgs_total", "counter", "Number of canonical chain reorganizations.");
+const CURRENT_ACTIVE_VALIDATORS: Family = family(
+    19,
+    "beacon_current_active_validators",
+    "gauge",
+    "Number of validators active in the canonical head state's epoch.",
+);
+
+pub(super) const PRESENT_SLOT: Family =
+    family(20, "slotclock_present_slot", "gauge", CLOCK_TIME_SLOT.help);
+const LIBP2P_PEERS: Family = family(21, "libp2p_peers", "gauge", PEER_COUNT.help);
+
+pub(super) fn beacon_families(group: &str, name: &str) -> &'static [Family] {
+    match (group, name) {
+        ("beacon_state", "HeadFinalizedEpoch") => &[FINALIZED_EPOCH],
+        ("beacon_state", "HeadCurrentJustifiedEpoch") => &[CURRENT_JUSTIFIED_EPOCH],
+        ("beacon_state", "HeadActiveValidators") => &[CURRENT_ACTIVE_VALIDATORS],
+        ("beacon_state", "Reorgs") => &[REORGS],
+        ("peer", "PeersConnected") => &[PEER_COUNT, LIBP2P_PEERS],
+        _ => &[],
+    }
+}
 
 /// One part per family keeps each family contiguous. Cleared parts keep
 /// their capacity, so a reused snapshot renders without allocating.

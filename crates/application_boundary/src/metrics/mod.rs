@@ -15,6 +15,7 @@ use mio::{
 };
 use silver_common::ssz_view::STATUS_V2_SIZE;
 use silver_httpcore::{Readiness, ServerConnection, TokenRange, frame_response};
+use silver_stages::SlotClock;
 
 use self::{collector::Collector, exposition::Snapshot};
 
@@ -118,7 +119,12 @@ pub(super) struct MetricsEndpoint {
 }
 
 impl MetricsEndpoint {
-    pub fn bind(addr: SocketAddr, sources: PathBuf, registry: &Registry) -> io::Result<Self> {
+    pub fn bind(
+        addr: SocketAddr,
+        sources: PathBuf,
+        clock: SlotClock,
+        registry: &Registry,
+    ) -> io::Result<Self> {
         let mut listener = TcpListener::bind(addr)?;
         registry.register(&mut listener, TOKENS.at(0), Interest::READABLE)?;
         Ok(Self {
@@ -126,7 +132,7 @@ impl MetricsEndpoint {
             accepting: false,
             clients: std::array::from_fn(|_| None),
             next: 0,
-            sources: Collector::new(sources),
+            sources: Collector::new(sources, clock),
         })
     }
 

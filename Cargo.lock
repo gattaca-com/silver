@@ -4912,6 +4912,7 @@ dependencies = [
  "silver_log",
  "silver_observe",
  "silver_pbs",
+ "silver_stages",
  "ureq",
 ]
 

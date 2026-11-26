@@ -646,14 +646,13 @@ impl BeaconStateTile {
         };
 
         let node = self.fork_choice.node(head.idx);
-        let blob_count = self
-            .state
-            .read_view(node.state_id)
-            .slot
-            .state()
-            .latest_execution_payload_bid
-            .blob_kzg_commitments
-            .len();
+        let view = self.state.read_view(node.state_id);
+        let epoch_state = view.epoch.state();
+        crate::BeaconStateCounters::HeadFinalizedEpoch.set(epoch_state.finalized_checkpoint.epoch);
+        crate::BeaconStateCounters::HeadCurrentJustifiedEpoch
+            .set(epoch_state.current_justified_checkpoint.epoch);
+        crate::BeaconStateCounters::HeadActiveValidators.set(view.slot.active_validator_count());
+        let blob_count = view.slot.state().latest_execution_payload_bid.blob_kzg_commitments.len();
         let head_ptc = PtcObservation {
             slot: node.slot,
             payload_present: self

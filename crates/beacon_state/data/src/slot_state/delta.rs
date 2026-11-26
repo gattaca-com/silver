@@ -86,6 +86,10 @@ impl<'a> SlotStateView<'a> {
     pub fn current_epoch(&self) -> Epoch {
         self.state().slot / SLOTS_PER_EPOCH
     }
+
+    pub fn active_validator_count(&self) -> u64 {
+        self.delta.map_or(&self.base.epoch_balances, |d| &d.epoch_balances).active_validators
+    }
 }
 
 pub struct SlotStateWriteView<'a> {
