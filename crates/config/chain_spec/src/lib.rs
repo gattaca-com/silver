@@ -612,7 +612,7 @@ impl SpecConfig {
             fulu_fork_version: default_fork_version::<0x70000910>(),
             fulu_fork_epoch: 50688,
             gloas_fork_version: default_fork_version::<0x80000910>(),
-            gloas_fork_epoch: unscheduled(),
+            gloas_fork_epoch: 143616,
             blob_schedule: vec![
                 BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
                 BlobParameters { epoch: 54016, max_blobs_per_block: 21 },
@@ -907,7 +907,7 @@ mod tests {
         assert_eq!(spec.genesis_delay, 600);
         assert_eq!(spec.seconds_per_eth1_block, 12);
         assert_eq!(spec.terminal_total_difficulty, 0);
-        // assert_eq!(spec.gloas_fork_epoch, 132352);
+        assert_eq!(spec.gloas_fork_epoch, 143616);
         // assert_eq!(spec.blob_schedule, [
         //     BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
         //     BlobParameters { epoch: 54016, max_blobs_per_block: 21 },

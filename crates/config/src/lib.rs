@@ -642,7 +642,9 @@ mod tests {
     #[test]
     fn surround_epochs_are_capped() {
         let config = |surround_epochs: u8| {
-            Config::from_toml(&format!("surround_epochs = {surround_epochs}"), Overrides::default())
+            let toml =
+                format!("surround_epochs = {surround_epochs}\nattestation_subnet_count = 64");
+            Config::from_toml(&toml, Overrides::default())
         };
 
         assert_eq!(config(MAX_SURROUND_EPOCHS).unwrap().surround_epochs(), MAX_SURROUND_EPOCHS);
