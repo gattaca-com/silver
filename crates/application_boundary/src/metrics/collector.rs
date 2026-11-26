@@ -11,6 +11,10 @@ use flux::{
     tile::metrics::TileSample,
     timing::Nanos,
 };
+use silver_common::{
+    SLOTS_PER_EPOCH,
+    ssz_view::{STATUS_V2_SIZE, StatusView},
+};
 use silver_log::counts::LogName;
 use silver_observe::{
     CounterFile, CounterMap, SlotKind, SourceKind, consume_elapsed, consume_sample, sample_reader,
@@ -18,9 +22,9 @@ use silver_observe::{
 };
 
 use super::exposition::{
-    BUILD_INFO, CURRENT_VALUE, EVENTS, Histogram, RAW_SLOT, Snapshot, TCACHE_CAPACITY, TCACHE_HEAD,
-    TCACHE_TAIL, TILE_BUSY, TILE_BUSY_MAX, TILE_ITERATIONS, TILE_OBSERVED, TILE_UTILISATION,
-    escape,
+    BEACON_HEAD_SLOT, BUILD_INFO, CURRENT_VALUE, EVENTS, Histogram, RAW_SLOT, Snapshot,
+    TCACHE_CAPACITY, TCACHE_HEAD, TCACHE_TAIL, TILE_BUSY, TILE_BUSY_MAX, TILE_ITERATIONS,
+    TILE_OBSERVED, TILE_UTILISATION, escape,
 };
 
 const BATCH: usize = 32;
@@ -173,6 +177,7 @@ struct Render {
 }
 
 pub(super) struct Collector {
+    head_slot: Option<u64>,
     dir: PathBuf,
     scanned_epoch: Option<u64>,
     entries: Option<ReadDir>,
@@ -195,6 +200,7 @@ impl Collector {
     pub fn new(dir: PathBuf) -> Self {
         let now = Instant::now();
         Self {
+            head_slot: None,
             dir,
             scanned_epoch: None,
             entries: None,
@@ -215,7 +221,9 @@ impl Collector {
 
     /// Tiles create some sources lazily, so the directory is read again once
     /// per epoch and only new sources are opened.
-    pub fn discover(&mut self, epoch: u64) {
+    pub fn on_status(&mut self, ssz: &[u8; STATUS_V2_SIZE], wall_slot: u64) {
+        self.head_slot = Some(StatusView::head_slot(ssz));
+        let epoch = wall_slot / SLOTS_PER_EPOCH;
         if self.scanned_epoch != Some(epoch) && self.entries.is_none() {
             self.scanned_epoch = Some(epoch);
             self.entries = fs::read_dir(&self.dir).ok();
@@ -298,6 +306,9 @@ impl Collector {
             q.encode(text);
             render.queue += 1;
         } else {
+            if let Some(slot) = self.head_slot {
+                text.sample(&BEACON_HEAD_SLOT, "", slot);
+            }
             if let Some(labels) = &self.build_labels {
                 text.sample(&BUILD_INFO, labels, 1);
             }

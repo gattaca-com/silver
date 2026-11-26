@@ -11,7 +11,7 @@ const fn family(part: usize, name: &'static str, kind: &'static str, help: &'sta
     Family { part, name, kind, help }
 }
 
-const FAMILIES: usize = 13;
+const FAMILIES: usize = 14;
 
 pub(super) const EVENTS: Family =
     family(0, "silver_events_total", "counter", "Cumulative value of a Silver counter.");
@@ -63,6 +63,8 @@ pub(super) const TCACHE_HEAD: Family =
     family(11, "silver_tcache_head_sequence", "gauge", "Current TCache producer sequence.");
 pub(super) const TCACHE_TAIL: Family =
     family(12, "silver_tcache_tail_sequence", "gauge", "Current TCache consumer sequence.");
+pub(super) const BEACON_HEAD_SLOT: Family =
+    family(13, "beacon_head_slot", "gauge", "Slot of the canonical beacon chain head.");
 
 /// One part per family keeps each family contiguous. Cleared parts keep
 /// their capacity, so a reused snapshot renders without allocating.
@@ -89,7 +91,12 @@ impl Snapshot {
 
     pub fn sample(&mut self, family: &Family, labels: &str, value: impl fmt::Display) {
         let name = family.name;
-        writeln!(self.family(family), "{name}{{{labels}}} {value}").unwrap();
+        let out = self.family(family);
+        if labels.is_empty() {
+            writeln!(out, "{name} {value}").unwrap();
+        } else {
+            writeln!(out, "{name}{{{labels}}} {value}").unwrap();
+        }
     }
 
     pub fn finish(&mut self) {

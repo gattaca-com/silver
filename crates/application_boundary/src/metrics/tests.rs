@@ -14,7 +14,7 @@ use flux::{
     timing::Nanos,
     utils::directories::shmem_dir_queues_with_base,
 };
-use silver_common::test_util::ShmemDir;
+use silver_common::{SLOTS_PER_EPOCH, test_util::ShmemDir};
 use silver_observe::{consume_elapsed, names_for, sample_reader};
 
 use super::*;
@@ -67,7 +67,9 @@ fn independent_readers_and_simultaneous_scrapes() {
     assert_eq!(undiscovered.len, 0, "nothing is collected before discovery");
     let first_buffer = Arc::as_ptr(&undiscovered);
     drop(undiscovered);
-    sources.discover(0);
+    let mut status = [0; STATUS_V2_SIZE];
+    status[76..84].copy_from_slice(&4u64.to_le_bytes());
+    sources.on_status(&status, 6);
     pump(&mut sources, 1);
 
     timer.emit_latency_from_nanos_without_first(Nanos(100), Nanos(5100));
@@ -81,6 +83,7 @@ fn independent_readers_and_simultaneous_scrapes() {
     tiles.produce_without_first(&tile);
     pump(&mut sources, 2);
     let previous = sources.snapshot.as_ref().unwrap().parts.concat();
+    assert!(previous.lines().any(|line| line == "beacon_head_slot 4"));
     assert!(previous.contains(&format!(
         "silver_current_value{{source=\"peer\",slot=\"{index}\",name=\"PeersConnected\"}} 12"
     )));
@@ -99,14 +102,14 @@ fn independent_readers_and_simultaneous_scrapes() {
 
     fs::write(dir.join("counters-late"), 9u64.to_ne_bytes()).unwrap();
     let late = "silver_slot{source=\"late\",slot=\"0\",name=\"slot_0\"} 9";
-    sources.discover(0);
+    status[76..84].copy_from_slice(&3u64.to_le_bytes());
+    sources.on_status(&status, 7);
     pump(&mut sources, 4);
     pump(&mut sources, 5);
-    assert!(
-        !sources.snapshot.as_ref().unwrap().parts.concat().contains(late),
-        "one pass per epoch"
-    );
-    sources.discover(1);
+    let same_epoch = sources.snapshot.as_ref().unwrap().parts.concat();
+    assert!(same_epoch.lines().any(|line| line == "beacon_head_slot 3"));
+    assert!(!same_epoch.contains(late), "one pass per epoch");
+    sources.on_status(&status, SLOTS_PER_EPOCH);
     pump(&mut sources, 6);
     pump(&mut sources, 7);
     let rescanned = sources.snapshot.as_ref().unwrap().parts.concat();
@@ -129,6 +132,11 @@ fn independent_readers_and_simultaneous_scrapes() {
     }
     let [a, b] = clients.map(|c| c.join().unwrap());
     assert_eq!(a, b);
+    assert!(a.lines().any(|line| line == "# TYPE beacon_head_slot gauge"));
+    assert_eq!(
+        a.lines().filter(|line| line.starts_with("beacon_head_slot")).collect::<Vec<_>>(),
+        ["beacon_head_slot 3"]
+    );
     for sample in [
         "silver_timer_duration_seconds_count{source=\"roundtrip\",channel=\"latency\"} 1",
         "silver_timer_duration_seconds_count{source=\"roundtrip\",channel=\"processing\"} 1",

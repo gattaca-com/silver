@@ -11,8 +11,6 @@ use flux::{
 };
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
-#[cfg(feature = "metrics")]
-use silver_common::SLOTS_PER_EPOCH;
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, BuilderBidsRequest, BuilderBidsResponse, ClientVersion,
     DataColumnsEvent, EngineResp, Enr, Identify, Keypair, PeerEvent, SidecarBidRequest,
@@ -254,10 +252,10 @@ impl ApplicationBoundaryTile {
 
         adapter.consume(|event: BeaconStateEvent, _| {
             #[cfg(feature = "metrics")]
-            if let (BeaconStateEvent::Status { wall_slot, .. }, Some(metrics)) =
+            if let (BeaconStateEvent::Status { ssz, wall_slot, .. }, Some(metrics)) =
                 (&event, metrics.as_mut())
             {
-                metrics.discover_sources(wall_slot / SLOTS_PER_EPOCH);
+                metrics.on_status(ssz, *wall_slot);
             }
             if let BeaconStateEvent::CustodyChange { columns, .. } = event {
                 engine.grow_custody(columns);

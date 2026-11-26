@@ -178,6 +178,8 @@ The application boundary tile publishes snapshots every second.
 It looks for new metric sources once per epoch, so a source created by a tile appears within an epoch. Flux timer histograms count samples observed since the collector attached.
 For example, `histogram_quantile(0.99, sum by (le, source) (rate(silver_timer_duration_seconds_bucket{channel="processing"}[5m])))` gives processing p99 by source.
 
+`beacon_head_slot` reports the canonical head slot from the node's latest Status message and can decrease after a reorg.
+
 ## Docker and Kubernetes
 
 Release images are available as GitHub packages:

@@ -13,6 +13,7 @@ use mio::{
     Interest, Registry,
     net::{TcpListener, TcpStream},
 };
+use silver_common::ssz_view::STATUS_V2_SIZE;
 use silver_httpcore::{Readiness, ServerConnection, TokenRange, frame_response};
 
 use self::{collector::Collector, exposition::Snapshot};
@@ -129,8 +130,8 @@ impl MetricsEndpoint {
         })
     }
 
-    pub fn discover_sources(&mut self, epoch: u64) {
-        self.sources.discover(epoch);
+    pub fn on_status(&mut self, ssz: &[u8; STATUS_V2_SIZE], wall_slot: u64) {
+        self.sources.on_status(ssz, wall_slot);
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
