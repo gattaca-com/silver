@@ -49,7 +49,7 @@ export function instanceTabs(fleet, selectedKey, now, multi = null) {
   const tabs = instances
     .map((i) => {
       const cls = [insts.includes(i) ? 'active' : '', i.stale(now) ? 'stale' : ''].join(' ');
-      return `<button class="${cls}" data-instance="${i.key}" title="${escape(i.build)}">${escape(i.label)}</button>`;
+      return `<button class="${cls}" data-instance="${i.key}" title="${escape(`${i.build} deployed ${i.started}`)}">${escape(i.label)}</button>`;
     })
     .join('');
   return { inst, insts, html: `<div class="subtabs">${tabs}</div>` };

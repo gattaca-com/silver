@@ -30,7 +30,7 @@ function stfRow(inst, colour) {
   const cells = PERCENTILES.map(
     (p) => `<td class="num">${durations.length ? fmtNanos(percentile(durations, p)) : '·'}</td>`,
   ).join('');
-  return `<tr style="color:${colour}"><td>${escape(inst.label)}</td>${cells}<td class="num meta">${durations.length}</td><td class="meta">${escape(inst.build)}</td></tr>`;
+  return `<tr style="color:${colour}"><td>${escape(inst.label)}</td>${cells}<td class="num meta">${durations.length}</td><td class="meta">${escape(inst.build)}</td><td class="meta">${escape(inst.started)}</td></tr>`;
 }
 
 /** Entries in stacking order, bottom first, each in its chart colour. */
@@ -82,7 +82,7 @@ export function render(fleet, root, _now, ui) {
   root.innerHTML = `
     <h2>stf validate + apply <span class="meta">blocks reaching attestable</span></h2>
     <section><table class="apply-big">
-      <thead><tr><th>instance</th>${head}<th class="num">slots</th><th>build</th></tr></thead>
+      <thead><tr><th>instance</th>${head}<th class="num">slots</th><th>build</th><th>deployed</th></tr></thead>
       <tbody>${all.map((inst, i) => stfRow(inst, colour(i))).join('')}</tbody>
     </table></section>
     <div class="home-card home-wide" data-goto="events">

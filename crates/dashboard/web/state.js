@@ -165,6 +165,7 @@ export class Instance {
     this.key = key;
     this.label = key;
     this.build = '';
+    this.started = '';
     this.clock = null;
     this.bootId = null;
     this.lastRecv = 0;
@@ -282,8 +283,9 @@ export class Instance {
         break;
       case Kind.BuildInfo:
         {
-          const [commit, release] = d.text.trim().split(' · ');
+          const [commit, release, started = ''] = d.text.trim().split(' · ');
           this.build = release || commit;
+          this.started = started;
         }
         break;
       case Kind.Chain:
