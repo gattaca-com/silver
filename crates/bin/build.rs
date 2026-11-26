@@ -12,6 +12,9 @@ fn main() {
                 .map(|git| git.commit_short_id.clone())
         })
         .unwrap_or_else(|| "unknown".to_owned());
+    let release = env::var("SILVER_RELEASE_TAG").unwrap_or_default();
     println!("cargo:rerun-if-env-changed=SILVER_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=SILVER_RELEASE_TAG");
     println!("cargo:rustc-env=SILVER_BUILD_COMMIT={commit}");
+    println!("cargo:rustc-env=SILVER_RELEASE_TAG={release}");
 }

@@ -164,7 +164,7 @@ export class Instance {
   constructor(key) {
     this.key = key;
     this.label = key;
-    this.buildInfo = '';
+    this.build = '';
     this.clock = null;
     this.bootId = null;
     this.lastRecv = 0;
@@ -281,7 +281,10 @@ export class Instance {
         this.label = d.text;
         break;
       case Kind.BuildInfo:
-        this.buildInfo = d.text;
+        {
+          const [commit, release] = d.text.trim().split(' · ');
+          this.build = release || commit;
+        }
         break;
       case Kind.Chain:
         this.clock = new SlotClock(d.genesisUnixSecs, d.slotMs, d.gloasForkEpoch);

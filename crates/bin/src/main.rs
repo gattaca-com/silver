@@ -80,7 +80,9 @@ const DISK_IO_CORE: usize = 0;
 /// The commit stays first: telemetry reads the first field as the commit.
 const BUILD_INFO: &str = concat!(
     env!("SILVER_BUILD_COMMIT"),
-    build_info::format!(" · v{} · {}", $.crate_info.version, $.timestamp)
+    " · ",
+    env!("SILVER_RELEASE_TAG"),
+    build_info::format!(" · {}", $.timestamp)
 );
 
 const CLIENT_VERSION: ClientVersion = ClientVersion::silver(env!("SILVER_BUILD_COMMIT"));
