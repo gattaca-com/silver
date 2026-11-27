@@ -69,7 +69,8 @@ impl CellAllocator {
             provisional_count: 0,
             slot,
             slot_end: slot_start + config.slot_duration(),
-            now: slot_start,
+            // Before genesis the slot starts in the future.
+            now: slot_start.min(Instant::now()),
             min_slot: 0,
             producer,
             config,
