@@ -5,7 +5,7 @@ use std::{
     path::Path,
     sync::Arc,
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
@@ -179,7 +179,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     silver_log::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
     let spec = Arc::new(chain_config.spec.clone());
-    sleep_until_genesis(genesis.unix_secs);
     let ticker = SlotTicker::new(genesis.unix_secs, &spec, chain_config.playload_lookahead());
 
     // Long-lived subnets: advertised from boot (peer retention exempts us
@@ -439,14 +438,4 @@ fn attached<'a, T: Tile<SilverSpine> + 'a>(
     let name = tile.name();
     let config = TileConfig::new(core, Some(ThreadNiceness::Highest));
     (name, Box::new(tile_runner(tile, spine, config)))
-}
-
-fn sleep_until_genesis(genesis_unix_secs: u64) {
-    let genesis = UNIX_EPOCH + Duration::from_secs(genesis_unix_secs);
-    let Ok(remaining) = genesis.duration_since(SystemTime::now()) else {
-        return;
-    };
-
-    silver_log::info!("waiting {}s for genesis at {genesis_unix_secs}", remaining.as_secs());
-    std::thread::sleep(remaining);
 }

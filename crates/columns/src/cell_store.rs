@@ -136,7 +136,8 @@ impl CellStore {
                 Default::default(),
             ),
             counts: StoreCounts::default(),
-            now: slot_start,
+            // Before genesis the slot starts in the future.
+            now: slot_start.min(Instant::now()),
             slot,
             slot_end: slot_start + config.slot_duration(),
             min_slot: 0,
