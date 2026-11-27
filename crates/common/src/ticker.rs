@@ -75,7 +75,8 @@ impl Phase {
 #[derive(Clone)]
 pub struct SlotTicker {
     anchor: Instant,
-    anchor_genesis_ms: u64,
+    /// Negative while the anchor precedes genesis.
+    anchor_genesis_ms: i64,
     frozen: bool,
     slot_ms: u64,
     payload_off: u64,
@@ -98,16 +99,15 @@ impl SlotTicker {
             .expect("system clock before unix epoch")
             .as_millis() as u64;
         let genesis_ms = genesis_unix_secs.saturating_mul(1000);
-        assert!(
-            now_unix_ms >= genesis_ms,
-            "pre-genesis not supported: {} >= {}",
-            now_unix_ms,
-            genesis_ms
-        );
+        let anchor_genesis_ms = if now_unix_ms >= genesis_ms {
+            (now_unix_ms - genesis_ms) as i64
+        } else {
+            i64::try_from(genesis_ms - now_unix_ms).map_or(i64::MIN, |ms| -ms)
+        };
 
         let ticker = Self {
             anchor: Instant::now(),
-            anchor_genesis_ms: now_unix_ms.saturating_sub(genesis_ms),
+            anchor_genesis_ms,
             frozen: false,
             slot_ms,
             payload_off: slot_ms.saturating_sub(prepare_payload_lookahead.as_millis() as u64),
@@ -142,11 +142,23 @@ impl SlotTicker {
         Duration::from_millis(self.slot_ms)
     }
 
-    pub fn millis_since_genesis(&self) -> u64 {
-        if self.frozen {
-            return self.anchor_genesis_ms;
+    /// `None` before genesis.
+    fn since_genesis(&self, elapsed: Duration) -> Option<Duration> {
+        let offset = Duration::from_millis(self.anchor_genesis_ms.unsigned_abs());
+        if self.anchor_genesis_ms >= 0 {
+            Some(offset + elapsed)
+        } else {
+            elapsed.checked_sub(offset)
         }
-        self.anchor_genesis_ms.saturating_add(self.anchor.elapsed().as_millis() as u64)
+    }
+
+    /// Zero before genesis: every query then answers as at the start of slot 0.
+    pub fn millis_since_genesis(&self) -> u64 {
+        self.since_genesis(self.elapsed()).map_or(0, |since| since.as_millis() as u64)
+    }
+
+    fn elapsed(&self) -> Duration {
+        if self.frozen { Duration::ZERO } else { self.anchor.elapsed() }
     }
 
     pub fn slot_time_elapsed(&self) -> Duration {
@@ -157,10 +169,13 @@ impl SlotTicker {
         self.millis_since_genesis() / self.slot_ms
     }
 
+    /// Before genesis the start of slot 0, which lies in the future.
     pub fn current_slot_start(&self) -> (u64, Instant) {
         let now = Instant::now();
-        let since_genesis =
-            Duration::from_millis(self.anchor_genesis_ms) + now.duration_since(self.anchor);
+        let Some(since_genesis) = self.since_genesis(now.duration_since(self.anchor)) else {
+            let until_genesis = Duration::from_millis(self.anchor_genesis_ms.unsigned_abs());
+            return (0, self.anchor + until_genesis);
+        };
         let slot = (since_genesis.as_millis() / self.slot_ms as u128) as u64;
         let into_slot = since_genesis - Duration::from_millis(slot * self.slot_ms);
         (slot, now - into_slot)
@@ -223,13 +238,16 @@ impl SlotTicker {
     /// kept running between the tick and the check would drift across it.
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_since_genesis_ms(&mut self, ms: u64) {
-        self.anchor_genesis_ms = ms;
+        self.anchor_genesis_ms = ms as i64;
         self.frozen = true;
         self.last = None;
     }
 
     pub fn tick(&mut self) -> TickEvent {
-        let ms = self.millis_since_genesis();
+        let Some(since_genesis) = self.since_genesis(self.elapsed()) else {
+            return TickEvent::None;
+        };
+        let ms = since_genesis.as_millis() as u64;
         let slot = ms / self.slot_ms;
         let into = ms % self.slot_ms;
 
@@ -276,6 +294,26 @@ mod tests {
 
     fn genesis_secs_ago(secs: u64) -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - secs
+    }
+
+    #[test]
+    fn before_genesis_reads_as_the_start_of_slot_zero_and_emits_nothing() {
+        let genesis = genesis_secs_ago(0) + 30;
+        let mut t = SlotTicker::new(genesis, &SpecConfig::mainnet(), Duration::from_secs(4));
+
+        assert_eq!(t.tick(), TickEvent::None);
+        assert_eq!((t.current_slot(), t.millis_since_genesis()), (0, 0));
+        assert!(t.is_before_attesting_interval(false));
+        assert!(t.is_future_slot(1, MAXIMUM_GOSSIP_CLOCK_DISPARITY));
+        let (slot, start) = t.current_slot_start();
+        let until_genesis = start.duration_since(Instant::now());
+        assert!(slot == 0 && (29..=30).contains(&until_genesis.as_secs()), "{until_genesis:?}");
+
+        // 31 s later the wall clock is 1 s into slot 0.
+        t.anchor -= Duration::from_secs(31);
+        assert_eq!(t.tick(), TickEvent::SlotStart(0));
+        assert_eq!(t.current_slot(), 0);
+        assert!((1_000..2_000).contains(&t.millis_since_genesis()));
     }
 
     #[test]
@@ -332,7 +370,7 @@ mod tests {
         let mut t = SlotTicker::new(0, &spec(12_000, 1), Duration::from_secs(4));
         t.set_since_genesis_ms(31 * 12_000);
         let mut at = |ms| {
-            t.anchor_genesis_ms = ms;
+            t.anchor_genesis_ms = ms as i64;
             t.tick()
         };
         assert_eq!(at(31 * 12_000), TickEvent::SlotStart(31));
